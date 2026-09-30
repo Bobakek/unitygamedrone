@@ -169,7 +169,7 @@ export class Game implements GameContext {
     const sys = s.system;
     switch (cmd) {
       case 'help':
-        s.msg('Команды: /who, /help' + (this.dev ? ' | dev: /tp <n|station>, /land <n>, /credits <n>, /god, /pirate, /system <n>' : ''));
+        s.msg('Команды: /who, /help' + (this.dev ? ' | dev: /tp <n|station|dock|field|gate>, /land <n>, /credits <n>, /god, /pirate, /system <n>' : ''));
         return;
       case 'who':
         s.msg(`Онлайн (${this.sessions.size}): ${[...this.sessions.values()].map((o) => o.pilot.name).join(', ')}`);

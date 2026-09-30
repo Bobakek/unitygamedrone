@@ -24,6 +24,8 @@ export class Session {
   mode: Mode = MODE.SHIP;
   inputs: InputMsg[] = [];
   lastSeq = 0;
+  /** Input-processing budget (tokens per tick). */
+  budget = 0;
   teleport = 0;
   char: CharEntity | null = null;
   chatTimes: number[] = [];

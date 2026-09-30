@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nova Frontier</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+
+    <div id="hud" class="hidden">
+      <div id="labels"></div>
+      <div id="crosshair"></div>
+      <div id="cursor"></div>
+      <div id="lead"></div>
+      <div id="target-box"><div class="tb-name"></div><div class="tb-info"></div><div class="tb-bars"><i class="sh"></i><i class="hl"></i></div><div class="tb-lock"></div></div>
+      <div id="nav-marker"><div class="nm-icon">◇</div><div class="nm-text"></div></div>
+
+      <div id="pilot-panel" class="panel">
+        <div class="pp-name"></div>
+        <div class="pp-row"><span>Кредиты</span><b class="pp-credits"></b></div>
+        <div class="pp-row"><span>Трюм</span><b class="pp-cargo"></b></div>
+        <div class="pp-row"><span>Ракеты</span><b class="pp-missiles"></b></div>
+        <div class="pp-row"><span>Система</span><b class="pp-system"></b></div>
+      </div>
+
+      <div id="nav-panel" class="panel"><div class="np-title">Навигация <small>Tab</small></div><div class="np-list"></div></div>
+      <div id="feed"></div>
+      <div id="toasts"></div>
+      <div id="prompt"></div>
+
+      <div id="flight-panel" class="panel">
+        <div class="fp-speed"><b>0</b><small>м/с</small></div>
+        <div class="fp-mode"></div>
+        <div class="bar thr"><i></i><span>ТЯГА</span></div>
+        <div class="bar bst"><i></i><span>ФОРСАЖ</span></div>
+        <div class="bar nrg"><i></i><span>ЭНЕРГИЯ</span></div>
+        <div class="bar shd"><i></i><span>ЩИТ</span></div>
+        <div class="bar hul"><i></i><span>КОРПУС</span></div>
+      </div>
+
+      <canvas id="radar" width="200" height="200"></canvas>
+
+      <div id="chat">
+        <div id="chat-log"></div>
+        <input id="chat-input" maxlength="200" placeholder="Enter — написать в чат" autocomplete="off" />
+      </div>
+    </div>
+
+    <div id="station" class="modal hidden">
+      <div class="st-card">
+        <h2 class="st-title">Станция</h2>
+        <div class="st-grid">
+          <section>
+            <h3>Торговля</h3>
+            <div class="st-cargo"></div>
+            <button data-act="sell">Продать груз</button>
+            <button data-act="repair">Ремонт корпуса</button>
+            <button data-act="buyMissiles">Докупить ракеты</button>
+          </section>
+          <section>
+            <h3>Улучшения</h3>
+            <div class="st-upgrades"></div>
+          </section>
+        </div>
+        <button class="primary" data-act="undock">Отстыковаться</button>
+      </div>
+    </div>
+
+    <div id="dead" class="modal hidden"><div class="dead-card"><h2>Корабль уничтожен</h2><p>Восстановление на станции…</p></div></div>
+
+    <div id="help" class="modal hidden">
+      <div class="help-card">
+        <h2>Управление</h2>
+        <div class="help-cols">
+          <div>
+            <h3>Полёт</h3>
+            <p><kbd>Мышь</kbd> курс (клик — захват мыши)</p>
+            <p><kbd>W</kbd>/<kbd>S</kbd> тяга, <kbd>X</kbd> стоп</p>
+            <p><kbd>A</kbd>/<kbd>D</kbd> стрейф, <kbd>Space</kbd>/<kbd>C</kbd> вверх/вниз</p>
+            <p><kbd>Q</kbd>/<kbd>E</kbd> крен</p>
+            <p><kbd>Shift</kbd> форсаж, <kbd>J</kbd> круиз</p>
+            <p><kbd>ЛКМ</kbd> лазеры, <kbd>ПКМ</kbd> держать — захват ракеты</p>
+            <p><kbd>T</kbd> цель, <kbd>Tab</kbd> навигация</p>
+            <p><kbd>F</kbd> стыковка / прыжок во вратах</p>
+          </div>
+          <div>
+            <h3>Посадка и планета</h3>
+            <p>Сбросьте тягу (<kbd>X</kbd>) и опуститесь (<kbd>C</kbd>) к поверхности — корабль сядет сам</p>
+            <p><kbd>G</kbd> выйти из корабля / сесть обратно</p>
+            <p><kbd>WASD</kbd> ходьба, <kbd>Shift</kbd> бег</p>
+            <p><kbd>Space</kbd> прыжок, держать — джетпак</p>
+            <p><kbd>F</kbd> собрать ресурс</p>
+            <h3>Прочее</h3>
+            <p><kbd>Enter</kbd> чат, <kbd>H</kbd> эта справка, <kbd>Z</kbd> освободить мышь</p>
+          </div>
+        </div>
+        <p class="help-hint">Продавайте ресурсы и получайте награды за пиратов на станции, покупайте улучшения.</p>
+      </div>
+    </div>
+
+    <div id="login" class="modal">
+      <div class="login-card">
+        <h1>NOVA<span>FRONTIER</span></h1>
+        <p class="tagline">Космическая MMO в браузере</p>
+        <input id="login-name" maxlength="16" placeholder="Позывной пилота" autocomplete="off" />
+        <button id="login-go" class="primary">В полёт</button>
+        <p id="login-error"></p>
+        <p class="login-hint">Прогресс сохраняется на сервере по позывному.</p>
+      </div>
+    </div>
+
+    <div id="loading" class="modal hidden"><div class="loading-text">Генерация звёздной системы…</div></div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

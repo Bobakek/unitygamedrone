@@ -17,7 +17,7 @@ import { surfaceHeight } from '../../shared/planet/terrain.ts';
 import { charQuat, newChar, stepChar } from '../../shared/sim/character.ts';
 import type { SimEnv } from '../../shared/sim/env.ts';
 import { emptyInput, isCruising, newShip, stepShip, type StepOut } from '../../shared/sim/ship.ts';
-import { ENERGY_REGEN, LASER, leadPoint, MISSILE, segmentSphere, SHIELD_DELAY } from '../../shared/sim/weapons.ts';
+import { ENERGY_REGEN, GUN_OFFSETS, LASER, leadPoint, MISSILE, segmentSphere, SHIELD_DELAY } from '../../shared/sim/weapons.ts';
 import { pirateBlueprint, playerBlueprint } from '../../shared/ships/blueprint.ts';
 import type { PilotRecord } from '../db.ts';
 import type { CharEntity, Laser, Missile, ShipEntity } from './entities.ts';
@@ -31,7 +31,6 @@ export interface GameContext {
   nextId(): number;
 }
 
-const GUNS = { fighter: [v3(-4.2, -0.4, -1.5), v3(4.2, -0.4, -1.5)], pirate: [v3(-0.9, -0.8, -7), v3(0.9, -0.8, -7)] };
 const tmp = v3(), tmp2 = v3(), aim = v3();
 const stepOut: StepOut = { impact: 0 };
 
@@ -108,9 +107,9 @@ export class SystemInstance implements NpcWorld {
 
   spawnPoint(): { p: V3; q: Quat } {
     const st = this.def.station.pos;
-    const away = vnorm(v3(), vsub(v3(), this.def.spawn, st));
     const p = v3(this.def.spawn.x + this.rng.range(-120, 120), this.def.spawn.y + this.rng.range(-60, 60), this.def.spawn.z + this.rng.range(-120, 120));
-    return { p, q: qlook(quat(), away, v3(0, 1, 0)) };
+    // Face the station so new pilots see it (and the nav marker) right away.
+    return { p, q: qlook(quat(), vnorm(v3(), vsub(v3(), st, p)), v3(0, 1, 0)) };
   }
 
   addSession(s: Session, at?: { p: V3; q: Quat }) {
@@ -154,7 +153,7 @@ export class SystemInstance implements NpcWorld {
     if (this.inSafeZone(ship.state.p)) return;
     ship.fireCooldown = LASER.cooldown;
     ship.energy -= LASER.cost;
-    const guns = GUNS[ship.bp.cls];
+    const guns = GUN_OFFSETS[ship.bp.cls];
     const g = guns[ship.gun++ % guns.length];
     qrot(tmp, ship.state.q, g);
     const p = v3(ship.state.p.x + tmp.x, ship.state.p.y + tmp.y, ship.state.p.z + tmp.z);
@@ -295,11 +294,13 @@ export class SystemInstance implements NpcWorld {
   }
 
   private processInputs(s: Session) {
-    let n = 0;
-    while (s.inputs.length && n < 4) {
+    // One input per tick on average; a small budget lets a lagging client catch up
+    // without allowing a speed hack by flooding inputs.
+    s.budget = Math.min(6, s.budget + 1);
+    while (s.inputs.length && s.budget >= 1) {
       const m = s.inputs.shift()!;
       if (m.seq <= s.lastSeq) continue;
-      n++;
+      s.budget--;
       s.lastSeq = m.seq;
       const ship = s.ship;
       if (s.mode === MODE.SHIP && m.mode === MODE.SHIP && !ship.dead && !ship.docked) {
@@ -574,6 +575,19 @@ export class SystemInstance implements NpcWorld {
     if (target === 'station') {
       const sp = this.spawnPoint();
       ship.state = newShip(sp.p, sp.q);
+    } else if (target === 'dock') {
+      const st = this.def.station.pos;
+      const away = vnorm(v3(), vsub(v3(), this.def.spawn, st));
+      ship.state = newShip(v3(st.x + away.x * 320, st.y + away.y * 320, st.z + away.z * 320), qlook(quat(), vscale(v3(), away, -1), v3(0, 1, 0)));
+    } else if (target === 'gate') {
+      const g = this.def.gates[0];
+      const toSt = vnorm(v3(), vsub(v3(), this.def.station.pos, g.pos));
+      ship.state = newShip(v3(g.pos.x + toSt.x * 200, g.pos.y + toSt.y * 200, g.pos.z + toSt.z * 200), qlook(quat(), vscale(v3(), toSt, -1), v3(0, 1, 0)));
+    } else if (target === 'field') {
+      const f = this.def.fields[0];
+      const out = vnorm(v3(), vsub(v3(), this.def.station.pos, f.center));
+      const p = v3(f.center.x + out.x * (f.radius + 2500), f.center.y + out.y * (f.radius + 2500) + 400, f.center.z + out.z * (f.radius + 2500));
+      ship.state = newShip(p, qlook(quat(), vscale(v3(), out, -1), v3(0, 1, 0)));
     } else {
       const idx = Number(target.replace(/\D/g, ''));
       const pl = this.def.planets[idx];
