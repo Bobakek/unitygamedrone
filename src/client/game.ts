@@ -806,7 +806,17 @@ export class Game {
       const wantAim = this.input.mouse(2) || this.time - this.lastShot < 1.5;
       this.aimK += ((wantAim ? 1 : 0) - this.aimK) * (1 - Math.exp(-dt * 9));
       this.ctrl.lookScale = 1 - 0.4 * this.aimK;
-      this.rig.foot(this.charPos, up, this.charFwd, this.ctrl.footPitch, this.input.mouse(2) ? this.aimK : 0);
+      // orbit the pilot as drawn (the model gets the same ground fix)
+      const fix = this.groundFix(charPl.index, this.charPosB);
+      const piv = v3(this.charPos.x + up.x * fix, this.charPos.y + up.y * fix, this.charPos.z + up.z * fix);
+      const R = this.rots[charPl.index], cd = v3();
+      const clear = (x: number, y: number, z: number) => {
+        cd.x = x - charPl.center.x; cd.y = y - charPl.center.y; cd.z = z - charPl.center.z;
+        const l = vlen(cd);
+        toBodyDir(R, vnorm(cd, cd), cd);
+        return l - charPl.radius - surfaceHeight(charPl, cd.x, cd.y, cd.z);
+      };
+      this.rig.foot(dt, piv, up, this.charFwd, this.ctrl.footPitch, this.ctrl.footDist, this.input.mouse(2) ? this.aimK : 0, 1.5, clear);
     } else if (mode === MODE.DOCKED) this.rig.orbit(dt, sys.station.pos, 900);
     const np = this.nearPlanet;
     if (np && this.nearAlt < np.maxHeight * 3 + 400) {

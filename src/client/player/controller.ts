@@ -18,6 +18,8 @@ export class Controller {
   footPitch = -0.1;
   /** Mouse-look scale on foot (lower while aiming down the rifle). */
   lookScale = 1;
+  /** Third-person camera distance on foot (mouse wheel). */
+  footDist = 3.2;
   private yawAcc = 0;
 
   constructor(private input: Input) {}
@@ -35,6 +37,7 @@ export class Controller {
       i.consumeMouse();
     } else if (mode === MODE.FOOT) {
       const m = i.consumeMouse();
+      if (i.wheel) this.footDist = Math.max(1.6, Math.min(8, this.footDist + i.wheel * 0.5));
       if (i.locked) {
         this.yawAcc += m.dx * 0.0026 * i.sensitivity * this.lookScale;
         this.footPitch = Math.max(-1.2, Math.min(1.0, this.footPitch - m.dy * 0.0022 * i.sensitivity * this.lookScale));

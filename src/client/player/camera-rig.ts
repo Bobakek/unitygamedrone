@@ -23,19 +23,42 @@ export class CameraRig {
     this.quat.copy(this.lag).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), landed ? -0.2 : -0.07));
   }
 
-  /** Third-person camera behind the pilot; `aim` (0..1) pulls it in over the right shoulder. */
-  foot(p: V3, up: V3, fwd: V3, pitch: number, aim = 0) {
+  /**
+   * Third-person camera orbiting a point at the pilot's right shoulder. `dist` is the
+   * wheel-set distance, `aim` (0..1) pulls it in over the shoulder, `pivotH` is the pivot's
+   * height above `p` (lower while swimming), and `clear(x, y, z)` returns how far a world
+   * point is above the ground so the camera slides in instead of sinking into a slope.
+   */
+  foot(dt: number, p: V3, up: V3, fwd: V3, pitch: number, dist: number, aim = 0, pivotH = 1.5, clear?: (x: number, y: number, z: number) => number) {
     const right = vnorm(v3(), vcross(v3(), fwd, up));
     const c = Math.cos(pitch), s = Math.sin(pitch);
     const dir = v3(fwd.x * c + up.x * s, fwd.y * c + up.y * s, fwd.z * c + up.z * s);
-    const back = 4.6 - 2.4 * aim, side = 0.6 + 0.2 * aim, height = 1.8 - 0.15 * aim;
-    this.pos.x = p.x + up.x * height - dir.x * back + right.x * side;
-    this.pos.y = p.y + up.y * height - dir.y * back + right.y * side;
-    this.pos.z = p.z + up.z * height - dir.z * back + right.z * side;
+    // the camera swings less than the view: looking down does not hoist it high above the pilot
+    const op = pitch * 0.7, oc = Math.cos(op), os = Math.sin(op);
+    const orb = v3(fwd.x * oc + up.x * os, fwd.y * oc + up.y * os, fwd.z * oc + up.z * os);
+    const side = 0.45 + 0.2 * aim;
+    const px = p.x + up.x * pivotH + right.x * side, py = p.y + up.y * pivotH + right.y * side, pz = p.z + up.z * pivotH + right.z * side;
+    const want = dist + (1.35 - dist) * aim;
+    let d = want;
+    if (clear) {
+      for (let k = 1; k <= 5; k++) {
+        const t = (want * k) / 5;
+        if (clear(px - orb.x * t + up.x * 0.15, py - orb.y * t + up.y * 0.15, pz - orb.z * t + up.z * 0.15) < 0.35) { d = Math.max(0.6, t - want / 5); break; }
+      }
+    }
+    // slide in at once when blocked, ease back out
+    this.footD = !this.footReady || d < this.footD ? d : this.footD + (d - this.footD) * (1 - Math.exp(-dt * 3));
+    this.footReady = true;
+    this.pos.x = px - orb.x * this.footD + up.x * 0.15;
+    this.pos.y = py - orb.y * this.footD + up.y * 0.15;
+    this.pos.z = pz - orb.z * this.footD + up.z * 0.15;
     qlook(_q, dir, up);
     this.quat.set(_q.x, _q.y, _q.z, _q.w);
     this.lag.copy(this.quat);
   }
+
+  private footD = 3.2;
+  private footReady = false;
 
   orbit(dt: number, center: V3, radius: number) {
     this.orbitA += dt * 0.08;
