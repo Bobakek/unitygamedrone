@@ -1,0 +1,70 @@
+import { randomBytes } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { defaultUpgrades, emptyCargo, MAX_MISSILES, type Cargo, type Upgrades } from '../shared/economy.ts';
+
+export interface PilotRecord {
+  id: number; name: string; token: string; credits: number; cargo: Cargo; upgrades: Upgrades;
+  missiles: number; kills: number; deaths: number; system: number;
+}
+
+interface Row {
+  id: number; name: string; token: string; credits: number; cargo: string; upgrades: string;
+  missiles: number; kills: number; deaths: number; system: number;
+}
+
+/** Pilot persistence on the built-in node:sqlite driver (no native build step). */
+export class PilotStore {
+  private db: DatabaseSync;
+  constructor(path: string) {
+    if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
+    this.db = new DatabaseSync(path);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS pilots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      token TEXT NOT NULL,
+      credits INTEGER NOT NULL DEFAULT 250,
+      cargo TEXT NOT NULL,
+      upgrades TEXT NOT NULL,
+      missiles INTEGER NOT NULL,
+      kills INTEGER NOT NULL DEFAULT 0,
+      deaths INTEGER NOT NULL DEFAULT 0,
+      system INTEGER NOT NULL DEFAULT 0,
+      created INTEGER NOT NULL,
+      last_seen INTEGER NOT NULL
+    )`);
+  }
+
+  private parse(r: Row): PilotRecord {
+    return {
+      id: r.id, name: r.name, token: r.token, credits: r.credits,
+      cargo: { ...emptyCargo(), ...JSON.parse(r.cargo) }, upgrades: { ...defaultUpgrades(), ...JSON.parse(r.upgrades) },
+      missiles: r.missiles, kills: r.kills, deaths: r.deaths, system: r.system,
+    };
+  }
+
+  find(name: string): PilotRecord | null {
+    const r = this.db.prepare('SELECT * FROM pilots WHERE name = ?').get(name) as Row | undefined;
+    return r ? this.parse(r) : null;
+  }
+
+  create(name: string): PilotRecord {
+    const token = randomBytes(18).toString('base64url');
+    const now = Date.now();
+    this.db
+      .prepare('INSERT INTO pilots (name, token, credits, cargo, upgrades, missiles, created, last_seen) VALUES (?, ?, 250, ?, ?, ?, ?, ?)')
+      .run(name, token, JSON.stringify(emptyCargo()), JSON.stringify(defaultUpgrades()), MAX_MISSILES / 2, now, now);
+    return this.find(name)!;
+  }
+
+  save(p: PilotRecord): void {
+    this.db
+      .prepare('UPDATE pilots SET credits = ?, cargo = ?, upgrades = ?, missiles = ?, kills = ?, deaths = ?, system = ?, last_seen = ? WHERE id = ?')
+      .run(Math.floor(p.credits), JSON.stringify(p.cargo), JSON.stringify(p.upgrades), p.missiles, p.kills, p.deaths, p.system, Date.now(), p.id);
+  }
+
+  close(): void {
+    this.db.close();
+  }
+}
