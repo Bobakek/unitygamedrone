@@ -74,6 +74,11 @@ export class CreatureView {
   private bodyY = 0;
   private meshes: THREE.Mesh[] = [];
   private glow: THREE.Sprite | null = null;
+  /** Sea creatures: body segments (fish) and wing roots/tips (ray). */
+  private segs: THREE.Group[] = [];
+  private wings: { root: THREE.Group; tip: THREE.Group; side: number }[] = [];
+  private swimPh = Math.random();
+  private roll = 0;
 
   constructor(readonly sp: Species) {
     const [c0, c1, c2] = sp.colors;
@@ -106,7 +111,82 @@ export class CreatureView {
       for (const sx of [-1, 1]) add(parent, box(r, r, r * 0.6), sp.predator ? c2 : '#111111', [sx * x, y, z], [0, 0, 0], sp.predator);
     };
 
-    if (sp.plan === 'quad') {
+    if (sp.plan === 'fish') {
+      // shark / eel: a chain of body segments ending in a tail fin, the head with a hinged jaw in front
+      const eel = !!sp.eel;
+      const n = eel ? 6 : 4, L = eel ? 3.0 : 1.9, segL = L / n;
+      let parent: THREE.Object3D = this.torso;
+      for (let i = 0; i < n; i++) {
+        const g = new THREE.Group();
+        g.position.z = i === 0 ? -L * 0.25 : segL;
+        parent.add(g);
+        const k = 1 - i / (n + 0.8);
+        const w = (eel ? 0.3 : 0.52) * k, h = (eel ? 0.32 : 0.62) * (1 - i / (n + 1.6));
+        add(g, tapered(w, h, segL * 1.08, i === 0 ? 1 : 1.12), c0, [0, 0, segL / 2]);
+        add(g, box(w * 0.8, h * 0.3, segL), c1, [0, -h * 0.34, segL / 2]);
+        if (sp.glow && i % 2 === 0) for (const x of [-1, 1]) add(g, new THREE.SphereGeometry(0.045, 4, 3), c2, [x * w * 0.5, h * 0.1, segL * 0.5], [0, 0, 0], true);
+        if (!eel && i === 1) add(g, new THREE.ConeGeometry(0.22, 0.55, 3), c0, [0, h * 0.5 + 0.2, segL * 0.3], [-0.45, 0, 0], );
+        if (!eel && i === 0) for (const x of [-1, 1]) add(g, box(0.5, 0.04, 0.26), c0, [x * 0.4, -0.18, segL * 0.6], [0, x * 0.3, x * -0.35]);
+        this.segs.push(g);
+        parent = g;
+      }
+      // tail fin: crescent for the shark, a ribbon for the eel
+      if (eel) add(parent, box(0.03, 0.34, 0.5), c2, [0, 0, segL + 0.2], [0, 0, 0], !!sp.glow);
+      else {
+        add(parent, new THREE.ConeGeometry(0.09, 0.75, 3), c0, [0, 0.3, segL + 0.1], [0.75, 0, 0], );
+        add(parent, new THREE.ConeGeometry(0.07, 0.45, 3), c0, [0, -0.2, segL + 0.05], [2.4, 0, 0]);
+      }
+      // head in front of the first segment
+      this.head.position.z = -L * 0.25;
+      this.torso.add(this.head);
+      const hw = eel ? 0.3 : 0.5, hh = eel ? 0.3 : 0.5;
+      add(this.head, tapered(hw, hh, 0.7, 0.45), c0, [0, 0.03, -0.32]);
+      this.jaw.position.set(0, -hh * 0.3, -0.05);
+      this.head.add(this.jaw);
+      add(this.jaw, tapered(hw * 0.85, 0.1, 0.55, 0.5), c1, [0, -0.04, -0.26]);
+      for (let i = 0; i < 4; i++) for (const sx of [-1, 1]) add(this.jaw, new THREE.ConeGeometry(0.018, 0.07, 3), '#f4f0e8', [sx * (0.05 + i * 0.03), 0.04, -0.46 + i * 0.07], [0, 0, 0]);
+      eyes(this.head, hw * 0.38, 0.1, -0.44, 0.06);
+    } else if (sp.plan === 'ray') {
+      // manta: flat diamond body, flapping two-part wings, cephalic fins and a whip tail
+      add(this.torso, new THREE.OctahedronGeometry(0.5, 0), c0, [0, 0, 0], [0, 0, 0]).scale.set(0.8, 0.28, 1.25);
+      add(this.torso, new THREE.OctahedronGeometry(0.46, 0), c1, [0, -0.04, 0.02]).scale.set(0.74, 0.2, 1.15);
+      // flat wing plates (outline in x / z, thickness down): inner part on the root, tip hinged at its edge
+      const plate = (pts: number[][], t: number) => {
+        const sh = new THREE.Shape(pts.map(([x, z]) => new THREE.Vector2(x, z)));
+        return new THREE.ExtrudeGeometry(sh, { depth: t, bevelEnabled: false }).rotateX(Math.PI / 2).translate(0, t / 2, 0);
+      };
+      for (const side of [-1, 1]) {
+        const root = new THREE.Group();
+        root.position.set(side * 0.28, 0, 0);
+        this.torso.add(root);
+        add(root, plate([[0, -0.55], [side * 0.7, -0.14], [side * 0.7, 0.3], [0, 0.5]], 0.09), c0, [0, 0.01, 0]);
+        add(root, plate([[0, -0.5], [side * 0.68, -0.12], [side * 0.68, 0.27], [0, 0.45]], 0.03), c1, [0, -0.05, 0]);
+        const tip = new THREE.Group();
+        tip.position.set(side * 0.7, 0, 0);
+        root.add(tip);
+        add(tip, plate([[0, -0.14], [side * 0.62, 0.2], [0, 0.3]], 0.06), c0, [0, 0, 0]);
+        if (sp.glow) for (let i = 0; i < 3; i++) add(root, new THREE.SphereGeometry(0.045, 4, 3), c2, [side * (0.2 + i * 0.18), 0.07, 0.02 + i * 0.05], [0, 0, 0], true);
+        this.wings.push({ root, tip, side });
+        // cephalic fins
+        add(this.torso, box(0.07, 0.05, 0.3), c0, [side * 0.17, 0, -0.62], [0.3, side * 0.3, 0]);
+      }
+      this.head.position.z = -0.55;
+      this.torso.add(this.head);
+      eyes(this.head, 0.2, 0.06, -0.02, 0.05);
+      this.jaw.position.set(0, -0.06, -0.05);
+      this.head.add(this.jaw);
+      add(this.jaw, box(0.3, 0.03, 0.08), c1, [0, 0, 0]);
+      // whip tail
+      let parent: THREE.Object3D = this.torso;
+      for (let i = 0; i < 3; i++) {
+        const g = new THREE.Group();
+        g.position.z = i === 0 ? 0.55 : 0.45;
+        parent.add(g);
+        add(g, box(0.05 - i * 0.012, 0.05 - i * 0.012, 0.47), c0, [0, 0, 0.23]);
+        this.segs.push(g);
+        parent = g;
+      }
+    } else if (sp.plan === 'quad') {
       this.bodyY = 1.0;
       add(this.torso, tapered(0.8, 0.75, 1.7, 0.85), c0, [0, 1.05, 0]);
       add(this.torso, box(0.6, 0.2, 1.3), c1, [0, 0.72, 0]);
@@ -208,6 +288,7 @@ export class CreatureView {
     const sp = this.sp, s = sp.size;
     this.idle += dt;
     if (a.dead) { this.die(dt); return; }
+    if (sp.aquatic) { this.swim(dt, a); return; }
     this.deadK = 0;
     this.body.rotation.z = 0;
     const k = (r: number) => 1 - Math.exp(-dt * r);
@@ -310,18 +391,70 @@ export class CreatureView {
     }
   }
 
+  /**
+   * Sea creatures: the fish body undulates (faster and wider with speed, a burst when
+   * lunging), the ray flaps its wings in a travelling wave; both bank into turns.
+   */
+  private swim(dt: number, a: CreatureAnim) {
+    const sp = this.sp;
+    const k = (r: number) => 1 - Math.exp(-dt * r);
+    this.attackT = Math.max(0, this.attackT - dt * 2.2);
+    this.roarT = Math.max(0, this.roarT - dt);
+    this.hitT = Math.max(0, this.hitT - dt);
+    this.deadK = 0;
+    const fast = Math.min(1, a.speed / sp.run);
+    const at = this.attackT > 0 ? Math.sin((1 - this.attackT) * Math.PI) : 0;
+    const TAU = Math.PI * 2;
+    this.roll += (-Math.max(-1, Math.min(1, a.turn)) * 0.45 - this.roll) * k(4);
+    let yaw = 0, pitch = 0, z = 0;
+    if (sp.plan === 'fish') {
+      this.swimPh += dt * (0.7 + a.speed * 0.9 + at * 2) / sp.size;
+      const amp = 0.1 + 0.2 * fast + 0.2 * at;
+      const n = this.segs.length;
+      this.segs.forEach((g, i) => { g.rotation.y = Math.sin(this.swimPh * TAU - i * 0.9) * amp * (0.35 + (i / n) * 0.9); });
+      yaw = -Math.sin(this.swimPh * TAU + 0.6) * amp * 0.25;
+      z = -0.5 * at;
+      this.head.rotation.x = 0.15 * at;
+    } else {
+      this.swimPh += dt * (0.35 + a.speed * 0.28) * (1 + at);
+      const amp = 0.28 + 0.35 * fast + (a.mood === MOOD.rest ? -0.15 : 0);
+      for (const w of this.wings) {
+        w.root.rotation.z = w.side * Math.sin(this.swimPh * TAU) * amp;
+        w.tip.rotation.z = w.side * Math.sin(this.swimPh * TAU - 1.1) * amp * 1.2;
+      }
+      this.segs.forEach((g, i) => { g.rotation.y = Math.sin(this.idle * 1.8 - i) * 0.15; g.rotation.x = Math.sin(this.idle * 1.3 - i) * 0.08; });
+      pitch = -Math.sin(this.swimPh * TAU) * 0.06 * amp;
+      z = -0.3 * at;
+    }
+    let jaw = 0.8 * at;
+    if (this.roarT > 0) jaw = Math.max(jaw, 0.7 * Math.sin(Math.min(1, (1.2 - this.roarT) / 1.2) * Math.PI));
+    if (this.hitT > 0) { const h = Math.sin((this.hitT / 0.3) * Math.PI); yaw += 0.35 * h * this.hitSide; pitch += 0.15 * h; }
+    this.jaw.rotation.x = Math.min(0.9, jaw);
+    this.body.position.set(0, Math.sin(this.idle * 0.9) * 0.05, z * sp.size);
+    this.body.rotation.set(pitch, yaw, this.roll);
+  }
+
   /** Carcass: roll onto the side, legs stiffen and curl, a faint glow marks the samples. */
   private die(dt: number) {
     const s = this.sp.size;
     if (!this.glow) {
       this.glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: new THREE.Color(0.5, 2.0, 0.7), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, toneMapped: false }));
       this.glow.scale.setScalar(2.2 * s);
-      this.glow.position.y = 0.6 * s;
+      this.glow.position.y = (this.sp.aquatic ? 0.2 : 0.6) * s;
       this.group.add(this.glow);
     }
     this.glow.material.opacity = 0.5 + Math.sin(this.idle * 3) * 0.3;
     this.deadK = Math.min(1, this.deadK + dt * 2.5);
     const d = this.deadK;
+    if (this.sp.aquatic) {
+      // belly up, fins limp, drifting
+      this.body.rotation.set(0, 0, Math.PI * d);
+      this.body.position.set(0, Math.sin(this.idle * 0.8) * 0.05, 0);
+      this.segs.forEach((g, i) => { g.rotation.y = 0.12 * d * (i % 2 ? 1 : -1); });
+      for (const w of this.wings) { w.root.rotation.z = -w.side * 0.25 * d; w.tip.rotation.z = -w.side * 0.3 * d; }
+      this.jaw.rotation.x = 0.3 * d;
+      return;
+    }
     // roll onto the side (six-legged: onto the back) about the feet, then lift so the torso rests on the ground
     const hex = this.sp.plan === 'hex';
     const ang = d * Math.PI * (hex ? 1 : 0.5);

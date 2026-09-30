@@ -10,17 +10,21 @@ import { CreatureView, type CreatureAnim } from '../entities/creature.ts';
 /**
  * Animation lab: a small outdoor set where the pilot and every creature
  * species can be played clip by clip (locomotion in all directions, jumps,
- * vaulting and climbing over obstacles, aiming and firing, harvesting, hit
- * reactions, grazing, gaits, attacks...), slowed down or frozen, and laid out
- * as contact sheets for review. Reachable from the login screen or `?lab`.
+ * vaulting and climbing over obstacles, swimming and diving, aiming and
+ * firing, harvesting, hit reactions, grazing, gaits, attacks...), slowed down
+ * or frozen, and laid out as contact sheets for review. Swimmers and sea
+ * creatures play in a pool. Reachable from the login screen or `?lab`.
  */
 
 type PilotCtx = { t: number; dt: number; view: AstronautView; obj: THREE.Object3D; ev: (every: number, fn: () => void) => void };
-interface PilotClip { id: string; label: string; period?: number; course?: 'vault' | 'climb' | 'slope'; drive: (c: PilotCtx) => Partial<AnimInput> }
+interface PilotClip { id: string; label: string; period?: number; course?: 'vault' | 'climb' | 'slope'; pool?: boolean; drive: (c: PilotCtx) => Partial<AnimInput> }
 type CreatureCtx = { t: number; view: CreatureView; sp: Species; ev: (every: number, fn: () => void) => void };
 interface CreatureClip { id: string; label: string; drive: (c: CreatureCtx) => Partial<CreatureAnim> }
 
 const G = 9.8;
+/** Height of the pool's water surface above the lab floor; sea creatures float at SEA_Y. */
+const POOL_Y = 5;
+const SEA_Y = 2.2;
 
 /** Scripted run-up and traversal over an obstacle (mirrors the shared character sim's timings). */
 function course(kind: 'vault' | 'climb', t: number): { z: number; y: number; inp: Partial<AnimInput> } {
@@ -80,6 +84,12 @@ const PILOT_CLIPS: PilotClip[] = [
   { id: 'harvest', label: 'Добыча', drive: ({ view, ev, obj }) => { ev(1.4, () => view.harvest(new THREE.Vector3(obj.position.x - 0.3, obj.position.y + 0.2, obj.position.z - 1.3))); return {}; } },
   { id: 'hurt', label: 'Ранение', drive: ({ view, ev }) => { ev(1.0, () => view.hurt(1)); return {}; } },
   { id: 'fidget', label: 'Жесты', drive: ({ view, ev }) => { let k = 0; ev(3, () => view.playFidget(k++ % 3)); return {}; } },
+  { id: 'tread', label: 'На воде', pool: true, drive: ({ obj }) => { obj.position.y = POOL_Y - 1.2; return { ground: false, swim: 1 }; } },
+  { id: 'crawl', label: 'Плыть', pool: true, drive: ({ obj }) => { obj.position.y = POOL_Y - 1.2; return { ground: false, swim: 1, fwd: 2.6 }; } },
+  { id: 'underSwim', label: 'Под водой', pool: true, drive: ({ obj }) => { obj.position.y = POOL_Y - 3.6; return { ground: false, swim: 2, fwd: 2.6 }; } },
+  { id: 'dive', label: 'Нырок', pool: true, drive: ({ obj }) => { obj.position.y = POOL_Y - 3.2; return { ground: false, swim: 2, fwd: 2, vUp: -1.6, swimPitch: -0.65 }; } },
+  { id: 'hover', label: 'Зависнуть', pool: true, drive: ({ obj }) => { obj.position.y = POOL_Y - 3.4; return { ground: false, swim: 2 }; } },
+  { id: 'aimSwim', label: 'Прицел в воде', pool: true, drive: ({ obj }) => { obj.position.y = POOL_Y - 3.4; return { ground: false, swim: 2, aim: true }; } },
 ];
 
 const CREATURE_CLIPS: CreatureClip[] = [
@@ -116,7 +126,12 @@ class Actor {
     this.beast?.dispose();
     this.pilot = this.beast = null;
     if (this.subject === 'pilot') { this.pilot = new AstronautView(); this.obj.add(this.pilot.group); }
-    else { this.beast = new CreatureView(this.subject); this.obj.add(this.beast.group); }
+    else {
+      this.beast = new CreatureView(this.subject);
+      this.obj.add(this.beast.group);
+      // sea creatures swim in the pool
+      if (this.subject.aquatic) this.beast.group.position.y = SEA_Y;
+    }
     this.t = 0;
     this.next.clear();
   }
@@ -217,6 +232,17 @@ export function startLab(canvas: HTMLCanvasElement) {
   const wall = new THREE.Mesh(new THREE.BoxGeometry(4, 2.5, 1.2).translate(0, 1.25, 0), new THREE.MeshStandardMaterial({ color: '#5a4a5e', flatShading: true, roughness: 0.7 }));
   const ramp = new THREE.Mesh(new THREE.BoxGeometry(4, 0.4, 12).rotateX(Math.PI / 4).translate(0, 3.8, 1.9), new THREE.MeshStandardMaterial({ color: '#a89a86', flatShading: true, roughness: 0.9, side: THREE.DoubleSide }));
   for (const m of [block, wall, ramp]) { m.castShadow = m.receiveShadow = true; m.visible = false; scene.add(m); }
+  // the pool: a sandy floor patch under a see-through water surface
+  const pool = new THREE.Group();
+  const sand = new THREE.Mesh(new THREE.CircleGeometry(26, 40).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: '#d8c48e', roughness: 1 }));
+  sand.position.y = 0.01;
+  sand.receiveShadow = true;
+  const surf = new THREE.Mesh(new THREE.CircleGeometry(26, 40).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: '#3ab4c8', roughness: 0.08, transparent: true, opacity: 0.42, side: THREE.DoubleSide, depthWrite: false }));
+  surf.position.y = POOL_Y;
+  const vol = new THREE.Mesh(new THREE.CylinderGeometry(26, 26, POOL_Y, 40, 1, true).translate(0, POOL_Y / 2, 0), new THREE.MeshBasicMaterial({ color: '#2a8aa8', transparent: true, opacity: 0.12, side: THREE.BackSide, depthWrite: false }));
+  pool.add(sand, surf, vol);
+  pool.visible = false;
+  scene.add(pool);
 
   const cam = r.camera;
   cam.position.set(4.5, 2.6, 5.5);
@@ -297,6 +323,8 @@ export function startLab(canvas: HTMLCanvasElement) {
     block.visible = course === 'vault';
     wall.visible = course === 'climb';
     ramp.visible = course === 'slope';
+    const swimClip = !!(clip as PilotClip).pool;
+    pool.visible = swimClip || subject === 'all' || (typeof subject === 'number' && !!SPECIES[subject].aquatic);
     if (subject === 'all') {
       SPECIES.forEach((sp, i) => {
         const a = new Actor(sp, clip);
@@ -314,6 +342,8 @@ export function startLab(canvas: HTMLCanvasElement) {
       // pilots and animals face -Z: look at them from the front-right (courses: from the side)
       if (course === 'slope') { controls.target.set(0, 2.4, 3.4); cam.position.set(6.5, 6.8, 6.2); }
       else if (course) { controls.target.set(0, 1.4, 1.6); cam.position.set(6.2, 2.4, 0.6); }
+      else if (swimClip) { const y = (clip.id === 'tread' || clip.id === 'crawl' ? POOL_Y - 0.4 : POOL_Y - 2.8); controls.target.set(0, y, 0); cam.position.set(3.4, y + 0.9, -3.6); }
+      else if (typeof subject === 'number' && SPECIES[subject].aquatic) { controls.target.set(0, SEA_Y, 0); cam.position.set(3.2, SEA_Y + 1.2, -4.2); }
       else { controls.target.set(0, 0.95, 0); cam.position.set(2.4, 1.5, -3.1); }
     }
     controls.update();
@@ -333,10 +363,13 @@ export function startLab(canvas: HTMLCanvasElement) {
     clear();
     sheet = true;
     block.visible = wall.visible = ramp.visible = false;
+    pool.visible = false;
     const dt = 1 / 60;
     const turnToCam = 0.55;
     if (kind === 'pilot') {
       const clips = PILOT_CLIPS.filter((c) => !c.course).slice(from, to + 1);
+      // swim clips are posed in mid-air on the sheet (no pool), each at its own height
+      const swimY = (c: PilotClip) => (c.pool ? 1.2 : 0);
       const phases = [0.2, 0.5, 0.8];
       const cols = 3, rows = Math.ceil(clips.length / cols), stripW = 5.2, rowD = 4.4;
       clips.forEach((c, i) => {
@@ -347,6 +380,7 @@ export function startLab(canvas: HTMLCanvasElement) {
           // camera looks along +Z, so screen-right is -X
           a.obj.position.x = -((col - (cols - 1) / 2) * stripW + (k - 1) * 1.35);
           a.obj.position.z = (row - (rows - 1) / 2) * rowD;
+          if (c.pool) a.obj.position.y = swimY(c);
           a.obj.rotation.y = turnToCam;
           scene.add(a.obj);
           actors.push(a);

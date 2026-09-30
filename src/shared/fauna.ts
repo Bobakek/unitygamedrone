@@ -2,8 +2,8 @@ import type { PlanetDef, PlanetType } from './galaxy/system-gen.ts';
 import { vcross, vdot, vlen, vnorm, v3, type V3 } from './math/vec.ts';
 import { footHeight, heightAt } from './planet/terrain.ts';
 
-/** Body plans the client knows how to rig. */
-export type BodyPlan = 'quad' | 'hex' | 'biped';
+/** Body plans the client knows how to rig (fish and ray swim in the sea). */
+export type BodyPlan = 'quad' | 'hex' | 'biped' | 'fish' | 'ray';
 
 export interface Species {
   id: number;
@@ -26,6 +26,10 @@ export interface Species {
   tail?: boolean;
   horns?: boolean;
   glow?: boolean;
+  /** Lives in the sea (swims in 3D; `walk` / `run` are cruising / dash speeds). */
+  aquatic?: boolean;
+  /** Long, eel-like fish. */
+  eel?: boolean;
 }
 
 export const SPECIES: Species[] = [
@@ -37,12 +41,18 @@ export const SPECIES: Species[] = [
   { id: 5, name: 'Скорпид', plan: 'hex', predator: true, hp: 80, size: 1.3, walk: 2.2, run: 8.2, colors: ['#a0482a', '#4a2418', '#ffd24a'], herd: [1, 2], bite: 14, samples: 2, tail: true },
   { id: 6, name: 'Мохнач', plan: 'quad', predator: false, hp: 60, size: 1.6, walk: 1.5, run: 7.5, colors: ['#e8e4dc', '#9a948a', '#5a5048'], herd: [2, 4], bite: 0, samples: 2, horns: true },
   { id: 7, name: 'Ледяной волк', plan: 'quad', predator: true, hp: 60, size: 1.05, walk: 2.8, run: 8.8, colors: ['#8a98a8', '#dfe8f0', '#6affff'], herd: [2, 3], bite: 11, samples: 2, tail: true },
+  { id: 8, name: 'Скат-парусник', plan: 'ray', predator: false, hp: 50, size: 1.5, walk: 1.5, run: 5.5, colors: ['#35587a', '#eef2f4', '#9ad8ff'], herd: [1, 2], bite: 0, samples: 2, tail: true, aquatic: true },
+  { id: 9, name: 'Пилозуб', plan: 'fish', predator: true, hp: 70, size: 1.45, walk: 2.2, run: 6.8, colors: ['#566676', '#e4e8ec', '#ff4a3a'], herd: [1, 1], bite: 12, samples: 2, aquatic: true },
+  { id: 10, name: 'Светокрыл', plan: 'ray', predator: false, hp: 45, size: 1.35, walk: 1.6, run: 5.5, colors: ['#3a1a5a', '#ffb0f0', '#2ee6c9'], herd: [1, 3], bite: 0, samples: 2, tail: true, glow: true, aquatic: true },
+  { id: 11, name: 'Угреглот', plan: 'fish', predator: true, hp: 60, size: 1.35, walk: 2.4, run: 7, colors: ['#1a3a2a', '#8affe8', '#b0ff4a'], herd: [1, 1], bite: 11, samples: 2, glow: true, eel: true, aquatic: true },
 ];
 
 /** [peaceful, predator] species per planet type; barren and lava worlds are lifeless. */
 export const FAUNA: Partial<Record<PlanetType, [number, number]>> = {
   terran: [0, 1], ocean: [0, 1], alien: [2, 3], desert: [4, 5], ice: [6, 7],
 };
+/** [peaceful, predator] sea species of water worlds. */
+export const FAUNA_SEA: Partial<Record<PlanetType, [number, number]>> = { terran: [8, 9], ocean: [8, 9], alien: [10, 11] };
 
 /** Creature behaviour, sent to clients (EntityState.throttle = mood / 8) to pick animations. */
 export const MOOD = { graze: 0, wander: 1, flee: 2, hunt: 3, alert: 4, rest: 5 } as const;
@@ -95,4 +105,50 @@ export function stepCreature(c: CreatureState, pl: PlanetDef, wish: V3 | null, s
     c.p.x = dx * g; c.p.y = dy * g; c.p.z = dz * g;
   }
   return ok;
+}
+
+const fl = v3();
+
+/**
+ * Swims a sea creature through the water: turns its heading toward `wish` (any 3D direction,
+ * climbs and dives limited to ~35°), cruises at `speed`, and keeps between the sea bed and the
+ * surface. Returns false (and turns back) where the water gets too shallow.
+ */
+export function stepSwimmer(c: CreatureState, pl: PlanetDef, wish: V3 | null, speed: number, dt: number): boolean {
+  vnorm(up, c.p);
+  if (wish) {
+    const k = Math.min(1, dt * 2.5);
+    c.f.x += (wish.x - c.f.x) * k; c.f.y += (wish.y - c.f.y) * k; c.f.z += (wish.z - c.f.z) * k;
+  }
+  // limit the climb / dive angle (and keep the heading well away from straight up)
+  let fu = vdot(c.f, up);
+  fl.x = c.f.x - up.x * fu; fl.y = c.f.y - up.y * fu; fl.z = c.f.z - up.z * fu;
+  if (vlen(fl) < 1e-4) vcross(fl, up, Math.abs(up.x) < 0.9 ? v3(1, 0, 0) : v3(0, 0, 1));
+  vnorm(fl, fl);
+  fu = Math.max(-0.6, Math.min(0.6, fu));
+  c.f.x = fl.x + up.x * fu; c.f.y = fl.y + up.y * fu; c.f.z = fl.z + up.z * fu;
+  vnorm(c.f, c.f);
+  const tv = wish ? speed : 0;
+  const k = Math.min(1, dt * 3);
+  c.v.x += (c.f.x * tv - c.v.x) * k; c.v.y += (c.f.y * tv - c.v.y) * k; c.v.z += (c.f.z * tv - c.v.z) * k;
+  const nx = c.p.x + c.v.x * dt, ny = c.p.y + c.v.y * dt, nz = c.p.z + c.v.z * dt;
+  const l = Math.hypot(nx, ny, nz);
+  const dx = nx / l, dy = ny / l, dz = nz / l;
+  const floor = pl.radius + heightAt(pl, dx, dy, dz) + 1.2, top = pl.radius - 1;
+  if (floor > top - 0.8) {
+    // shallows ahead: stop and turn back out to sea
+    c.v.x = c.v.y = c.v.z = 0;
+    vcross(side, up, c.f);
+    c.f.x = -fl.x * 0.3 + side.x; c.f.y = -fl.y * 0.3 + side.y; c.f.z = -fl.z * 0.3 + side.z;
+    vnorm(c.f, c.f);
+    return false;
+  }
+  const r = Math.max(floor, Math.min(top, l));
+  if (r !== l) {
+    // glide along the bed / under the surface
+    const vr = c.v.x * dx + c.v.y * dy + c.v.z * dz;
+    if ((r === floor) === (vr < 0)) { c.v.x -= dx * vr; c.v.y -= dy * vr; c.v.z -= dz * vr; }
+  }
+  c.p.x = dx * r; c.p.y = dy * r; c.p.z = dz * r;
+  return true;
 }

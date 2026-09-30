@@ -929,6 +929,7 @@ export class Game {
       this.myAstro.update(dt, {
         ...mv, ground: !!c.ground, jet: !c.ground && !c.climbMode && this.input.down('Space') && c.fuel > 0.01, look: this.ctrl.footPitch, turn,
         aim: this.aimK > 0.5, aimPitch: this.ctrl.footPitch, climb: c.climbMode ? { mode: c.climbMode, t: climbProgress(c) } : null, scramble: !!c.scramble,
+        swim: c.swim, swimPitch: Math.atan2(mv.vUp, Math.hypot(mv.fwd, mv.side) + 1e-3),
       });
       // splash in and out of deep water; a diver breathes out bubbles
       if (!!c.swim !== !!this.lastSwim) this.sfx.splash(Math.min(1, 0.4 + Math.abs(mv.vUp) * 0.2));
@@ -982,13 +983,23 @@ export class Game {
         const fwd = qrot(v3(), r.bq, FWD);
         const mv = moveParts(v3(st.vx, st.vy, st.vz), up, fwd);
         const climbing = !!(st.flags & CFLAG.CLIMB);
-        const ground = !(st.flags & CFLAG.AIR);
+        const swim = st.flags & CFLAG.UNDER ? 2 : st.flags & CFLAG.SWIM ? 1 : 0;
+        const ground = !(st.flags & CFLAG.AIR) && !swim;
+        const rpl = st.frame ? sys.planets[st.frame - 1] : null;
+        if (swim === 2 && rpl && (r.smokeT -= dt) <= 0) {
+          // a diver breathes out bubbles
+          r.smokeT = 1.2 + Math.random();
+          const wup = vnorm(v3(), vsub(v3(), r.p, rpl.center));
+          const hp = v3(r.p.x + wup.x * 1.1, r.p.y + wup.y * 1.1, r.p.z + wup.z * 1.1);
+          this.effects.bubbles(hp, wup, 5, rpl.radius - vdist(hp, rpl.center));
+        }
         const cm = st.throttle >= 0.5 ? 2 : 1;
         if (r.harvestPos) r.view.setHarvestTarget(this.rel(this.toWorld(st.frame, r.harvestPos, v3())));
         r.view.update(dt, {
           ...mv, ground, jet: !ground && !climbing && mv.vUp > 2.5, look: 0, turn: 0,
           aim: !!(st.flags & CFLAG.AIM), aimPitch: aimPitch(st.shield),
           climb: climbing ? { mode: cm, t: cm === 2 ? (st.throttle - 0.5) * 2 : st.throttle * 2 } : null, scramble: !!(st.flags & CFLAG.SCRAMBLE),
+          swim, swimPitch: Math.atan2(mv.vUp, Math.hypot(mv.fwd, mv.side) + 1e-3),
         });
       } else if (r.view instanceof LootView) {
         r.view.update(dt);

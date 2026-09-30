@@ -4,6 +4,7 @@ import {
   decodeInput, decodeJson, encodeJson, encodeShots, encodeSnapshot, MODE, MSG, type Action, type Welcome,
 } from '../../shared/net/protocol.ts';
 import type { PilotStorage } from '../storage.ts';
+import { SPECIES } from '../../shared/fauna.ts';
 import { Session, type Transport } from './session.ts';
 import { SystemInstance, type GameContext } from './system.ts';
 
@@ -191,7 +192,7 @@ export class Game implements GameContext {
       case 'system': this.transfer(s, Number(args[0]) || 0); break;
       case 'fauna': {
         if (!s.char) { s.msg('Выйдите из корабля', 'warn'); break; }
-        const n = sys.fauna.devSpawn(s.char.planet, s.char.state.p, Math.max(0, Math.min(7, Number(args[0]) || 0)), Number(args[1]) || 40).length;
+        const n = sys.fauna.devSpawn(s.char.planet, s.char.state.p, Math.max(0, Math.min(SPECIES.length - 1, Number(args[0]) || 0)), Number(args[1]) || 40).length;
         s.msg(n ? `Появилось существ: ${n}` : 'Не удалось');
         break;
       }

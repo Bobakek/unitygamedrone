@@ -1,13 +1,14 @@
 import { CARGO_KEYS, cargoCount, combatStats } from '../../shared/economy.ts';
-import { BLASTER, FAUNA, moodByte, PILOT_HP, SAMPLE_RANGE, SPECIES, stepCreature, type CreatureState, type Mood, type Species } from '../../shared/fauna.ts';
+import { BLASTER, FAUNA, FAUNA_SEA, moodByte, PILOT_HP, SAMPLE_RANGE, SPECIES, stepCreature, stepSwimmer, type CreatureState, type Mood, type Species } from '../../shared/fauna.ts';
 import { hashInts, Rng } from '../../shared/math/rng.ts';
-import { qlook, quat, v3, vcross, vdist, vnorm, vsub, type V3 } from '../../shared/math/vec.ts';
+import { qlook, quat, v3, vcross, vdist, vlen, vnorm, vscale, vsub, type V3 } from '../../shared/math/vec.ts';
 import { BLASTER_LEVEL, EFLAG, KIND, MODE, MSG, type EntityState } from '../../shared/net/protocol.ts';
 import { inSite } from '../../shared/planet/sites.ts';
 import { footHeight, heightAt, liquidOf } from '../../shared/planet/terrain.ts';
 import { planetRot, toWorldDir, toWorldPoint } from '../../shared/sim/frames.ts';
 import { segmentSphere } from '../../shared/sim/weapons.ts';
 import type { Session } from './session.ts';
+import type { PlanetDef } from '../../shared/galaxy/system-gen.ts';
 import type { SystemInstance } from './system.ts';
 
 const ALERT = 40;
@@ -32,6 +33,10 @@ interface Creature {
 }
 
 const MAX_NEAR = 8;
+/** Sea creatures kept around a pilot near the water; predators attack swimmers within SEA_AGGRO. */
+const MAX_SEA_NEAR = 4;
+const SEA_AGGRO = 45;
+const SEA_SPOOK = 10;
 const MAX_TOTAL = 60;
 const AGGRO = 70;
 const SPOOK = 22;
@@ -86,10 +91,74 @@ export class Fauna {
         near++;
         if (c.sp.predator) hunters++;
       }
-      if (near >= MAX_NEAR || this.creatures.size >= MAX_TOTAL) continue;
-      const predator = hunters < 2 && this.rng.chance(0.35);
-      this.spawnHerd(q.planet, q.p, SPECIES[kinds[predator ? 1 : 0]]);
+      if (near < MAX_NEAR && this.creatures.size < MAX_TOTAL) {
+        const predator = hunters < 2 && this.rng.chance(0.35);
+        this.spawnHerd(q.planet, q.p, SPECIES[kinds[predator ? 1 : 0]]);
+      }
+      // the sea around a pilot in or next to the water
+      const sea = FAUNA_SEA[pl.type];
+      if (!sea || !this.nearWater(q.planet, q.p)) continue;
+      let wet = 0, sharks = 0;
+      for (const c of this.creatures.values()) {
+        if (!c.sp.aquatic || c.planet !== q.planet || vdist(c.state.p, q.p) > 300) continue;
+        wet++;
+        if (c.sp.predator) sharks++;
+      }
+      if (wet >= MAX_SEA_NEAR || this.creatures.size >= MAX_TOTAL) continue;
+      const predator = sharks < 1 && this.rng.chance(0.4);
+      this.spawnSea(q.planet, q.p, SPECIES[sea[predator ? 1 : 0]]);
     }
+  }
+
+  /** In the water, or within 150 m of water at least 5 m deep. */
+  private nearWater(planet: number, p: V3): boolean {
+    const pl = this.sys.def.planets[planet];
+    const d = vnorm(v3(), p);
+    if (heightAt(pl, d.x, d.y, d.z) < -2) return true;
+    const t1 = vnorm(v3(), vcross(v3(), d, Math.abs(d.y) < 0.9 ? v3(0, 1, 0) : v3(1, 0, 0))), t2 = vcross(v3(), d, t1);
+    for (const m of [80, 150]) {
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2;
+        const q = vnorm(v3(), v3(d.x * pl.radius + (t1.x * Math.cos(a) + t2.x * Math.sin(a)) * m, d.y * pl.radius + (t1.y * Math.cos(a) + t2.y * Math.sin(a)) * m, d.z * pl.radius + (t1.z * Math.cos(a) + t2.z * Math.sin(a)) * m));
+        if (heightAt(pl, q.x, q.y, q.z) < -5) return true;
+      }
+    }
+    return false;
+  }
+
+  /** A few sea creatures in water at least 5 m deep, 50–140 m from `near` (or `dist`). */
+  private spawnSea(planet: number, near: V3, sp: Species, dist?: number): Creature[] {
+    const pl = this.sys.def.planets[planet];
+    const r = this.rng;
+    const n0 = vnorm(v3(), near);
+    const t1 = vnorm(v3(), vcross(v3(), n0, Math.abs(n0.y) < 0.9 ? v3(0, 1, 0) : v3(1, 0, 0)));
+    const t2 = vcross(v3(), n0, t1);
+    for (let tries = 0; tries < 40; tries++) {
+      const a = r.range(0, Math.PI * 2), d = dist ?? r.range(50, 140);
+      const c0 = vnorm(v3(), v3(near.x + (t1.x * Math.cos(a) + t2.x * Math.sin(a)) * d, near.y + (t1.y * Math.cos(a) + t2.y * Math.sin(a)) * d, near.z + (t1.z * Math.cos(a) + t2.z * Math.sin(a)) * d));
+      if (heightAt(pl, c0.x, c0.y, c0.z) > -5) continue;
+      const herd = ++this.herds;
+      const out: Creature[] = [];
+      const count = r.int(sp.herd[0], sp.herd[1]);
+      for (let i = 0; i < count; i++) {
+        const o = i === 0 ? v3() : v3((r.float() - 0.5) * 16, 0, (r.float() - 0.5) * 16);
+        const dd = vnorm(v3(), v3(c0.x * pl.radius + t1.x * o.x + t2.x * o.z, c0.y * pl.radius + t1.y * o.x + t2.y * o.z, c0.z * pl.radius + t1.z * o.x + t2.z * o.z));
+        const h = heightAt(pl, dd.x, dd.y, dd.z);
+        if (h > -4) continue;
+        const depth = Math.min(-h - 1.8, 2.5 + r.float() * 9);
+        const f = vnorm(v3(), v3(t1.x * Math.cos(i + a) + t2.x * Math.sin(i + a), t1.y * Math.cos(i + a) + t2.y * Math.sin(i + a), t1.z * Math.cos(i + a) + t2.z * Math.sin(i + a)));
+        const c: Creature = {
+          id: this.sys.nextId(), sp, planet, herd, home: { ...c0 }, hp: sp.hp, dead: false, deadUntil: 0,
+          state: { p: vscale(v3(), dd, pl.radius - depth), v: v3(), f },
+          mood: 'wander', moodUntil: this.sys.time + r.range(1, 4), wish: { ...f }, target: 0, biteCool: 0,
+        };
+        this.creatures.set(c.id, c);
+        this.sys.infos.push(this.info(c));
+        out.push(c);
+      }
+      return out;
+    }
+    return [];
   }
 
   private spawnHerd(planet: number, near: V3, sp: Species, dist?: number): Creature[] {
@@ -149,8 +218,17 @@ export class Fauna {
     }
 
     for (const c of [...this.creatures.values()]) {
-      if (c.dead) { if (t > c.deadUntil) this.remove(c); continue; }
+      if (c.dead) {
+        if (t > c.deadUntil) this.remove(c);
+        else if (c.sp.aquatic) {
+          // a carcass floats up to the surface
+          const R = this.sys.def.planets[c.planet].radius, l = vlen(c.state.p), to = Math.min(R - 0.35, l + 0.5 * dt);
+          if (to > l) vscale(c.state.p, c.state.p, to / l);
+        }
+        continue;
+      }
       const pl = this.sys.def.planets[c.planet];
+      if (c.sp.aquatic) { this.stepSea(c, pl, dt); continue; }
       c.biteCool -= dt;
       // closest pilot on foot on this planet
       let prey: Session | null = null, pd = 1e9;
@@ -217,6 +295,61 @@ export class Fauna {
     }
   }
 
+  /** Sea creatures: cruise around their home waters, bolt from swimmers, sharks hunt them. */
+  private stepSea(c: Creature, pl: PlanetDef, dt: number) {
+    const t = this.sys.time;
+    c.biteCool -= dt;
+    vnorm(up, c.state.p);
+    // closest pilot in the water (their body, not their feet)
+    let prey: Session | null = null, pd = 1e9;
+    const body = v3();
+    for (const ch of this.sys.chars.values()) {
+      if (ch.planet !== c.planet || !ch.state.swim) continue;
+      const u = vnorm(tmp, ch.state.p);
+      const b = v3(ch.state.p.x + u.x * 0.9, ch.state.p.y + u.y * 0.9, ch.state.p.z + u.z * 0.9);
+      const d = vdist(b, c.state.p);
+      if (d < pd) { pd = d; prey = ch.session; body.x = b.x; body.y = b.y; body.z = b.z; }
+    }
+    if (c.sp.predator) {
+      if (c.mood !== 'flee' && c.mood !== 'hunt' && prey && pd < SEA_AGGRO) {
+        c.mood = 'hunt';
+        c.target = prey.id;
+        this.sys.events.push({ t: 'roar', id: c.id });
+      }
+      if (c.mood === 'hunt' && (!prey || pd > SEA_AGGRO * 1.6)) { c.mood = 'wander'; c.moodUntil = t; }
+    } else if (c.mood !== 'flee' && prey && pd < SEA_SPOOK) this.scare(c, body);
+    if (c.mood === 'flee' && t > c.moodUntil) { c.mood = 'wander'; c.moodUntil = t; }
+
+    let speed = 0;
+    if (c.mood === 'hunt' && prey) {
+      c.wish = vnorm(v3(), vsub(v3(), body, c.state.p));
+      const reach = 1.1 + c.sp.size * 0.9;
+      speed = pd > 7 ? c.sp.run : pd > reach ? c.sp.walk * 1.4 : 0.6;
+      if (pd < reach + 0.5 && c.biteCool <= 0) {
+        c.biteCool = 1.4;
+        this.sys.events.push({ t: 'bite', id: c.id });
+        this.hurt(prey, c.sp.bite, c.id);
+      }
+    } else if (c.mood === 'flee') {
+      speed = c.sp.run;
+    } else {
+      if (t > c.moodUntil) {
+        // cruise in a new direction, gently climbing or diving; drift back towards home waters
+        const slow = !c.sp.predator && this.rng.chance(0.3);
+        c.mood = slow ? 'graze' : 'wander';
+        c.moodUntil = t + this.rng.range(4, 9);
+        const R = pl.radius;
+        const off = vdist(vnorm(dir, c.state.p), c.home) * R;
+        const w = off > 50 ? vsub(v3(), v3(c.home.x * R, c.home.y * R, c.home.z * R), c.state.p) : v3(this.rng.range(-1, 1), this.rng.range(-1, 1), this.rng.range(-1, 1));
+        const tg = this.tangent(w);
+        const vert = this.rng.range(-0.35, 0.35);
+        c.wish = vnorm(v3(), v3(tg.x + up.x * vert, tg.y + up.y * vert, tg.z + up.z * vert));
+      }
+      speed = c.mood === 'graze' ? c.sp.walk * 0.45 : c.sp.walk;
+    }
+    if (!stepSwimmer(c.state, pl, speed > 0 ? c.wish : null, speed, dt)) c.wish = { ...c.state.f };
+  }
+
   /** Turns a creature in place towards tangent direction `d`. */
   private face(c: Creature, d: V3, dt: number) {
     const k = Math.min(1, dt * 4);
@@ -229,7 +362,7 @@ export class Fauna {
     return vnorm(v3(), v3(v.x - up.x * k, v.y - up.y * k, v.z - up.z * k));
   }
 
-  /** Makes a grazer (and its herd) bolt away from `from`. */
+  /** Makes a grazer (and its herd) bolt away from `from` (sea creatures also dive or climb away). */
   private scare(c: Creature, from: V3) {
     const t = this.sys.time;
     for (const o of this.creatures.values()) {
@@ -237,7 +370,7 @@ export class Fauna {
       vnorm(up, o.state.p);
       o.mood = 'flee';
       o.moodUntil = t + this.rng.range(5, 8);
-      o.wish = this.tangent(vsub(tmp, o.state.p, from));
+      o.wish = o.sp.aquatic ? vnorm(v3(), vsub(v3(), o.state.p, from)) : this.tangent(vsub(tmp, o.state.p, from));
     }
   }
 
@@ -270,7 +403,8 @@ export class Fauna {
     for (const c of this.creatures.values()) {
       if (c.planet !== ch.planet || c.dead) continue;
       const cu = vnorm(tmp, c.state.p);
-      const center = v3(c.state.p.x + cu.x * c.sp.size * 0.8, c.state.p.y + cu.y * c.sp.size * 0.8, c.state.p.z + cu.z * c.sp.size * 0.8);
+      const lift = c.sp.aquatic ? 0 : c.sp.size * 0.8;
+      const center = v3(c.state.p.x + cu.x * lift, c.state.p.y + cu.y * lift, c.state.p.z + cu.z * lift);
       const tt = segmentSphere(o, end, center, c.sp.size * 1.05);
       if (tt >= 0 && tt < best) { best = tt; hit = c; }
     }
@@ -358,8 +492,9 @@ export class Fauna {
     }
   }
 
-  /** Test/dev helper: spawn a herd of a species right next to a point. */
+  /** Test/dev helper: spawn a herd of a species right next to a point (sea species in nearby water). */
   devSpawn(planet: number, near: V3, species: number, dist = 40) {
-    return this.spawnHerd(planet, near, SPECIES[species], dist);
+    const sp = SPECIES[species];
+    return sp.aquatic ? this.spawnSea(planet, near, sp, dist) : this.spawnHerd(planet, near, sp, dist);
   }
 }

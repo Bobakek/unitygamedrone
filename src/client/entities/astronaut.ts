@@ -6,9 +6,10 @@ import { glowTexture } from '../world/textures.ts';
  * (shoulder/elbow/hand) and legs (hip/knee/ankle), carrying a blaster rifle
  * and a mining tool. Poses are blended from layers: directional locomotion
  * (forward, backpedal, strafe, diagonals), jump/fall/jetpack/landing,
- * vaulting and climbing over obstacles, scrambling up slopes, aiming and
- * firing (two-handed, arms solved with IK onto the rifle), harvesting, hit
- * flinches and idle fidgets.
+ * vaulting and climbing over obstacles, scrambling up slopes, swimming
+ * (treading water, front crawl, breaststroke and hovering under water),
+ * aiming and firing (two-handed, arms solved with IK onto the rifle),
+ * harvesting, hit flinches and idle fidgets.
  * Local frame: forward = -Z, up = +Y, origin at the soles.
  */
 
@@ -94,7 +95,16 @@ export interface AnimInput {
   climb?: { mode: number; t: number } | null;
   /** Scrambling up a steep slope. */
   scramble?: boolean;
+  /** Swimming: 1 at the surface, 2 under water; `swimPitch` = climb angle of the swim (radians). */
+  swim?: number;
+  swimPitch?: number;
 }
+
+interface LimbPose { th: number; thZ: number; kn: number; sh: number; rl: number; el: number }
+const mixPose = (a: LimbPose, b: LimbPose, t: number): LimbPose => ({
+  th: a.th + (b.th - a.th) * t, thZ: a.thZ + (b.thZ - a.thZ) * t, kn: a.kn + (b.kn - a.kn) * t,
+  sh: a.sh + (b.sh - a.sh) * t, rl: a.rl + (b.rl - a.rl) * t, el: a.el + (b.el - a.el) * t,
+});
 
 const sstep = (x: number, a: number, b: number) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -178,7 +188,8 @@ export class AstronautView {
 
   private t = Math.random() * 10;
   private phase = 0;
-  private w = { walk: 0, run: 0, air: 0, jet: 0, rise: 0, land: 0, harvest: 0, aim: 0, climb: 0, scramble: 0 };
+  private w = { walk: 0, run: 0, air: 0, jet: 0, rise: 0, land: 0, harvest: 0, aim: 0, climb: 0, scramble: 0, swim: 0, under: 0, stroke: 0 };
+  private swimPh = 0;
   private dirC = 1;
   private dirS = 0;
   private airTime = 0;
@@ -348,8 +359,10 @@ export class AstronautView {
     const climbing = !!a.climb && a.climb.mode > 0;
     if (climbing) this.climb = { ...a.climb! };
 
+    const swimming = (a.swim ?? 0) > 0;
     // --- state weights (smoothed)
-    if (!ground && !climbing) this.airTime += dt;
+    if (!ground && !climbing && !swimming) this.airTime += dt;
+    else if (swimming) this.airTime = 0;
     else {
       if (this.airTime > 0.3 && ground) {
         this.landing = Math.min(1, 0.4 + this.airTime * 0.5);
@@ -369,8 +382,8 @@ export class AstronautView {
     const tw = {
       walk: ground ? sstep(spd, 0.15, 1.4) : 0,
       run: ground ? sstep(spd, 5.2, 8.5) * (a.scramble ? 0 : 1) : 0,
-      air: ground || climbing || this.airTime < 0.08 ? 0 : 1,
-      jet: !ground && a.jet && !climbing ? 1 : 0,
+      air: ground || climbing || swimming || this.airTime < 0.08 ? 0 : 1,
+      jet: !ground && a.jet && !climbing && !swimming ? 1 : 0,
       rise: a.vUp > 0.5 ? 1 : 0,
       land: this.landing,
       harvest: this.harvestT > 0 ? sstep(this.harvestT, 0, 0.25) * sstep(1.1 - this.harvestT, 0, 0.2) : 0,
@@ -388,6 +401,11 @@ export class AstronautView {
     w.aim += (tw.aim - w.aim) * k(aimWanted ? 9 : 5);
     w.climb += (tw.climb - w.climb) * k(14);
     w.scramble += (tw.scramble - w.scramble) * k(6);
+    const spd3 = Math.hypot(fwdV, sideV, a.vUp);
+    w.swim += ((swimming ? 1 : 0) - w.swim) * k(5);
+    w.under += ((a.swim === 2 ? 1 : 0) - w.under) * k(3);
+    w.stroke += ((swimming ? sstep(spd3, 0.25, 1.6) : 0) - w.stroke) * k(4);
+    if (swimming) this.swimPh += dt * (0.55 + spd3 * 0.22) * Math.PI * 2;
 
     // movement direction relative to the facing (smoothed so turns blend)
     if (spd > 0.3) {
@@ -499,6 +517,51 @@ export class AstronautView {
       spineYaw *= 1 - air;
     }
 
+    // --- swimming: body attitude and strokes
+    let hipsPitch = 0;
+    if (w.swim > 0.001) {
+      const sw = w.swim, un = w.under, mv = w.stroke, sp = this.swimPh;
+      // treading upright ↔ prone crawl at the surface; hovering ↔ streamlined along the swim under water
+      const surfaceP = -0.15 - 1.25 * mv;
+      const underP = -0.5 + (-1.0 + Math.max(-1.1, Math.min(1.1, a.swimPitch ?? 0))) * mv;
+      let bp = surfaceP + (underP - surfaceP) * un;
+      bp += (-0.15 - bp) * w.aim;
+      hipsPitch = bp * sw;
+      const TAU = Math.PI * 2, cyc = ((sp / TAU) % 1 + 1) % 1;
+      for (let i = 0; i < 2; i++) {
+        const side = i === 0 ? -1 : 1, off = i * Math.PI;
+        // treading water: egg-beater legs, sculling arms
+        const tread: LimbPose = { th: 0.55 + 0.3 * Math.sin(sp * 1.2 + off), thZ: side * 0.2, kn: -1.2 - 0.35 * Math.sin(sp * 1.2 + off + 1), sh: 0.2 + 0.35 * Math.sin(sp * 1.3), rl: 1.1, el: 0.7 + 0.2 * Math.sin(sp * 1.3) };
+        // hovering: slow flutter, arms sculling low
+        const hover: LimbPose = { th: 0.2 * Math.sin(sp * 0.8 + off), thZ: side * 0.05, kn: -0.35 - 0.15 * Math.max(0, Math.sin(sp * 0.8 + off)), sh: 0.45 + 0.2 * Math.sin(sp * 0.9), rl: 0.55, el: 0.6 };
+        // front crawl: windmill arms (reach overhead, pull under the body, recover through the air), flutter kick
+        const a1 = ((sp + off) % TAU + TAU) % TAU;
+        const crawl: LimbPose = { th: 0.28 * Math.sin(sp * 3 + off), thZ: 0, kn: -0.15 - 0.25 * Math.max(0, Math.sin(sp * 3 + off + 0.8)), sh: Math.PI - a1, rl: 0.12, el: a1 < Math.PI ? 0.25 : 1.2 };
+        // breaststroke: reach, sweep out and back, tuck, frog kick
+        const breast: LimbPose = {
+          th: key(cyc, [[0, 0.05], [0.5, 0.05], [0.7, 0.95], [0.85, 0.15], [1, 0.05]]),
+          thZ: side * key(cyc, [[0, 0.02], [0.6, 0.3], [0.85, 0.45], [1, 0.02]]),
+          kn: key(cyc, [[0, -0.1], [0.5, -0.15], [0.7, -1.8], [0.85, -0.3], [1, -0.1]]),
+          sh: key(cyc, [[0, 2.95], [0.35, 2.45], [0.55, 1.2], [0.75, 1.9], [1, 2.95]]),
+          rl: key(cyc, [[0, 0.12], [0.35, 0.95], [0.55, 0.55], [0.75, 0.12], [1, 0.12]]),
+          el: key(cyc, [[0, 0.1], [0.35, 0.35], [0.55, 1.7], [0.75, 1.2], [1, 0.1]]),
+        };
+        const P = mixPose(mixPose(tread, hover, un), mixPose(crawl, breast, un), mv);
+        thigh[i] += (P.th - thigh[i]) * sw;
+        thighZ[i] += (P.thZ - thighZ[i]) * sw;
+        knee[i] += (P.kn - knee[i]) * sw;
+        shoulder[i] += (P.sh - shoulder[i]) * sw;
+        roll[i] += (P.rl - roll[i]) * sw;
+        elbow[i] += (P.el - elbow[i]) * sw;
+      }
+      hipsRoll += (Math.sin(sp) * 0.4 * mv * (1 - un) - hipsRoll) * sw;
+      hipsYaw *= 1 - sw;
+      spineYaw *= 1 - sw;
+      spineX += (0.05 - spineX) * sw;
+      // keep looking ahead while lying in the water
+      headX += (0.1 + mv * (0.85 - 0.3 * un) - headX) * sw * (1 - w.aim);
+    }
+
     // --- vaulting / climbing over an obstacle (keyframed on the traversal progress)
     if (w.climb > 0.001) {
       const c = w.climb, t = this.climb.t;
@@ -595,7 +658,7 @@ export class AstronautView {
 
     // --- apply
     this.hips.position.y = hipsY;
-    this.hips.rotation.set(0, hipsYaw, hipsRoll);
+    this.hips.rotation.set(hipsPitch, hipsYaw, hipsRoll);
     this.spine.rotation.set(spineX, spineYaw, 0);
     this.head.rotation.set(headX - spineX * 0.6, headYaw - spineYaw * 0.5, 0);
     for (let i = 0; i < 2; i++) {
