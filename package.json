@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit",
     "start": "cross-env NODE_ENV=production tsx src/server/main.ts",
     "test": "vitest run",
-    "e2e": "node e2e/run.mjs"
+    "e2e": "node e2e/run.mjs",
+    "anim": "node e2e/anim-lab.mjs"
   },
   "dependencies": {
     "three": "0.186.1",
