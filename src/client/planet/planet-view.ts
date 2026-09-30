@@ -4,13 +4,15 @@ import { CHUNK_N, meshHeightAt, type ChunkData } from '../../shared/planet/chunk
 import { cubeToSphere, maxLevelFor, sphereToCube } from '../../shared/planet/cubesphere.ts';
 import { v3, type V3 } from '../../shared/math/vec.ts';
 import type { WorkerPool } from './worker-pool.ts';
+import { liquidOf } from '../../shared/planet/terrain.ts';
+import { seaBedMaterial, seaUniforms, updateSea, waterMaterial, type SeaUniforms } from './water.ts';
 
 const terrainMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.93, metalness: 0 });
 
 interface LiquidUniforms { uTime: { value: number }; uPlanet: { value: THREE.Vector3 }; uRotInv: { value: THREE.Matrix3 } }
 const m4 = new THREE.Matrix4(), qi = new THREE.Quaternion();
 
-/** Liquid material per planet type: animated faceted waves, glowing lava or a still ice sheet. */
+/** Liquid material for lava (glowing, slow faceted waves) and ice sheets; water has its own (water.ts). */
 function liquidMaterial(def: PlanetDef, u: LiquidUniforms): THREE.Material {
   let m: THREE.Material;
   let amp = 0.35, speed = 1;
@@ -82,9 +84,19 @@ export class PlanetView {
   lodVersion = 0;
   private liquidU: LiquidUniforms = { uTime: { value: 0 }, uPlanet: { value: new THREE.Vector3() }, uRotInv: { value: new THREE.Matrix3() } };
   private liquid: THREE.Material | null;
+  private terrain: THREE.Material = terrainMat;
+  /** Sea water uniforms (water worlds only). */
+  readonly sea: SeaUniforms | null = null;
+  /** Sun direction (world) and daylight at the camera, fed by the game for the water's glow. */
+  sun: THREE.Vector3 | null = null;
+  day = 1;
 
   constructor(public def: PlanetDef, private pool: WorkerPool, public splitK = 2.4) {
-    this.liquid = def.sea ? liquidMaterial(def, this.liquidU) : null;
+    if (liquidOf(def) === 'water') {
+      this.sea = seaUniforms(def);
+      this.liquid = waterMaterial(this.sea);
+      this.terrain = seaBedMaterial(terrainMat, this.sea);
+    } else this.liquid = def.sea ? liquidMaterial(def, this.liquidU) : null;
     this.maxLevel = maxLevelFor(def.radius, CHUNK_N, 2.6);
     this.mountain = Math.acos(def.radius / (def.radius + def.maxHeight * 1.2));
     for (let f = 0; f < 6; f++) this.roots.push(this.node(f, 0, 0, 0));
@@ -115,6 +127,7 @@ export class PlanetView {
     this.liquidU.uTime.value = time;
     this.liquidU.uPlanet.value.copy(this.group.position);
     this.liquidU.uRotInv.value.setFromMatrix4(m4.makeRotationFromQuaternion(qi.copy(this.group.quaternion).invert()));
+    if (this.sea) updateSea(this.sea, this.group.quaternion, camRel, time, this.sun, this.day);
     this.camRel.copy(camRel);
     const dist = camRel.length();
     this.camDir.copy(camRel).divideScalar(dist || 1);
@@ -187,7 +200,7 @@ export class PlanetView {
       g.setAttribute('normal', new THREE.BufferAttribute(c.normals, 3));
       g.setAttribute('color', new THREE.BufferAttribute(c.colors, 3));
       g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), c.radius);
-      const m = new THREE.Mesh(g, terrainMat);
+      const m = new THREE.Mesh(g, this.terrain);
       m.position.set(c.cx, c.cy, c.cz);
       m.receiveShadow = true;
       // fine chunks near the player cast terrain shadows (hills, cliffs)
@@ -204,6 +217,7 @@ export class PlanetView {
         wg.setAttribute('position', new THREE.BufferAttribute(c.water.positions, 3));
         wg.setAttribute('normal', new THREE.BufferAttribute(c.water.normals, 3));
         wg.setAttribute('color', new THREE.BufferAttribute(c.water.colors, 3));
+        wg.setAttribute('seabed', new THREE.BufferAttribute(c.water.seabed, 1));
         wg.boundingSphere = new THREE.Sphere(new THREE.Vector3(), c.radius + 10);
         const w = new THREE.Mesh(wg, this.liquid);
         w.position.copy(m.position);

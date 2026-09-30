@@ -43,7 +43,7 @@ export class CameraRig {
     if (clear) {
       for (let k = 1; k <= 5; k++) {
         const t = (want * k) / 5;
-        if (clear(px - orb.x * t + up.x * 0.15, py - orb.y * t + up.y * 0.15, pz - orb.z * t + up.z * 0.15) < 0.35) { d = Math.max(0.6, t - want / 5); break; }
+        if (clear(px - orb.x * t + up.x * 0.15, py - orb.y * t + up.y * 0.15, pz - orb.z * t + up.z * 0.15) < 0.3) { d = Math.max(1.1, t - want / 5); break; }
       }
     }
     // slide in at once when blocked, ease back out

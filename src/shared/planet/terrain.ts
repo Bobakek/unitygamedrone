@@ -118,6 +118,12 @@ function mix(o: RGB, a: RGB, b: RGB, t: number): RGB {
   return o;
 }
 
+/** Shallow and deep water colours (linear RGB) of a planet's sea. */
+export function waterColors(p: PlanetDef): [RGB, RGB] {
+  const P = PALETTES[p.type];
+  return [[...P.shallow], [...P.deep]];
+}
+
 const tmp: RGB = [0, 0, 0];
 /**
  * Biome colour (linear RGB) for a surface point. `h` is the raw (unclamped)

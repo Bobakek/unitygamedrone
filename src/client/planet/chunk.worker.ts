@@ -20,5 +20,5 @@ ctx.onmessage = (e) => {
     return;
   }
   const c = buildChunk(j.planet, j.face, j.level, j.x, j.y);
-  ctx.postMessage({ id: j.id, chunk: c }, [c.heights.buffer, c.positions.buffer, c.normals.buffer, c.colors.buffer, c.water.positions.buffer, c.water.normals.buffer, c.water.colors.buffer]);
+  ctx.postMessage({ id: j.id, chunk: c }, [c.heights.buffer, c.positions.buffer, c.normals.buffer, c.colors.buffer, c.water.positions.buffer, c.water.normals.buffer, c.water.colors.buffer, c.water.seabed.buffer]);
 };

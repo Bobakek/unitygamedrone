@@ -97,6 +97,18 @@ export class Effects {
     this.flashes.push({ sprite, x: p.x, y: p.y, z: p.z, life, max: life, size, grow });
   }
 
+  /** Air bubbles rising along `up` from `p`; they pop at the surface `depth` metres above. */
+  bubbles(p: V3, up: V3, n: number, depth: number) {
+    for (let i = 0; i < n; i++) {
+      const s = 0.9 + Math.random() * 0.8, life = Math.min(4, Math.max(0.1, depth) / s);
+      this.particle({
+        x: p.x + (Math.random() - 0.5) * 0.15, y: p.y + (Math.random() - 0.5) * 0.15, z: p.z + (Math.random() - 0.5) * 0.15,
+        vx: up.x * s + (Math.random() - 0.5) * 0.3, vy: up.y * s + (Math.random() - 0.5) * 0.3, vz: up.z * s + (Math.random() - 0.5) * 0.3,
+        life, max: life * 1.4, size: 0.05 + Math.random() * 0.07, r: 0.55, g: 0.75, b: 0.85, drag: 0,
+      });
+    }
+  }
+
   spark(p: V3, color: THREE.Color, n = 10) {
     this.flash(p, color, 5, 0.18);
     for (let i = 0; i < n; i++) {

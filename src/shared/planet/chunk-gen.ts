@@ -10,8 +10,11 @@ export interface ChunkData {
   positions: Float32Array;
   normals: Float32Array;
   colors: Float32Array;
-  /** Liquid surface (sea / lava / ice sheet) for this chunk; empty when fully dry. */
-  water: { positions: Float32Array; normals: Float32Array; colors: Float32Array };
+  /**
+   * Liquid surface (sea / lava / ice sheet) for this chunk; empty when fully dry. `seabed` is
+   * the terrain height under each vertex (negative under the sea, positive where it meets land).
+   */
+  water: { positions: Float32Array; normals: Float32Array; colors: Float32Array; seabed: Float32Array };
   radius: number;
   /** Terrain height at each grid vertex, (N+1)² row-major (j * (N+1) + i). */
   heights: Float32Array;
@@ -105,7 +108,7 @@ export function buildChunk(p: PlanetDef, face: number, level: number, x: number,
 
   // liquid surface (at radius R) — collected as triangles over any submerged vertex
   const wet = p.sea;
-  const W: number[] = [], WN: number[] = [], WC: number[] = [];
+  const W: number[] = [], WN: number[] = [], WC: number[] = [], WD: number[] = [];
   const wcol: [number, number, number] = [0, 0, 0];
   const wput = (k: number) => {
     const r = R;
@@ -113,6 +116,7 @@ export function buildChunk(p: PlanetDef, face: number, level: number, x: number,
     WN.push(dir[k * 3], dir[k * 3 + 1], dir[k * 3 + 2]);
     surfaceColor(p, dir[k * 3], dir[k * 3 + 1], dir[k * 3 + 2], Math.min(raw[k], -0.01), 0, wcol, true);
     WC.push(wcol[0], wcol[1], wcol[2]);
+    WD.push(raw[k]);
   };
 
   const tri = (a: number, b: number, c: number) => {
@@ -164,7 +168,7 @@ export function buildChunk(p: PlanetDef, face: number, level: number, x: number,
 
   return {
     key: `${face}/${level}/${x}/${y}`, cx, cy, cz, positions: P, normals: Nn, colors: C,
-    water: { positions: new Float32Array(W), normals: new Float32Array(WN), colors: new Float32Array(WC) },
+    water: { positions: new Float32Array(W), normals: new Float32Array(WN), colors: new Float32Array(WC), seabed: new Float32Array(WD) },
     radius: Math.sqrt(maxR2),
     heights: Float32Array.from(raw),
   };

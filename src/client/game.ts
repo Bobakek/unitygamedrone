@@ -6,7 +6,7 @@ import { FWD, qlook, qrot, quat, v3, vcross, vdist, vlen, vnorm, vsub, type Quat
 import {
   aimPitch, BLASTER_LEVEL, CFLAG, EFLAG, IFLAG, KIND, MODE, type EntityInfo, type EntityState, type GameEvent, type PilotInfo, type SelfState, type Shot, type Snapshot, type Welcome,
 } from '../shared/net/protocol.ts';
-import { heightAt, surfaceHeight } from '../shared/planet/terrain.ts';
+import { heightAt, liquidOf, surfaceHeight, waterColors } from '../shared/planet/terrain.ts';
 import { resourceNode } from '../shared/planet/resources.ts';
 import type { SimEnv } from '../shared/sim/env.ts';
 import { climbProgress } from '../shared/sim/character.ts';
@@ -25,6 +25,7 @@ import { LocalConnection } from './net/local.ts';
 import { InterpBuffer, Timeline } from './net/interp.ts';
 import { AtmosphereView, EnvLighting, SkyDome } from './planet/atmosphere.ts';
 import { CloudLayer } from './planet/clouds.ts';
+import { Underwater } from './world/underwater.ts';
 import { PlanetView } from './planet/planet-view.ts';
 import { SurfaceProps } from './planet/props.ts';
 import { WorkerPool } from './planet/worker-pool.ts';
@@ -67,7 +68,7 @@ interface NavItem { name: string; pos: V3; kind: 'planet' | 'station' | 'gate' |
 
 const RESOURCE_NAMES = { ore: 'руда', crystal: 'кристалл', relic: 'реликт' } as const;
 const DUST: Record<string, string> = { terran: '#9a8a6a', ocean: '#b0a080', alien: '#c090d0', desert: '#d9a060', ice: '#e8f4ff', lava: '#5a4a4a', barren: '#9a948e' };
-const tv = new THREE.Vector3(), tv3 = new THREE.Vector3();
+const tv = new THREE.Vector3(), tv2 = new THREE.Vector3(), tv3 = new THREE.Vector3();
 
 /** Splits a body-frame velocity into forward / sideways (right) / vertical parts for animation. */
 function moveParts(v: V3, up: V3, fwd: V3) {
@@ -104,6 +105,13 @@ export class Game {
   private fields: FieldView[] = [];
   private props = new SurfaceProps(this.pool);
   private effects = new Effects();
+  private underwater = new Underwater();
+  /** Camera under the sea (0/1), its depth, daylight at the camera, and the last swim state. */
+  private camUnder = 0;
+  private camDepth = 0;
+  private dayNow = 1;
+  private lastSwim = 0;
+  private bubbleT = 0;
   private sky = new SkyDome();
   private sunLight: THREE.DirectionalLight;
   private hemi: THREE.HemisphereLight;
@@ -173,7 +181,7 @@ export class Game {
     this.ctrl = new Controller(this.input);
     this.pred = new Predictor(() => this.env!, () => this.stats);
     this.r.scene.add(this.world, this.sky.mesh);
-    this.world.add(this.props.group, this.effects.group);
+    this.world.add(this.props.group, this.effects.group, this.underwater.group);
     this.sunLight = new THREE.DirectionalLight('#ffffff', 2.6);
     Object.assign(this.sunLight.shadow.camera, { near: 1, far: 2400 });
     this.sunLight.shadow.bias = -0.0005;
@@ -818,7 +826,7 @@ export class Game {
         cd.x = x - charPl.center.x; cd.y = y - charPl.center.y; cd.z = z - charPl.center.z;
         const l = vlen(cd);
         toBodyDir(R, vnorm(cd, cd), cd);
-        return l - charPl.radius - solid(charPl, cd.x, cd.y, cd.z);
+        return l - charPl.radius - solid(charPl, cd.x, cd.y, cd.z) - fix;
       };
       // pivot: shoulder when upright, above the water for a surface swimmer, the body for a diver
       const pivotH = swim === 1 ? 1.8 : swim === 2 ? 1.0 : 1.5;
@@ -846,9 +854,19 @@ export class Game {
     const propsPlanet = np && this.nearAlt < 2500 ? np : null;
     const camB = propsPlanet ? toBodyPoint(propsPlanet, this.rots[propsPlanet.index], this.origin, v3()) : this.origin;
     this.props.update(propsPlanet ? this.planets[propsPlanet.index] : null, camB, this.harvestedSet(), this.harvestVersion, this.time, { props: true, small: this.r.q.smallProps });
+    // is the camera under the sea?
+    this.camUnder = 0;
+    this.camDepth = 0;
+    if (np && liquidOf(np) === 'water') {
+      const dep = np.radius - vdist(this.origin, np.center);
+      const bd = toBodyDir(this.rots[np.index], vnorm(v3(), vsub(v3(), this.origin, np.center)), v3());
+      if (dep > 0 && heightAt(np, bd.x, bd.y, bd.z) < 0) { this.camUnder = 1; this.camDepth = dep; }
+    }
     this.planets.forEach((pv, i) => {
       const p = pv.def;
       const R = this.rots[i];
+      pv.sun = tv2.set(toSun.x, toSun.y, toSun.z);
+      pv.day = np === p ? this.dayNow : 1;
       this.rotsT.set(R.x, R.y, R.z, R.w);
       this.place(pv.group, p.center);
       pv.group.quaternion.copy(this.rotsT);
@@ -865,6 +883,7 @@ export class Game {
       const cl = this.clouds[i];
       this.place(cl.group, p.center);
       cl.update(dt, 1, this.rotsT, sd);
+      cl.group.visible = !this.camUnder;
       // ruins and outposts ride the planet group; built lazily on approach
       const near = vdist(this.origin, p.center) < p.radius * 3;
       if (near && !this.siteViews[i]) this.siteViews[i] = planetSites(p).map((s) => { const v = new SiteView(p, s); pv.group.add(v.group); return v; });
@@ -905,6 +924,15 @@ export class Game {
         ...mv, ground: !!c.ground, jet: !c.ground && !c.climbMode && this.input.down('Space') && c.fuel > 0.01, look: this.ctrl.footPitch, turn,
         aim: this.aimK > 0.5, aimPitch: this.ctrl.footPitch, climb: c.climbMode ? { mode: c.climbMode, t: climbProgress(c) } : null, scramble: !!c.scramble,
       });
+      // splash in and out of deep water; a diver breathes out bubbles
+      if (!!c.swim !== !!this.lastSwim) this.sfx.splash(Math.min(1, 0.4 + Math.abs(mv.vUp) * 0.2));
+      this.lastSwim = c.swim;
+      if (c.swim === 2 && (this.bubbleT -= dt) <= 0) {
+        this.bubbleT = 1.1 + Math.random() * 0.9;
+        const hp = v3(this.charPos.x + up.x * 1.1 + this.charFwd.x * 0.5, this.charPos.y + up.y * 1.1 + this.charFwd.y * 0.5, this.charPos.z + up.z * 1.1 + this.charFwd.z * 0.5);
+        this.effects.bubbles(hp, up, 4 + Math.floor(Math.random() * 4), charPl.radius - vdist(hp, charPl.center));
+        this.sfx.bubbles();
+      }
     }
     if (mode === MODE.SHIP) this.sfx.engineLevel(this.ctrl.throttle, this.input.down('ShiftLeft'), isCruising(ship));
     else this.sfx.silenceEngine();
@@ -980,6 +1008,7 @@ export class Game {
       v.update(dt, this.time, p);
     }
     this.effects.setViewport(window.innerHeight, cam.fov);
+    this.underwater.setViewport(window.innerHeight, cam.fov);
     this.effects.update(dt, this.origin);
 
     this.updateEnvironment(toSun, onFoot ? this.charPos : this.shipPos);
@@ -1064,6 +1093,34 @@ export class Game {
     this.fill.position.copy(back).multiplyScalar(100);
     this.fill.intensity = 0.6 * (1 - inside * 0.6);
     this.sunLight.castShadow = q.shadows && this.nearAlt < 2000;
+    this.dayNow = day;
+
+    // under the sea: short turquoise visibility, dimmer and bluer light with depth
+    const wet = this.camUnder && np ? np : null;
+    this.r.setUnderwater(wet ? 1 : 0, this.time);
+    this.sfx.underwater(!!wet);
+    if (wet) {
+      const [sh, dp] = waterColors(wet);
+      const dk = THREE.MathUtils.smoothstep(this.camDepth, 0, 45);
+      const light = (0.1 + 0.9 * day) * (0.45 + 0.55 * Math.exp(-this.camDepth * 0.025));
+      const wc = new THREE.Color(sh[0], sh[1], sh[2]).lerp(new THREE.Color(dp[0], dp[1], dp[2]), 0.35 + 0.5 * dk).multiplyScalar(light * 0.75);
+      const clear = wet.type === 'ocean' ? 58 : wet.type === 'alien' ? 40 : 48;
+      fog.color.copy(wc);
+      fog.near = 0.5;
+      fog.far = clear * (1 - 0.45 * dk);
+      u.zen.value.copy(wc); u.hor.value.copy(wc); u.ground.value.copy(wc);
+      u.sunC.value.setRGB(0, 0, 0);
+      u.alpha.value = 1;
+      u.day.value = 1;
+      this.r.scene.backgroundIntensity = 0;
+      this.hemi.color.copy(wc).multiplyScalar(2.2);
+      this.hemi.groundColor.copy(wc).multiplyScalar(0.5);
+      this.sunLight.intensity *= Math.exp(-this.camDepth * 0.03);
+      this.sunLight.color.lerp(new THREE.Color(sh[0], sh[1], sh[2]).multiplyScalar(1.6), 0.45);
+      this.r.scene.environmentIntensity *= 0.5;
+      const cup = new THREE.Vector3(this.origin.x - wet.center.x, this.origin.y - wet.center.y, this.origin.z - wet.center.z);
+      this.underwater.update(1 / 60, true, cup, cup.clone().normalize(), this.camDepth, new THREE.Vector3(toSun.x, toSun.y, toSun.z), day, wc.clone().multiplyScalar(1 / Math.max(0.05, light * 0.75)), this.time);
+    } else this.underwater.update(0, false, new THREE.Vector3(), new THREE.Vector3(0, 1, 0), 0, new THREE.Vector3(), day, new THREE.Color(), this.time);
   }
 
   private project(p: V3): { x: number; y: number; behind: boolean } {

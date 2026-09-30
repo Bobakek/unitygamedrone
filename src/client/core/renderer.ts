@@ -8,16 +8,19 @@ import type { Quality } from './quality.ts';
 
 /** Gentle colour grade in linear HDR: contrast, saturation, warm/cool split and vignette. */
 const GradeShader = {
-  uniforms: { tDiffuse: { value: null }, vignette: { value: 0.32 }, saturation: { value: 1.1 }, contrast: { value: 1.05 } },
+  uniforms: { tDiffuse: { value: null }, vignette: { value: 0.32 }, saturation: { value: 1.1 }, contrast: { value: 1.05 }, water: { value: 0 }, time: { value: 0 } },
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-  fragmentShader: `uniform sampler2D tDiffuse; uniform float vignette; uniform float saturation; uniform float contrast; varying vec2 vUv;
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float vignette; uniform float saturation; uniform float contrast; uniform float water; uniform float time; varying vec2 vUv;
     void main(){
-      vec4 c = texture2D(tDiffuse, vUv);
+      // under water the image wavers slightly
+      vec2 uv = vUv + water * 0.0022 * vec2(sin(vUv.y * 38.0 + time * 1.9), cos(vUv.x * 29.0 + time * 1.6));
+      vec4 c = texture2D(tDiffuse, uv);
+      c.rgb *= mix(vec3(1.0), vec3(0.82, 0.97, 1.04), water);
       float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
       c.rgb = mix(vec3(l), c.rgb, saturation);
       c.rgb = pow(max(c.rgb, 0.0), vec3(contrast)) * mix(vec3(1.0, 0.99, 1.03), vec3(1.03, 1.0, 0.96), smoothstep(0.0, 0.6, l));
       vec2 d = vUv - 0.5;
-      c.rgb *= 1.0 - vignette * smoothstep(0.35, 0.85, length(d * vec2(1.25, 1.0)));
+      c.rgb *= 1.0 - (vignette + water * 0.25) * smoothstep(0.35 - water * 0.1, 0.85, length(d * vec2(1.25, 1.0)));
       gl_FragColor = c;
     }`,
 };
@@ -28,6 +31,7 @@ export class Renderer {
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
   private composer: EffectComposer | null = null;
+  private grade: ShaderPass | null = null;
   q: Quality;
 
   constructor(canvas: HTMLCanvasElement, q: Quality) {
@@ -57,7 +61,8 @@ export class Renderer {
     this.composer = new EffectComposer(this.gl, rt);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     if (q.bloom) this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(256, 256), 0.45, 0.5, 0.88));
-    if (q.grade) this.composer.addPass(new ShaderPass(GradeShader));
+    this.grade = q.grade ? new ShaderPass(GradeShader) : null;
+    if (this.grade) this.composer.addPass(this.grade);
     this.composer.addPass(new OutputPass());
     if (shadowsChanged) {
       this.scene.traverse((o) => {
@@ -76,6 +81,13 @@ export class Renderer {
     this.composer!.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+  }
+
+  /** Underwater look (0..1) for the grade pass. */
+  setUnderwater(k: number, time: number) {
+    if (!this.grade) return;
+    this.grade.uniforms.water.value = k;
+    this.grade.uniforms.time.value = time;
   }
 
   render() {

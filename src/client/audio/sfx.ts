@@ -5,6 +5,10 @@ export class Sfx {
   private noise: AudioBuffer | null = null;
   private volume = 0.6;
   private engine: { osc: OscillatorNode; osc2: OscillatorNode; gain: GainNode; filter: BiquadFilterNode } | null = null;
+  /** Muffles everything under water; `hum` is the deep underwater ambience. */
+  private muffle: BiquadFilterNode | null = null;
+  private hum: GainNode | null = null;
+  private wet = false;
 
   constructor() {
     const start = () => this.init();
@@ -22,7 +26,11 @@ export class Sfx {
     const c = this.ctx;
     this.master = c.createGain();
     this.master.gain.value = this.volume;
-    this.master.connect(c.destination);
+    this.muffle = c.createBiquadFilter();
+    this.muffle.type = 'lowpass';
+    this.muffle.frequency.value = 20000;
+    this.master.connect(this.muffle);
+    this.muffle.connect(c.destination);
     this.noise = c.createBuffer(1, c.sampleRate, c.sampleRate);
     const d = this.noise.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
@@ -34,7 +42,30 @@ export class Sfx {
     osc.connect(filter); osc2.connect(filter); filter.connect(gain); gain.connect(this.master);
     osc.start(); osc2.start();
     this.engine = { osc, osc2, gain, filter };
+    // underwater ambience: slowly swelling low noise
+    const hs = c.createBufferSource(), hf = c.createBiquadFilter(), hg = c.createGain(), lfo = c.createOscillator(), lg = c.createGain();
+    hs.buffer = this.noise; hs.loop = true;
+    hf.type = 'lowpass'; hf.frequency.value = 180;
+    hg.gain.value = 0;
+    lfo.frequency.value = 0.13; lg.gain.value = 60;
+    lfo.connect(lg); lg.connect(hf.frequency);
+    hs.connect(hf); hf.connect(hg); hg.connect(this.master);
+    hs.start(); lfo.start();
+    this.hum = hg;
   }
+
+  /** Under water: muffled world and a low ambience. */
+  underwater(on: boolean) {
+    if (on === this.wet || !this.ctx || !this.muffle || !this.hum) return;
+    this.wet = on;
+    const t = this.ctx.currentTime;
+    this.muffle.frequency.setTargetAtTime(on ? 650 : 20000, t, 0.08);
+    this.hum.gain.setTargetAtTime(on ? 0.35 : 0, t, 0.2);
+  }
+
+  /** Entering or leaving the water. */
+  splash(k = 1) { this.burst(0.35, 900, 0.14 * k, 'bandpass', 300); this.burst(0.2, 3200, 0.05 * k, 'highpass'); }
+  bubbles() { this.burst(0.12, 700 + Math.random() * 500, 0.03, 'bandpass', 1800); }
 
   setVolume(v: number) {
     this.volume = v;

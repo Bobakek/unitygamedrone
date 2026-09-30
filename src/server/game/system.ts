@@ -788,10 +788,15 @@ export class SystemInstance implements NpcWorld {
         this.syncWorld(ship);
         let pos = vscale(v3(), d, pl.radius + footHeight(pl, d.x, d.y, d.z) + 0.05), f = t;
         if (dive) {
-          let m = 60;
-          while (m < 600 && h(at(d, t, m)) > -14) m += 10;
-          const P = at(d, t, m);
-          pos = vscale(v3(), P, pl.radius - 8);
+          // the deepest water within 600 m straight out to sea
+          let bm = 25, bh = 0;
+          for (let m = 25; m <= 600 && bh > -16; m += 10) {
+            const hm = h(at(d, t, m));
+            if (hm > 0) break;
+            if (hm < bh) { bh = hm; bm = m; }
+          }
+          const P = at(d, t, bm);
+          pos = vscale(v3(), P, pl.radius - Math.min(8, -bh * 0.55));
           f = vnorm(v3(), v3(t.x - P.x * vdot(t, P), t.y - P.y * vdot(t, P), t.z - P.z * vdot(t, P)));
         } else f = vnorm(v3(), v3(t.x - d.x * vdot(t, d), t.y - d.y * vdot(t, d), t.z - d.z * vdot(t, d)));
         const c = this.putOnFoot(s, pl.index, pos, f);
