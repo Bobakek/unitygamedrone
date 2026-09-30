@@ -26,6 +26,7 @@ import { InterpBuffer, Timeline } from './net/interp.ts';
 import { AtmosphereView, EnvLighting, SkyDome } from './planet/atmosphere.ts';
 import { CloudLayer } from './planet/clouds.ts';
 import { Underwater } from './world/underwater.ts';
+import { SeaLife } from './planet/sealife.ts';
 import { PlanetView } from './planet/planet-view.ts';
 import { SurfaceProps } from './planet/props.ts';
 import { WorkerPool } from './planet/worker-pool.ts';
@@ -106,6 +107,7 @@ export class Game {
   private props = new SurfaceProps(this.pool);
   private effects = new Effects();
   private underwater = new Underwater();
+  private sealife = new SeaLife();
   /** Camera under the sea (0/1), its depth, daylight at the camera, and the last swim state. */
   private camUnder = 0;
   private camDepth = 0;
@@ -181,7 +183,7 @@ export class Game {
     this.ctrl = new Controller(this.input);
     this.pred = new Predictor(() => this.env!, () => this.stats);
     this.r.scene.add(this.world, this.sky.mesh);
-    this.world.add(this.props.group, this.effects.group, this.underwater.group);
+    this.world.add(this.props.group, this.effects.group, this.underwater.group, this.sealife.group);
     this.sunLight = new THREE.DirectionalLight('#ffffff', 2.6);
     Object.assign(this.sunLight.shadow.camera, { near: 1, far: 2400 });
     this.sunLight.shadow.bias = -0.0005;
@@ -894,6 +896,10 @@ export class Game {
     this.gates.forEach((g) => { this.place(g.group, g.def.pos); g.update(dt); });
     this.fields.forEach((f) => this.place(f.group, f.def.center));
     if (propsPlanet) this.props.sync(this.origin, this.rots[propsPlanet.index]);
+    // fish scatter from a swimmer
+    const swimmer = onFoot && charPl === propsPlanet && (this.pred.char?.swim ?? 0) > 0 ? this.charPosB : null;
+    this.sealife.update(propsPlanet, camB, swimmer, this.time, dt, this.dayNow);
+    if (propsPlanet) this.sealife.sync(this.origin, this.rots[propsPlanet.index]);
 
     // own ship / astronaut
     const ms = this.myShip!;
@@ -1102,8 +1108,8 @@ export class Game {
     if (wet) {
       const [sh, dp] = waterColors(wet);
       const dk = THREE.MathUtils.smoothstep(this.camDepth, 0, 45);
-      const light = (0.1 + 0.9 * day) * (0.45 + 0.55 * Math.exp(-this.camDepth * 0.025));
-      const wc = new THREE.Color(sh[0], sh[1], sh[2]).lerp(new THREE.Color(dp[0], dp[1], dp[2]), 0.35 + 0.5 * dk).multiplyScalar(light * 0.75);
+      const light = (0.1 + 0.9 * day) * (0.55 + 0.45 * Math.exp(-this.camDepth * 0.02));
+      const wc = new THREE.Color(sh[0], sh[1], sh[2]).lerp(new THREE.Color(dp[0], dp[1], dp[2]), 0.25 + 0.5 * dk).multiplyScalar(light * 0.85);
       const clear = wet.type === 'ocean' ? 58 : wet.type === 'alien' ? 40 : 48;
       fog.color.copy(wc);
       fog.near = 0.5;
@@ -1113,13 +1119,13 @@ export class Game {
       u.alpha.value = 1;
       u.day.value = 1;
       this.r.scene.backgroundIntensity = 0;
-      this.hemi.color.copy(wc).multiplyScalar(2.2);
+      this.hemi.color.copy(wc).multiplyScalar(2.8);
       this.hemi.groundColor.copy(wc).multiplyScalar(0.5);
       this.sunLight.intensity *= Math.exp(-this.camDepth * 0.03);
       this.sunLight.color.lerp(new THREE.Color(sh[0], sh[1], sh[2]).multiplyScalar(1.6), 0.45);
       this.r.scene.environmentIntensity *= 0.5;
       const cup = new THREE.Vector3(this.origin.x - wet.center.x, this.origin.y - wet.center.y, this.origin.z - wet.center.z);
-      this.underwater.update(1 / 60, true, cup, cup.clone().normalize(), this.camDepth, new THREE.Vector3(toSun.x, toSun.y, toSun.z), day, wc.clone().multiplyScalar(1 / Math.max(0.05, light * 0.75)), this.time);
+      this.underwater.update(1 / 60, true, cup, cup.clone().normalize(), this.camDepth, new THREE.Vector3(toSun.x, toSun.y, toSun.z), day, wc.clone().multiplyScalar(1 / Math.max(0.05, light * 0.85)), this.time);
     } else this.underwater.update(0, false, new THREE.Vector3(), new THREE.Vector3(0, 1, 0), 0, new THREE.Vector3(), day, new THREE.Color(), this.time);
   }
 

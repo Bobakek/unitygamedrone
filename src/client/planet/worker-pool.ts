@@ -1,10 +1,10 @@
 import type { PlanetDef } from '../../shared/galaxy/system-gen.ts';
 import type { V3 } from '../../shared/math/vec.ts';
 import { buildChunk, type ChunkData } from '../../shared/planet/chunk-gen.ts';
-import { placeProps } from '../../shared/planet/prop-rules.ts';
+import { placeProps, type PropTierName } from '../../shared/planet/prop-rules.ts';
 
 type ChunkJob = { kind: 'chunk'; planet: PlanetDef; face: number; level: number; x: number; y: number; done: (c: ChunkData) => void };
-type PropsJob = { kind: 'props'; planet: PlanetDef; dir: V3; tier: 'big' | 'small'; done: (d: Float32Array) => void };
+type PropsJob = { kind: 'props'; planet: PlanetDef; dir: V3; tier: PropTierName; done: (d: Float32Array) => void };
 type Job = ChunkJob | PropsJob;
 
 const run = (j: Job) => {
@@ -85,7 +85,7 @@ export class WorkerPool {
     this.submit({ kind: 'chunk', planet, face, level, x, y, done }, { kind: 'chunk', planet, face, level, x, y });
   }
 
-  requestProps(planet: PlanetDef, dir: V3, tier: 'big' | 'small', done: (d: Float32Array) => void) {
+  requestProps(planet: PlanetDef, dir: V3, tier: PropTierName, done: (d: Float32Array) => void) {
     this.submit({ kind: 'props', planet, dir, tier, done }, { kind: 'props', planet, dir, tier });
   }
 }

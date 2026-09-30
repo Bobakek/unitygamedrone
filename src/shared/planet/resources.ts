@@ -79,9 +79,10 @@ export interface Scattered { id: number; dir: V3; h: number; r: [number, number,
 
 /**
  * Deterministic scatter of decoration points (client side). `grid` cells per
- * face edge, `density` = chance that a cell holds a point. Submerged points are skipped.
+ * face edge, `density` = chance that a cell holds a point. Submerged points are
+ * skipped — or, with `under`, only submerged points are kept.
  */
-export function scatter(p: PlanetDef, d: V3, radiusM: number, grid: number, density: number, salt: number): Scattered[] {
+export function scatter(p: PlanetDef, d: V3, radiusM: number, grid: number, density: number, salt: number, under = false): Scattered[] {
   const out: Scattered[] = [];
   const cosMax = Math.cos(radiusM / p.radius);
   const seen = new Set<number>();
@@ -95,7 +96,7 @@ export function scatter(p: PlanetDef, d: V3, radiusM: number, grid: number, dens
     const dir = gnomonic(face, -1 + (i + hashFloat(hh, 1)) * cell, -1 + (j + hashFloat(hh, 2)) * cell, v3());
     if (dir.x * d.x + dir.y * d.y + dir.z * d.z < cosMax) return;
     const h = heightAt(p, dir.x, dir.y, dir.z);
-    if (p.sea && h < 0.6) return;
+    if (under ? !p.sea || h >= 0 : p.sea && h < 0.6) return;
     out.push({ id, dir, h, r: [hashFloat(hh, 3), hashFloat(hh, 4), hashFloat(hh, 5), hashFloat(hh, 6)] });
   });
   return out;

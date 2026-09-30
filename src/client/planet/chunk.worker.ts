@@ -1,11 +1,11 @@
 import { buildChunk } from '../../shared/planet/chunk-gen.ts';
-import { placeProps } from '../../shared/planet/prop-rules.ts';
+import { placeProps, type PropTierName } from '../../shared/planet/prop-rules.ts';
 import type { PlanetDef } from '../../shared/galaxy/system-gen.ts';
 import type { V3 } from '../../shared/math/vec.ts';
 
 type Job =
   | { id: number; kind: 'chunk'; planet: PlanetDef; face: number; level: number; x: number; y: number }
-  | { id: number; kind: 'props'; planet: PlanetDef; dir: V3; tier: 'big' | 'small' };
+  | { id: number; kind: 'props'; planet: PlanetDef; dir: V3; tier: PropTierName };
 
 const ctx = self as unknown as {
   onmessage: ((e: MessageEvent<Job>) => void) | null;

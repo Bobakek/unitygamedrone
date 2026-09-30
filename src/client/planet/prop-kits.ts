@@ -16,7 +16,7 @@ export interface KindGeo {
   shadow: boolean;
   ice: boolean;
 }
-export interface KitGeometries { big: KindGeo[]; small: KindGeo[] }
+export interface KitGeometries { big: KindGeo[]; small: KindGeo[]; sea: KindGeo[] }
 
 function finish(p: Parts, sway: number): { solid: THREE.BufferGeometry; glow: THREE.BufferGeometry | null } {
   const solid = mergeGeometries(p.hull)!;
@@ -199,6 +199,73 @@ const G = {
     }
     return finish(p, 0);
   },
+  // ---- sea bed
+  kelp: (c1: string, c2: string) => () => {
+    const p = newParts();
+    for (let s = 0; s < 4; s++) {
+      const a = s * 1.7, r = s ? 0.35 : 0, h = 3.2 + ((s * 5) % 3) * 1.1;
+      const x = Math.cos(a) * r, z = Math.sin(a) * r;
+      add(p, new THREE.CylinderGeometry(0.03, 0.05, h, 4), c1, false, [x, h / 2, z]);
+      for (let k = 0; k < 6; k++) {
+        const y = h * (0.2 + k * 0.13), side = k % 2 ? 1 : -1;
+        add(p, new THREE.BoxGeometry(0.02, 0.75, 0.24), k % 2 ? c1 : c2, false, [x + side * 0.13, y, z], [0, a, side * 0.55]);
+      }
+      add(p, new THREE.SphereGeometry(0.07, 4, 3), c2, false, [x, h * 0.55, z + 0.05]);
+    }
+    return finish(p, 0.9);
+  },
+  branchCoral: (c: string, tip: string) => () => {
+    const p = newParts();
+    add(p, new THREE.CylinderGeometry(0.07, 0.12, 0.5, 5), c, false, [0, 0.25, 0]);
+    for (let i = 0; i < 7; i++) {
+      const a = i * 0.9, t = 0.35 + (i % 3) * 0.12, len = 0.5 + (i % 4) * 0.12;
+      const x = Math.cos(a) * 0.12, z = Math.sin(a) * 0.12, y = 0.35 + (i % 3) * 0.1;
+      add(p, new THREE.CylinderGeometry(0.035, 0.06, len, 4), c, false, [x + Math.cos(a) * len * 0.3, y + len * 0.4, z + Math.sin(a) * len * 0.3], [Math.sin(a) * t * 1.5, 0, -Math.cos(a) * t * 1.5]);
+      add(p, new THREE.SphereGeometry(0.05, 4, 3), tip, false, [x + Math.cos(a) * len * 0.62, y + len * 0.85, z + Math.sin(a) * len * 0.62]);
+    }
+    return finish(p, 0.04);
+  },
+  brainCoral: (c: string, c2: string) => () => {
+    const p = newParts();
+    add(p, new THREE.IcosahedronGeometry(0.62, 1), c, false, [0, 0.18, 0], [0, 0, 0], [1, 0.6, 1]);
+    add(p, new THREE.IcosahedronGeometry(0.4, 1), c2, false, [0.45, 0.12, 0.25], [0.4, 0, 0], [1, 0.55, 1]);
+    add(p, new THREE.IcosahedronGeometry(0.28, 0), c2, false, [-0.45, 0.08, -0.3], [0, 0.6, 0], [1, 0.6, 1]);
+    return finish(p, 0);
+  },
+  tubeCoral: (c: string, tip: string) => () => {
+    const p = newParts();
+    for (let i = 0; i < 8; i++) {
+      const a = i * 2.4, r = i ? 0.18 + (i % 3) * 0.1 : 0, h = 0.45 + ((i * 7) % 5) * 0.2;
+      add(p, new THREE.CylinderGeometry(0.07, 0.09, h, 6, 1, true), c, false, [Math.cos(a) * r, h / 2, Math.sin(a) * r], [Math.sin(a) * 0.15, 0, -Math.cos(a) * 0.15]);
+      add(p, new THREE.TorusGeometry(0.075, 0.025, 3, 6), tip, true, [Math.cos(a) * r * 1.1, h, Math.sin(a) * r * 1.1], [Math.PI / 2, 0, 0], undefined, 1.8);
+    }
+    return finish(p, 0.05);
+  },
+  seaRock: (c: string, moss: string) => () => {
+    const p = newParts();
+    add(p, rockGeo(2), c, false, [0, 0.35, 0], [0, 0, 0], [1.2, 0.9, 1.1]);
+    add(p, rockGeo(3), moss, false, [0.1, 0.72, 0], [0, 0.8, 0], [0.95, 0.25, 0.85]);
+    return finish(p, 0);
+  },
+  anemone: (c: string, glow: boolean) => () => {
+    const p = newParts();
+    add(p, new THREE.CylinderGeometry(0.16, 0.22, 0.3, 7), c, false, [0, 0.15, 0]);
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      add(p, new THREE.ConeGeometry(0.03, 0.42, 3), c, glow, [Math.cos(a) * 0.14, 0.45, Math.sin(a) * 0.14], [Math.sin(a) * 0.6, 0, -Math.cos(a) * 0.6], undefined, 1.6);
+    }
+    return finish(p, 0.18);
+  },
+  starShells: (star: string, shell: string) => () => {
+    const p = newParts();
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2;
+      add(p, new THREE.ConeGeometry(0.06, 0.32, 3), star, false, [Math.cos(a) * 0.14, 0.03, Math.sin(a) * 0.14], [Math.PI / 2, 0, -a + Math.PI / 2], [1, 1, 0.45]);
+    }
+    add(p, new THREE.ConeGeometry(0.09, 0.2, 6), shell, false, [0.5, 0.06, 0.2], [0.4, 0, 1.3]);
+    add(p, new THREE.SphereGeometry(0.1, 5, 3, 0, Math.PI * 2, 0, Math.PI / 2), shell, false, [-0.4, 0, -0.3], [0, 0, 0], [1, 0.5, 1.3]);
+    return finish(p, 0);
+  },
   ember: () => {
     const p = newParts();
     add(p, rockGeo(3), '#221c1c', false, [0, 0.08, 0], [0, 0, 0], [0.3, 0.2, 0.3]);
@@ -218,31 +285,37 @@ export function kitGeometries(type: PlanetType): KitGeometries {
       kit = {
         big: [kg(G.pine(['#2f6b3a', '#3a7a42', '#478a4a'])), kg(G.broadleaf(['#4f8f3a', '#5f9f45', '#3f7f35'])), kg(G.bush(['#4f8a3a', '#5a9a44', '#3f7a35'])), kg(G.boulder('#8c8279', 0))],
         small: [kg(G.grass('#6aa84f', '#86c05a'), false), kg(G.flower('#e8485a'), false), kg(G.flower('#fff4d0'), false), kg(G.pebble('#8c8279'), false)],
+        sea: [kg(G.kelp('#4a6a2a', '#6a8a3a'), false), kg(G.branchCoral('#e86a5a', '#ffd0b0'), false), kg(G.brainCoral('#d8a06a', '#b8804a'), false),
+          kg(G.seaRock('#6a7068', '#4a7a4a'), false), kg(G.anemone('#ff8a5a', false), false), kg(G.starShells('#ff7040', '#f0e0c8'), false)],
       };
       break;
     case 'ocean':
       kit = {
         big: [kg(G.palm), kg(G.broadleaf(['#3f9a55', '#4faa5a', '#358a48'])), kg(G.bush(['#3f9a55', '#4faa5a', '#358a48'])), kg(G.boulder('#9a8f80', 1))],
         small: [kg(G.grass('#6cc070', '#8ad07a'), false), kg(G.flower('#ffb84a'), false), kg(G.pebble('#b0a080'), false)],
+        sea: [kg(G.kelp('#3a7a4a', '#5a9a4a'), false), kg(G.branchCoral('#ff6a9a', '#ffe0f0'), false), kg(G.brainCoral('#b0d070', '#8ab050'), false),
+          kg(G.seaRock('#8a8278', '#4a8a6a'), false), kg(G.anemone('#ffd04a', false), false), kg(G.starShells('#ff5a3a', '#ffe8d0'), false)],
       };
       break;
     case 'alien':
       kit = {
         big: [kg(G.mushroom('#ff7ab8', '#ffe0f0')), kg(G.mushroom('#2ee6c9', '#e0fff8')), kg(G.bulb), kg(G.coral)],
         small: [kg(G.sprout('#7affe0'), false), kg(G.sprout('#ffb0f0'), false), kg(G.grass('#b070e0', '#8a4fc0'), false)],
+        sea: [kg(G.kelp('#8a4ac0', '#b070e0'), false), kg(G.tubeCoral('#2e8a9a', '#8affe8'), false), kg(G.brainCoral('#ff7ab8', '#e05a9a'), false),
+          kg(G.seaRock('#5e3b8c', '#3de0c8'), false), kg(G.anemone('#ff5ad0', true), false), kg(G.starShells('#7affe0', '#f0d0ff'), false)],
       };
       break;
     case 'desert':
-      kit = { big: [kg(G.cactus), kg(G.boulder('#a85f38', 2))], small: [kg(G.shrub, false), kg(G.pebble('#a86a40'), false)] };
+      kit = { big: [kg(G.cactus), kg(G.boulder('#a85f38', 2))], small: [kg(G.shrub, false), kg(G.pebble('#a86a40'), false)], sea: [] };
       break;
     case 'ice':
-      kit = { big: [kg(G.iceSpire, true, true), kg(G.snowRock)], small: [kg(G.shard, false, true), kg(G.mound, false)] };
+      kit = { big: [kg(G.iceSpire, true, true), kg(G.snowRock)], small: [kg(G.shard, false, true), kg(G.mound, false)], sea: [] };
       break;
     case 'lava':
-      kit = { big: [kg(G.basalt), kg(G.glowRock)], small: [kg(G.ember, false), kg(G.pebble('#2e2626'), false)] };
+      kit = { big: [kg(G.basalt), kg(G.glowRock)], small: [kg(G.ember, false), kg(G.pebble('#2e2626'), false)], sea: [] };
       break;
     default:
-      kit = { big: [kg(G.boulder('#8e8a86', 3))], small: [kg(G.pebble('#9a948e'), false)] };
+      kit = { big: [kg(G.boulder('#8e8a86', 3))], small: [kg(G.pebble('#9a948e'), false)], sea: [] };
   }
   cache.set(type, kit);
   return kit;

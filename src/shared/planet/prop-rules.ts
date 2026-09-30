@@ -22,28 +22,39 @@ export interface PropRule {
   solid: number;
   /** Height of the obstacle above its base (× scale); Infinity = too tall to climb over. */
   top: number;
+  /** Sea-bed props: water depth band (metres) they grow in. */
+  depth?: [number, number];
 }
-export interface TierRule { density: number; grid: number; radius: number; salt: number; kinds: PropRule[] }
-export interface PlanetPropRules { big: TierRule; small: TierRule }
+/** `under`: the tier lives on the sea bed (land tiers stay out of the water). */
+export interface TierRule { density: number; grid: number; radius: number; salt: number; kinds: PropRule[]; under?: boolean }
+export interface PlanetPropRules { big: TierRule; small: TierRule; sea?: TierRule }
+export type PropTierName = 'big' | 'small' | 'sea';
 
 const tree = (weight: number, scale: [number, number], hMax = 0.5, solid = 0.4): PropRule => ({ weight, scale, slopeMax: 0.28, hMin: 0, hMax, sink: 0.25, solid, top: Infinity });
 const any = (weight: number, scale: [number, number], solid = 1.1, top = 1.3): PropRule => ({ weight, scale, slopeMax: 1, hMin: -1, hMax: 2, sink: 0.2, solid, top });
 const small = (weight: number, scale: [number, number]): PropRule => ({ weight, scale, slopeMax: 0.45, hMin: -1, hMax: 0.7, sink: 0.04, solid: 0, top: 0 });
 const big = (density: number, kinds: PropRule[]): TierRule => ({ density, grid: 420, radius: 620, salt: 0x3c, kinds });
 const sm = (density: number, kinds: PropRule[]): TierRule => ({ density, grid: 1700, radius: 110, salt: 0x5d, kinds });
+/** Sea-bed life between `depth[0]` and `depth[1]` metres down. */
+const bed = (weight: number, scale: [number, number], depth: [number, number]): PropRule => ({ weight, scale, slopeMax: 0.5, hMin: -1, hMax: 0, sink: 0.1, solid: 0, top: 0, depth });
+const sea = (density: number, kinds: PropRule[]): TierRule => ({ density, grid: 1500, radius: 150, salt: 0x7e, kinds, under: true });
 
 export const PROP_RULES: Record<PlanetType, PlanetPropRules> = {
   terran: {
     big: big(0.34, [tree(0.4, [0.7, 1.5]), tree(0.32, [0.7, 1.3]), tree(0.13, [0.6, 1.3], 0.5, 0), any(0.15, [0.6, 2.2])]),
     small: sm(0.5, [small(0.68, [0.7, 1.4]), small(0.1, [0.8, 1.3]), small(0.1, [0.8, 1.3]), small(0.12, [0.6, 1.8])]),
+    // kelp, branching coral, brain coral, sea rock, anemone, shells and starfish
+    sea: sea(0.55, [bed(0.3, [0.8, 1.6], [2.5, 40]), bed(0.18, [0.6, 1.4], [0.8, 18]), bed(0.14, [0.6, 1.5], [0.8, 22]), bed(0.14, [0.6, 1.8], [0.6, 60]), bed(0.12, [0.7, 1.3], [0.8, 25]), bed(0.12, [0.7, 1.4], [0.5, 12])]),
   },
   ocean: {
     big: big(0.3, [tree(0.42, [0.8, 1.4], 0.14, 0.35), tree(0.28, [0.7, 1.3]), tree(0.15, [0.6, 1.2], 0.5, 0), any(0.15, [0.6, 2.0])]),
     small: sm(0.45, [small(0.72, [0.7, 1.4]), small(0.13, [0.8, 1.3]), small(0.15, [0.6, 1.8])]),
+    sea: sea(0.65, [bed(0.24, [0.8, 1.7], [2.5, 40]), bed(0.22, [0.6, 1.5], [0.8, 20]), bed(0.16, [0.6, 1.6], [0.8, 25]), bed(0.1, [0.6, 1.8], [0.6, 60]), bed(0.14, [0.7, 1.3], [0.8, 25]), bed(0.14, [0.7, 1.4], [0.5, 12])]),
   },
   alien: {
     big: big(0.3, [tree(0.3, [0.7, 1.6], 0.5, 0.5), tree(0.3, [0.7, 1.6], 0.5, 0.5), tree(0.2, [0.8, 1.5], 0.5, 0), any(0.2, [0.7, 1.6], 0.6, 2.2)]),
     small: sm(0.42, [small(0.45, [0.7, 1.5]), small(0.2, [0.7, 1.5]), small(0.35, [0.7, 1.4])]),
+    sea: sea(0.6, [bed(0.26, [0.8, 1.7], [2.5, 40]), bed(0.2, [0.6, 1.5], [0.8, 20]), bed(0.14, [0.6, 1.6], [0.8, 25]), bed(0.12, [0.6, 1.8], [0.6, 60]), bed(0.16, [0.7, 1.3], [0.8, 25]), bed(0.12, [0.7, 1.4], [0.5, 12])]),
   },
   desert: {
     big: big(0.1, [tree(0.45, [0.7, 1.4], 0.9, 0.45), any(0.55, [0.8, 2.6])]),
@@ -90,8 +101,14 @@ function placeOne(p: PlanetDef, rule: TierRule, total: number, pt: Scattered): P
   let pick = pt.r[0] * total, ki = 0;
   while (ki < rule.kinds.length - 1 && pick > rule.kinds[ki].weight) { pick -= rule.kinds[ki].weight; ki++; }
   const k = rule.kinds[ki];
-  const hf = pt.h / p.maxHeight;
-  if (hf < k.hMin || hf > k.hMax) return null;
+  if (rule.under) {
+    if (!k.depth || -pt.h < k.depth[0] || -pt.h > k.depth[1]) return null;
+  } else {
+    const hf = pt.h / p.maxHeight;
+    if (hf < k.hMin || hf > k.hMax) return null;
+    // land props stay out of the sea (and off frozen or molten sea sheets)
+    if (p.sea && pt.h < 0.2) return null;
+  }
   if (inSite(p, pt.dir)) return null;
   if (k.slopeMax < 1 && slopeAt(p, pt.dir, pt.h) > k.slopeMax) return null;
   const scale = k.scale[0] + (k.scale[1] - k.scale[0]) * pt.r[2];
@@ -101,9 +118,10 @@ function placeOne(p: PlanetDef, rule: TierRule, total: number, pt: Scattered): P
 const totalWeight = (rule: TierRule) => rule.kinds.reduce((s, k) => s + k.weight, 0);
 
 /** Places a tier of props around unit direction `d`; returns packed instance data. */
-export function placeProps(p: PlanetDef, d: V3, tier: 'big' | 'small'): Float32Array {
+export function placeProps(p: PlanetDef, d: V3, tier: PropTierName): Float32Array {
   const rule = PROP_RULES[p.type][tier];
-  const pts = scatter(p, d, rule.radius, rule.grid, rule.density, rule.salt);
+  if (!rule) return new Float32Array(0);
+  const pts = scatter(p, d, rule.radius, rule.grid, rule.density, rule.salt, rule.under);
   const out = new Float32Array(pts.length * PROP_STRIDE);
   const total = totalWeight(rule);
   const cube = { face: 0, u: 0, v: 0 };

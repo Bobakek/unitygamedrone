@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { PlanetDef } from '../../shared/galaxy/system-gen.ts';
 import { nodesNear, type ResourceNode, type ResourceType } from '../../shared/planet/resources.ts';
-import { PROP_STRIDE } from '../../shared/planet/prop-rules.ts';
+import { PROP_RULES, PROP_STRIDE, type PropTierName } from '../../shared/planet/prop-rules.ts';
 import { qrot, v3, type Quat, type V3 } from '../../shared/math/vec.ts';
 import type { WorkerPool } from './worker-pool.ts';
 import type { PlanetView } from './planet-view.ts';
@@ -59,7 +59,8 @@ class GroundSnap {
       dir.x = this.up[i * 3]; dir.y = this.up[i * 3 + 1]; dir.z = this.up[i * 3 + 2];
       const hr = node ? pv.renderedHeight(face, u, v, dir, node) : null;
       // where this level of detail puts the ground under the sea, the prop would stand in water: sink it out of sight
-      const d = hr === null ? 0 : pv.def.sea && hr < 0.3 ? -300 : hr - this.h[i];
+      // (sea-bed props simply follow the drawn sea bed)
+      const d = hr === null ? 0 : pv.def.sea && hr < 0.3 && this.h[i] >= 0 ? -300 : hr - this.h[i];
       if (Math.abs(d - this.delta[i]) < 0.005) continue;
       this.delta[i] = d;
       write(this.mesh[i], this.slot[i], this.base[i * 3] + dir.x * d, this.base[i * 3 + 1] + dir.y * d, this.base[i * 3 + 2] + dir.z * d);
@@ -124,7 +125,7 @@ class PropTier {
   /** Set when new instances arrived and have not been dropped onto the drawn terrain yet. */
   fresh = false;
 
-  constructor(private tier: 'big' | 'small', private cap: number, private rebuildDist: number) {}
+  constructor(private tier: PropTierName, private cap: number, private rebuildDist: number) {}
 
   /** Drops instances onto the currently drawn terrain. */
   snap(pv: PlanetView) {
@@ -243,6 +244,7 @@ export class SurfaceProps {
   readonly group = new THREE.Group();
   private big = new PropTier('big', 2400, 90);
   private small = new PropTier('small', 1600, 25);
+  private sea = new PropTier('sea', 1800, 35);
   private nodes: THREE.InstancedMesh;
   private beams: THREE.InstancedMesh;
   private nodeGroup = new THREE.Group();
@@ -265,7 +267,7 @@ export class SurfaceProps {
       m.frustumCulled = false;
       this.nodeGroup.add(m);
     }
-    this.group.add(this.big.group, this.small.group, this.nodeGroup);
+    this.group.add(this.big.group, this.small.group, this.sea.group, this.nodeGroup);
   }
 
   clear() {
@@ -273,6 +275,7 @@ export class SurfaceProps {
     this.nodeGround.reset(0);
     this.big.clear();
     this.small.clear();
+    this.sea.clear();
     this.nodes.count = 0;
     this.beams.count = 0;
     this.visibleNodes = [];
@@ -289,18 +292,22 @@ export class SurfaceProps {
     if (planet !== this.planet) { this.planet = planet; this.lastNodes = v3(1e12, 0, 0); }
     if (quality.props) this.big.update(planet, cam, this.pool);
     if (quality.small) this.small.update(planet, cam, this.pool);
+    const wet = !!PROP_RULES[planet.type].sea;
+    if (wet && quality.props) this.sea.update(planet, cam, this.pool);
     this.big.group.visible = quality.props;
     this.small.group.visible = quality.small;
+    this.sea.group.visible = wet && quality.props;
     this.updateNodes(planet, cam, harvested, version);
     // keep everything standing on the terrain as it is currently drawn (LOD changes, new batches);
     // throttled in wall-clock time so slow frames still re-snap every frame
     const now = performance.now() / 1000;
     const lodChanged = pv.lodVersion !== this.lodSeen && now - this.lastSnap > 0.15;
-    if (lodChanged || this.big.fresh || this.small.fresh || this.nodesFresh) {
+    if (lodChanged || this.big.fresh || this.small.fresh || this.sea.fresh || this.nodesFresh) {
       this.lodSeen = pv.lodVersion;
       this.lastSnap = now;
       this.big.snap(pv); this.big.fresh = false;
       this.small.snap(pv); this.small.fresh = false;
+      this.sea.snap(pv); this.sea.fresh = false;
       this.snapNodes(pv);
     }
   }
@@ -366,6 +373,7 @@ export class SurfaceProps {
   sync(origin: V3, rot: Quat) {
     this.big.sync(origin, rot);
     this.small.sync(origin, rot);
+    this.sea.sync(origin, rot);
     if (this.planet) placeBody(this.nodeGroup, this.planet, rot, this.nodeAnchor, origin);
   }
 }
