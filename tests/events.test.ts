@@ -4,7 +4,7 @@ import { Game } from '../src/server/game/game.ts';
 import type { Transport } from '../src/server/game/session.ts';
 import {
   ANOMALY_SCAN_TIME, BASE_BOUNTY, PILOT_HP, vnorm, vsub, CFLAG, aimByte, aimPitch, KIND, MOOD, moodOf, cargoCount, decodeJson, encodeJson, FWD, MSG, nodesNear, PROTOCOL_VERSION, qrot, resourceNode, TICK_RATE, v3, vdist,
-  type GameEvent, type Poi, getSystem,
+  type GameEvent, type Poi, getSystem, heightAt,
 } from '../src/shared/index.ts';
 import { collidersNear } from '../src/shared/planet/prop-rules.ts';
 import { inSite, planetSites, SITE_NODE_BASE } from '../src/shared/planet/sites.ts';
@@ -233,5 +233,71 @@ describe('fauna and on-foot combat', () => {
     expect(me.s.char).toBeNull();
     expect(me.s.mode).toBe(0);
     expect(me.s.pilot.cargo).toEqual({ ore: 2, crystal: 1, relic: 1, bio: 2 });
+  });
+});
+
+describe('the sea', () => {
+  const game = new Game({ store: new PilotStore(':memory:'), dev: true });
+  const me = pilot(game, 'Diver');
+  const sys = me.s.system;
+  const pl = sys.def.planets.find((p) => p.type === 'terran')!;
+  expect(sys.devTeleport(me.s, 'dive', String(pl.index))).toBe('Под водой');
+  const ch = me.s.char!;
+  const depth = () => pl.radius - Math.hypot(ch.state.p.x, ch.state.p.y, ch.state.p.z);
+
+  it('puts a dev diver under water, where other pilots see them swimming', () => {
+    expect(ch.state.swim).toBeGreaterThan(0);
+    expect(depth()).toBeGreaterThan(1);
+    ch.state.swim = 2;
+    const watcher = pilot(game, 'Snorkel');
+    const e = sys.buildSnapshot(watcher.s).entities.find((x) => x.id === ch.id)!;
+    expect(e.flags & CFLAG.SWIM).toBeTruthy();
+    expect(e.flags & CFLAG.UNDER).toBeTruthy();
+    expect(e.flags & CFLAG.AIR).toBeFalsy();
+  });
+
+  it('sea creatures gather around a swimmer and stay in the water', () => {
+    run(game, 4);
+    const sea = [...sys.fauna.creatures.values()].filter((c) => c.sp.aquatic && c.planet === pl.index);
+    expect(sea.length).toBeGreaterThan(0);
+    for (const c of sea) {
+      const r = Math.hypot(c.state.p.x, c.state.p.y, c.state.p.z), u = vnorm(v3(), c.state.p);
+      expect(r).toBeLessThan(pl.radius - 0.9);
+      expect(r).toBeGreaterThan(pl.radius + heightAt(pl, u.x, u.y, u.z) + 1);
+    }
+  });
+
+  it('rays dart away from a diver', () => {
+    const [ray] = sys.fauna.devSpawn(pl.index, ch.state.p, 8, 7);
+    expect(ray?.sp.aquatic).toBe(true);
+    run(game, 1.5);
+    expect(ray.mood).toBe('flee');
+  });
+
+  it('sharks hunt and bite pilots in the water, give up on dry ones, and float up when dead', () => {
+    ch.hp = PILOT_HP;
+    const [shark] = sys.fauna.devSpawn(pl.index, ch.state.p, 9, 18);
+    expect(shark.sp.predator && shark.sp.aquatic).toBe(true);
+    run(game, 10);
+    expect(me.events().some((e) => e.t === 'bite' && e.id === shark.id)).toBe(true);
+    expect(ch.hp).toBeLessThan(PILOT_HP);
+    // out of the water, the pilot is no prey
+    ch.state.swim = 0;
+    run(game, 1);
+    expect(shark.mood).not.toBe('hunt');
+    ch.state.swim = 2;
+    sys.fauna.damage(shark, 999, me.s);
+    expect(shark.dead).toBe(true);
+    run(game, 25);
+    expect(Math.hypot(shark.state.p.x, shark.state.p.y, shark.state.p.z)).toBeGreaterThan(pl.radius - 1);
+  });
+
+  it('running out of air floods the suit bit by bit', () => {
+    ch.hp = PILOT_HP;
+    ch.state.air = 0;
+    const n0 = me.events().filter((e) => e.t === 'hurt').length;
+    run(game, 3.5);
+    expect(ch.hp).toBeLessThan(PILOT_HP - 16);
+    expect(me.events().filter((e) => e.t === 'hurt').length - n0).toBeGreaterThanOrEqual(3);
   });
 });

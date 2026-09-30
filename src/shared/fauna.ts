@@ -78,8 +78,12 @@ export function stepCreature(c: CreatureState, pl: PlanetDef, wish: V3 | null, s
   vnorm(up, c.p);
   let ok = true;
   if (wish && speed > 0) {
-    // steer the heading toward the wish direction
+    // steer the heading toward the wish direction (swinging round when it is straight behind)
     const k = Math.min(1, dt * 4);
+    if (vdot(c.f, wish) < -0.8) {
+      vcross(side, up, c.f);
+      c.f.x += side.x * k * 2; c.f.y += side.y * k * 2; c.f.z += side.z * k * 2;
+    }
     c.f.x += (wish.x - c.f.x) * k; c.f.y += (wish.y - c.f.y) * k; c.f.z += (wish.z - c.f.z) * k;
   }
   const fu = vdot(c.f, up);
@@ -118,6 +122,11 @@ export function stepSwimmer(c: CreatureState, pl: PlanetDef, wish: V3 | null, sp
   vnorm(up, c.p);
   if (wish) {
     const k = Math.min(1, dt * 2.5);
+    // (straight behind: blending alone would never turn, so swing round through the side)
+    if (vdot(c.f, wish) < -0.8) {
+      vcross(side, up, c.f);
+      c.f.x += side.x * k * 2; c.f.y += side.y * k * 2; c.f.z += side.z * k * 2;
+    }
     c.f.x += (wish.x - c.f.x) * k; c.f.y += (wish.y - c.f.y) * k; c.f.z += (wish.z - c.f.z) * k;
   }
   // limit the climb / dive angle (and keep the heading well away from straight up)
