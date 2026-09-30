@@ -34,11 +34,11 @@ try {
   await waitHealth();
   browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 
-  async function open(name) {
+  async function open(name, extra = '') {
     const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
     page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
     page.on('console', (m) => { if (m.type() === 'error') errors.push(`${name}: ${m.text()}`); });
-    await page.goto(`http://localhost:${PORT}/?name=${name}&autostart=1`);
+    await page.goto(`http://localhost:${PORT}/?name=${name}&autostart=1${extra}`);
     await page.waitForFunction(() => window.__game?.self && window.__game.pred.ready, null, { timeout: 60000, polling: 250 });
     return page;
   }
@@ -84,14 +84,23 @@ try {
   await a.waitForFunction(() => window.__game.pred.mode === 0, null, { timeout: 15000, polling: 250 });
   console.log('boarded ship, mode', await mode(a));
 
-  // second pilot joins at the station; Alpha returns there too
+  // second pilot joins at the station; Alpha returns there too.
+  // Software rendering is CPU-bound, so Alpha drops to low quality via the settings menu meanwhile.
   await chat(a, '/tp station');
-  const b = await open('Bravo');
+  const setQuality = async (page, q) => {
+    await page.keyboard.press('KeyO');
+    await page.click(`#set-quality button[data-q="${q}"]`);
+    await page.click('#set-close');
+  };
+  await setQuality(a, 'low');
+  const b = await open('Bravo', '&q=low');
   await sleep(2000);
   const seen = await b.evaluate(() => [...window.__game.remotes.values()].filter((r) => r.info && !r.info.npc && r.info.kind === 1).map((r) => r.info.name));
   console.log('Bravo sees players:', seen);
   if (!seen.includes('Alpha')) errors.push('Bravo does not see Alpha');
   await shot(b, '06-two-pilots.png', 1500);
+  await b.close();
+  await setQuality(a, 'high');
 
   // combat: Alpha goes near a planet (outside the safe zone), spawns a pirate and fights it
   await chat(a, '/tp field');

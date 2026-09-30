@@ -14,6 +14,8 @@ export class Input {
   wheel = 0;
   locked = false;
   typing = false;
+  /** Mouse sensitivity multiplier from settings. */
+  sensitivity = 1;
   /** When false the virtual cursor follows the absolute mouse position. */
   private mouseX = 0;
   private mouseY = 0;
@@ -44,7 +46,7 @@ export class Input {
       if (this.locked) {
         this.dx += e.movementX;
         this.dy += e.movementY;
-        const k = 1 / (0.28 * Math.min(window.innerWidth, window.innerHeight));
+        const k = this.sensitivity / (0.28 * Math.min(window.innerWidth, window.innerHeight));
         this.vx += e.movementX * k;
         this.vy += e.movementY * k;
         const l = Math.hypot(this.vx, this.vy);

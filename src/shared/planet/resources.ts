@@ -63,29 +63,28 @@ export function nodesNear(p: PlanetDef, d: V3, radiusM: number): ResourceNode[] 
   return out;
 }
 
-export interface Prop { id: number; kind: number; dir: V3; h: number; scale: number; rot: number }
-export const PROP_GRID = 420;
+export interface Scattered { id: number; dir: V3; h: number; r: [number, number, number, number] }
 
-/** Decorative props (trees/rocks) — purely visual, client side. */
-export function propsNear(p: PlanetDef, d: V3, radiusM: number): Prop[] {
-  const out: Prop[] = [];
+/**
+ * Deterministic scatter of decoration points (client side). `grid` cells per
+ * face edge, `density` = chance that a cell holds a point. Submerged points are skipped.
+ */
+export function scatter(p: PlanetDef, d: V3, radiusM: number, grid: number, density: number, salt: number): Scattered[] {
+  const out: Scattered[] = [];
   const cosMax = Math.cos(radiusM / p.radius);
   const seen = new Set<number>();
-  cellsNear(PROP_GRID, p, d, radiusM, (face, i, j) => {
-    const id = (face * PROP_GRID + i) * PROP_GRID + j;
+  const cell = 2 / grid;
+  cellsNear(grid, p, d, radiusM, (face, i, j) => {
+    const id = (face * grid + i) * grid + j;
     if (seen.has(id)) return;
     seen.add(id);
-    const hh = hashInts(p.seed, face, i, j, 0x3c);
-    const density = p.flora ? 0.3 : 0.08;
+    const hh = hashInts(p.seed, face, i, j, salt);
     if (hashFloat(hh, 0) >= density) return;
-    const cell = 2 / PROP_GRID;
     const dir = gnomonic(face, -1 + (i + hashFloat(hh, 1)) * cell, -1 + (j + hashFloat(hh, 2)) * cell, v3());
     if (dir.x * d.x + dir.y * d.y + dir.z * d.z < cosMax) return;
     const h = heightAt(p, dir.x, dir.y, dir.z);
-    if (p.sea && h < 1.5) return;
-    if (h > p.maxHeight * 0.5) return;
-    const tree = p.flora && hashFloat(hh, 3) < 0.8;
-    out.push({ id, kind: tree ? 0 : 1, dir, h, scale: 0.6 + hashFloat(hh, 4) * 1.0, rot: hashFloat(hh, 5) * Math.PI * 2 });
+    if (p.sea && h < 0.6) return;
+    out.push({ id, dir, h, r: [hashFloat(hh, 3), hashFloat(hh, 4), hashFloat(hh, 5), hashFloat(hh, 6)] });
   });
   return out;
 }

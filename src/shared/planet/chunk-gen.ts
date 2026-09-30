@@ -10,14 +10,19 @@ export interface ChunkData {
   positions: Float32Array;
   normals: Float32Array;
   colors: Float32Array;
+  /** Liquid surface (sea / lava / ice sheet) for this chunk; empty when fully dry. */
+  water: { positions: Float32Array; normals: Float32Array; colors: Float32Array };
   radius: number;
 }
 
 export const CHUNK_N = 16;
 
+const fract = (x: number) => x - Math.floor(x);
+
 /**
  * Builds a flat-shaded (non-indexed) low-poly terrain chunk for quadtree node
- * (face, level, x, y). Vertices are relative to the chunk centre for float32 precision.
+ * (face, level, x, y), plus a separate liquid surface above submerged parts.
+ * Vertices are relative to the chunk centre for float32 precision.
  */
 export function buildChunk(p: PlanetDef, face: number, level: number, x: number, y: number, N = CHUNK_N): ChunkData {
   const size = 2 / (1 << level);
@@ -34,7 +39,7 @@ export function buildChunk(p: PlanetDef, face: number, level: number, x: number,
       const h = heightAt(p, d.x, d.y, d.z);
       const k = j * G + i;
       raw[k] = h;
-      const r = R + (p.sea && h < 0 ? 0 : h);
+      const r = R + h;
       pos[k * 3] = d.x * r; pos[k * 3 + 1] = d.y * r; pos[k * 3 + 2] = d.z * r;
       dir[k * 3] = d.x; dir[k * 3 + 1] = d.y; dir[k * 3 + 2] = d.z;
     }
@@ -62,6 +67,18 @@ export function buildChunk(p: PlanetDef, face: number, level: number, x: number,
     o += 3;
   };
 
+  // liquid surface (at radius R) — collected as triangles over any submerged vertex
+  const wet = p.sea;
+  const W: number[] = [], WN: number[] = [], WC: number[] = [];
+  const wcol: [number, number, number] = [0, 0, 0];
+  const wput = (k: number) => {
+    const r = R;
+    W.push(dir[k * 3] * r - cx, dir[k * 3 + 1] * r - cy, dir[k * 3 + 2] * r - cz);
+    WN.push(dir[k * 3], dir[k * 3 + 1], dir[k * 3 + 2]);
+    surfaceColor(p, dir[k * 3], dir[k * 3 + 1], dir[k * 3 + 2], Math.min(raw[k], -0.01), 0, wcol, true);
+    WC.push(wcol[0], wcol[1], wcol[2]);
+  };
+
   const tri = (a: number, b: number, c: number) => {
     const ax = pos[a * 3], ay = pos[a * 3 + 1], az = pos[a * 3 + 2];
     const e1x = pos[b * 3] - ax, e1y = pos[b * 3 + 1] - ay, e1z = pos[b * 3 + 2] - az;
@@ -73,10 +90,14 @@ export function buildChunk(p: PlanetDef, face: number, level: number, x: number,
     const ml = Math.sqrt(mx * mx + my * my + mz * mz) || 1;
     mx /= ml; my /= ml; mz /= ml;
     const slope = 1 - (nx * mx + ny * my + nz * mz);
-    const hmax = Math.max(raw[a], raw[b], raw[c]);
     const havg = (raw[a] + raw[b] + raw[c]) / 3;
-    surfaceColor(p, mx, my, mz, p.sea && hmax < 0 ? havg : Math.max(havg, p.sea ? 0 : havg), slope, col);
+    surfaceColor(p, mx, my, mz, havg, slope, col);
+    // per-face tint jitter + slope darkening give the low-poly surface depth
+    const jit = fract(Math.sin(mx * 12.9898 + my * 78.233 + mz * 37.719) * 43758.5453);
+    const k = (0.93 + jit * 0.14) * (1 - 0.2 * Math.min(1, slope * 2.2));
+    col[0] *= k; col[1] *= k; col[2] *= k;
     put(a, nx, ny, nz); put(b, nx, ny, nz); put(c, nx, ny, nz);
+    if (wet && Math.min(raw[a], raw[b], raw[c]) < 0) { wput(a); wput(b); wput(c); }
   };
 
   for (let j = 0; j < N; j++) {
@@ -105,5 +126,9 @@ export function buildChunk(p: PlanetDef, face: number, level: number, x: number,
     edge(i * G + N, (i + 1) * G + N);
   }
 
-  return { key: `${face}/${level}/${x}/${y}`, cx, cy, cz, positions: P, normals: Nn, colors: C, radius: Math.sqrt(maxR2) };
+  return {
+    key: `${face}/${level}/${x}/${y}`, cx, cy, cz, positions: P, normals: Nn, colors: C,
+    water: { positions: new Float32Array(W), normals: new Float32Array(WN), colors: new Float32Array(WC) },
+    radius: Math.sqrt(maxR2),
+  };
 }

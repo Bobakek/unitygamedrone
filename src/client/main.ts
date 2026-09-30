@@ -1,4 +1,5 @@
 import { Game } from './game.ts';
+import { loadSettings, saveSettings, type QualityLevel } from './core/quality.ts';
 
 const $ = (id: string) => document.getElementById(id)!;
 const nameInput = $('login-name') as HTMLInputElement;
@@ -17,11 +18,11 @@ if (offline) {
   $('login-hint').textContent = 'Одиночный режим: игровой сервер работает прямо в браузере, прогресс хранится локально. Команды разработчика: /help в чате.';
 }
 
-const lowBox = $('login-low') as HTMLInputElement;
-try {
-  lowBox.checked = localStorage.getItem('nova.low') === '1';
-} catch { /* ignore */ }
-if (params.get('q') === 'low' || location.hash === '#low') lowBox.checked = true;
+const settings = loadSettings();
+const qSelect = $('login-quality') as HTMLSelectElement;
+const forced = params.get('q') ?? (location.hash === '#low' ? 'low' : null);
+if (forced && ['low', 'medium', 'high', 'ultra'].includes(forced)) settings.quality = forced as QualityLevel;
+qSelect.value = settings.quality;
 
 let started = false;
 function start() {
@@ -32,9 +33,8 @@ function start() {
     return;
   }
   started = true;
-  try {
-    localStorage.setItem('nova.low', lowBox.checked ? '1' : '0');
-  } catch { /* ignore */ }
+  settings.quality = qSelect.value as QualityLevel;
+  saveSettings(settings);
   $('login').classList.add('hidden');
   $('loading').classList.remove('hidden');
   const token = saved.name?.toLowerCase() === name.toLowerCase() ? saved.token : undefined;
@@ -45,7 +45,7 @@ function start() {
     err.textContent = msg;
     ($('login-go') as HTMLButtonElement).textContent = 'Переподключиться';
     ($('login-go') as HTMLButtonElement).onclick = () => location.reload();
-  }, offline, lowBox.checked);
+  }, offline, settings);
 }
 
 $('login-go').addEventListener('click', start);

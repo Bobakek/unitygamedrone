@@ -34,8 +34,8 @@ export class Controller {
     } else if (mode === MODE.FOOT) {
       const m = i.consumeMouse();
       if (i.locked) {
-        this.yawAcc += m.dx * 0.0026;
-        this.footPitch = Math.max(-1.2, Math.min(1.0, this.footPitch - m.dy * 0.0022));
+        this.yawAcc += m.dx * 0.0026 * i.sensitivity;
+        this.footPitch = Math.max(-1.2, Math.min(1.0, this.footPitch - m.dy * 0.0022 * i.sensitivity));
       } else {
         // Without pointer lock, steer with the cursor offset like a stick.
         this.yawAcc += shape(i.vx) * 2.2 * dt;

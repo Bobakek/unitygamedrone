@@ -3,6 +3,7 @@ export class Sfx {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private noise: AudioBuffer | null = null;
+  private volume = 0.6;
   private engine: { osc: OscillatorNode; osc2: OscillatorNode; gain: GainNode; filter: BiquadFilterNode } | null = null;
 
   constructor() {
@@ -20,7 +21,7 @@ export class Sfx {
     }
     const c = this.ctx;
     this.master = c.createGain();
-    this.master.gain.value = 0.5;
+    this.master.gain.value = this.volume;
     this.master.connect(c.destination);
     this.noise = c.createBuffer(1, c.sampleRate, c.sampleRate);
     const d = this.noise.getChannelData(0);
@@ -33,6 +34,11 @@ export class Sfx {
     osc.connect(filter); osc2.connect(filter); filter.connect(gain); gain.connect(this.master);
     osc.start(); osc2.start();
     this.engine = { osc, osc2, gain, filter };
+  }
+
+  setVolume(v: number) {
+    this.volume = v;
+    if (this.master) this.master.gain.value = v;
   }
 
   private env(g: GainNode, t: number, a: number, peak: number, r: number) {
@@ -75,6 +81,9 @@ export class Sfx {
     o.connect(g); g.connect(this.master);
     o.start(t); o.stop(t + 0.9);
   }
+  step(vol = 1) { this.burst(0.06, 500 + Math.random() * 300, 0.05 * vol, 'lowpass'); }
+  thud(k = 1) { this.burst(0.18, 260, 0.14 * k, 'lowpass'); }
+  mining() { this.burst(0.8, 2400, 0.06, 'bandpass', 900); }
   missile() { this.burst(0.7, 400, 0.18, 'bandpass', 2400); }
   beep(high = false) {
     const c = this.ctx; if (!c || !this.master) return;

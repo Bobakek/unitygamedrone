@@ -6,7 +6,36 @@ import { v3 } from '../../shared/math/vec.ts';
 import type { WorkerPool } from './worker-pool.ts';
 
 const terrainMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.93, metalness: 0 });
-const SPLIT_K = 2.4;
+
+/** Liquid material per planet type: animated faceted waves, glowing lava or a still ice sheet. */
+function liquidMaterial(def: PlanetDef, u: { uTime: { value: number }; uPlanet: { value: THREE.Vector3 } }): THREE.Material {
+  let m: THREE.Material;
+  let amp = 0.35, speed = 1;
+  if (def.type === 'lava') {
+    m = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false });
+    amp = 0.5; speed = 0.25;
+  } else if (def.type === 'ice') {
+    m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.25, metalness: 0.05, flatShading: true });
+    amp = 0;
+  } else {
+    m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.8, flatShading: true, depthWrite: false });
+  }
+  if (amp > 0) {
+    m.onBeforeCompile = (sh) => {
+      sh.uniforms.uTime = u.uTime;
+      sh.uniforms.uPlanet = u.uPlanet;
+      sh.vertexShader = `uniform float uTime; uniform vec3 uPlanet;\n` + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+        vec3 wp = (modelMatrix * vec4(position, 1.0)).xyz - uPlanet;
+        float t = uTime * ${speed.toFixed(2)};
+        float w = sin(dot(wp, vec3(0.31, 0.12, 0.27)) + t * 1.3) * 0.5
+                + sin(dot(wp, vec3(-0.18, 0.41, 0.09)) * 1.3 - t * 1.7) * 0.3
+                + sin(dot(wp, vec3(0.05, -0.22, 0.47)) * 2.1 + t * 2.3) * 0.2;
+        transformed += normal * w * ${amp.toFixed(2)};`);
+    };
+    m.customProgramCacheKey = () => `liquid-${def.type}`;
+  }
+  return m;
+}
 
 interface QNode {
   face: number; level: number; x: number; y: number;
@@ -15,6 +44,7 @@ interface QNode {
   size: number;
   children: QNode[] | null;
   mesh: THREE.Mesh | null;
+  water: THREE.Mesh | null;
   pending: boolean;
   disposed: boolean;
   lastUsed: number;
@@ -40,8 +70,11 @@ export class PlanetView {
   private horizon = 0;
   private mountain: number;
   chunks = 0;
+  private liquidU = { uTime: { value: 0 }, uPlanet: { value: new THREE.Vector3() } };
+  private liquid: THREE.Material | null;
 
-  constructor(public def: PlanetDef, private pool: WorkerPool) {
+  constructor(public def: PlanetDef, private pool: WorkerPool, public splitK = 2.4) {
+    this.liquid = def.sea ? liquidMaterial(def, this.liquidU) : null;
     this.maxLevel = maxLevelFor(def.radius, CHUNK_N, 2.6);
     this.mountain = Math.acos(def.radius / (def.radius + def.maxHeight * 1.2));
     for (let f = 0; f < 6; f++) this.roots.push(this.node(f, 0, 0, 0));
@@ -53,7 +86,7 @@ export class PlanetView {
     const dir = new THREE.Vector3(d.x, d.y, d.z);
     return {
       face, level, x, y, dir, center: dir.clone().multiplyScalar(this.def.radius),
-      size: (Math.PI / 4) * this.def.radius * size, children: null, mesh: null, pending: false, disposed: false, lastUsed: 0,
+      size: (Math.PI / 4) * this.def.radius * size, children: null, mesh: null, water: null, pending: false, disposed: false, lastUsed: 0,
     };
   }
 
@@ -64,8 +97,10 @@ export class PlanetView {
   }
 
   /** `camRel` = camera position relative to the planet centre (metres). */
-  update(camRel: THREE.Vector3) {
+  update(camRel: THREE.Vector3, time = 0) {
     this.frame++;
+    this.liquidU.uTime.value = time;
+    this.liquidU.uPlanet.value.copy(this.group.position);
     this.camRel.copy(camRel);
     const dist = camRel.length();
     this.camDir.copy(camRel).divideScalar(dist || 1);
@@ -73,8 +108,15 @@ export class PlanetView {
     this.reqs.length = 0;
     this.nextShown.clear();
     for (const r of this.roots) this.visit(r);
-    for (const n of this.shown) if (!this.nextShown.has(n) && n.mesh) n.mesh.visible = false;
-    for (const n of this.nextShown) n.mesh!.visible = true;
+    for (const n of this.shown) {
+      if (this.nextShown.has(n) || !n.mesh) continue;
+      n.mesh.visible = false;
+      if (n.water) n.water.visible = false;
+    }
+    for (const n of this.nextShown) {
+      n.mesh!.visible = true;
+      if (n.water) n.water.visible = true;
+    }
     [this.shown, this.nextShown] = [this.nextShown, this.shown];
     this.chunks = this.shown.size;
 
@@ -87,7 +129,7 @@ export class PlanetView {
     n.lastUsed = this.frame;
     if (this.culled(n)) return;
     const d = Math.max(0, this.camRel.distanceTo(n.center) - n.size * 0.3);
-    if (n.level < this.maxLevel && d < n.size * SPLIT_K) {
+    if (n.level < this.maxLevel && d < n.size * this.splitK) {
       if (!n.children) {
         const L = n.level + 1, x = n.x * 2, y = n.y * 2;
         n.children = [this.node(n.face, L, x, y), this.node(n.face, L, x + 1, y), this.node(n.face, L, x, y + 1), this.node(n.face, L, x + 1, y + 1)];
@@ -131,12 +173,29 @@ export class PlanetView {
       const m = new THREE.Mesh(g, terrainMat);
       m.position.set(c.cx, c.cy, c.cz);
       m.receiveShadow = true;
+      // fine chunks near the player cast terrain shadows (hills, cliffs)
+      m.castShadow = n.level >= this.maxLevel - 2;
       m.visible = false;
       m.matrixAutoUpdate = false;
       m.updateMatrix();
       n.center.set(c.cx, c.cy, c.cz);
       n.mesh = m;
       this.group.add(m);
+      if (this.liquid && c.water.positions.length) {
+        const wg = new THREE.BufferGeometry();
+        wg.setAttribute('position', new THREE.BufferAttribute(c.water.positions, 3));
+        wg.setAttribute('normal', new THREE.BufferAttribute(c.water.normals, 3));
+        wg.setAttribute('color', new THREE.BufferAttribute(c.water.colors, 3));
+        wg.boundingSphere = new THREE.Sphere(new THREE.Vector3(), c.radius + 10);
+        const w = new THREE.Mesh(wg, this.liquid);
+        w.position.copy(m.position);
+        w.visible = false;
+        w.matrixAutoUpdate = false;
+        w.updateMatrix();
+        w.receiveShadow = true;
+        n.water = w;
+        this.group.add(w);
+      }
     });
   }
 
@@ -158,7 +217,12 @@ export class PlanetView {
       n.mesh.removeFromParent();
       this.shown.delete(n);
     }
+    if (n.water) {
+      n.water.geometry.dispose();
+      n.water.removeFromParent();
+    }
     n.mesh = null;
+    n.water = null;
     n.children = null;
   }
 }

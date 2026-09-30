@@ -13,7 +13,7 @@ import {
   EFLAG, KIND, MODE, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
 } from '../../shared/net/protocol.ts';
 import { nodesNear, resourceNode } from '../../shared/planet/resources.ts';
-import { surfaceHeight } from '../../shared/planet/terrain.ts';
+import { footHeight, surfaceHeight } from '../../shared/planet/terrain.ts';
 import { charQuat, newChar, stepChar } from '../../shared/sim/character.ts';
 import type { SimEnv } from '../../shared/sim/env.ts';
 import { emptyInput, isCruising, newShip, stepShip, type StepOut } from '../../shared/sim/ship.ts';
@@ -434,7 +434,7 @@ export class SystemInstance implements NpcWorld {
         const right = qrot(v3(), ship.state.q, v3(1, 0, 0));
         const fwd = qrot(v3(), ship.state.q, FWD);
         const d = vnorm(v3(), v3(ship.state.p.x - 6 * right.x - pl.center.x, ship.state.p.y - 6 * right.y - pl.center.y, ship.state.p.z - 6 * right.z - pl.center.z));
-        const g = pl.radius + surfaceHeight(pl, d.x, d.y, d.z) + 0.05;
+        const g = pl.radius + footHeight(pl, d.x, d.y, d.z) + 0.05;
         const pos = v3(pl.center.x + d.x * g, pl.center.y + d.y * g, pl.center.z + d.z * g);
         const f = vnorm(v3(), v3(fwd.x - up.x * vdot(fwd, up), fwd.y - up.y * vdot(fwd, up), fwd.z - up.z * vdot(fwd, up)));
         const c: CharEntity = { id: this.ctx.nextId(), name: p.name, state: newChar(pos, f), planet: pl.index, session: s };
@@ -593,7 +593,6 @@ export class SystemInstance implements NpcWorld {
       const pl = this.def.planets[idx];
       if (!pl) return 'Нет такой планеты';
       const land = target.startsWith('land');
-      if (target.startsWith('low') && !pl.atmo) return 'Нет атмосферы';
       const toSt = vnorm(v3(), vsub(v3(), this.def.station.pos, pl.center));
       let d = toSt;
       if (land) {

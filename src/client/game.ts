@@ -2,11 +2,12 @@ import * as THREE from 'three';
 import { DOCK_RANGE, DT, EXIT_RANGE, GATE_RANGE, HARVEST_RANGE, INTERP_DELAY, SAFE_ZONE_RADIUS } from '../shared/constants.ts';
 import { defaultUpgrades, flightStats } from '../shared/economy.ts';
 import { getSystem, type PlanetDef, type SystemDef } from '../shared/galaxy/system-gen.ts';
-import { FWD, qlook, qrot, quat, v3, vdist, vlen, vnorm, vsub, type Quat, type V3 } from '../shared/math/vec.ts';
+import { FWD, qlook, qrot, quat, v3, vcross, vdist, vlen, vnorm, vsub, type Quat, type V3 } from '../shared/math/vec.ts';
 import {
   EFLAG, KIND, MODE, type EntityInfo, type EntityState, type GameEvent, type PilotInfo, type SelfState, type Shot, type Snapshot, type Welcome,
 } from '../shared/net/protocol.ts';
 import { surfaceHeight } from '../shared/planet/terrain.ts';
+import { resourceNode } from '../shared/planet/resources.ts';
 import { charUp } from '../shared/sim/character.ts';
 import type { SimEnv } from '../shared/sim/env.ts';
 import { CRUISE_SPOOL, cruiseInhibited, isCruising } from '../shared/sim/ship.ts';
@@ -15,11 +16,14 @@ import { playerBlueprint } from '../shared/ships/blueprint.ts';
 import { Sfx } from './audio/sfx.ts';
 import { Input } from './core/input.ts';
 import { Renderer } from './core/renderer.ts';
-import { AstronautView, MissileView, ShipView } from './entities/views.ts';
+import { QUALITY, saveSettings, type Settings } from './core/quality.ts';
+import { MissileView, ShipView } from './entities/views.ts';
+import { AstronautView } from './entities/astronaut.ts';
 import { Connection, type NetClient, type NetHandlers } from './net/connection.ts';
 import { LocalConnection } from './net/local.ts';
 import { InterpBuffer, Timeline } from './net/interp.ts';
-import { AtmosphereView, SkyDome } from './planet/atmosphere.ts';
+import { AtmosphereView, EnvLighting, SkyDome } from './planet/atmosphere.ts';
+import { CloudLayer } from './planet/clouds.ts';
 import { PlanetView } from './planet/planet-view.ts';
 import { SurfaceProps } from './planet/props.ts';
 import { WorkerPool } from './planet/worker-pool.ts';
@@ -41,11 +45,14 @@ interface Remote {
   state: EntityState | null;
   visible: boolean;
   smokeT: number;
+  /** World position of the node this remote pilot is mining (for the beam). */
+  harvestPos: V3 | null;
 }
 
 interface NavItem { name: string; pos: V3; kind: 'planet' | 'station' | 'gate'; radius: number }
 
 const RESOURCE_NAMES = { ore: 'руда', crystal: 'кристалл', relic: 'реликт' } as const;
+const DUST: Record<string, string> = { terran: '#9a8a6a', ocean: '#b0a080', alien: '#c090d0', desert: '#d9a060', ice: '#e8f4ff', lava: '#5a4a4a', barren: '#9a948e' };
 const tv = new THREE.Vector3();
 
 /** Owns the client session: world rendering, prediction, networking glue and HUD. */
@@ -69,16 +76,19 @@ export class Game {
   private sun: Sun | null = null;
   private planets: PlanetView[] = [];
   private atmos: (AtmosphereView | null)[] = [];
+  private clouds: CloudLayer[] = [];
   private station: StationView | null = null;
   private gates: GateView[] = [];
   private fields: FieldView[] = [];
-  private props = new SurfaceProps();
+  private props = new SurfaceProps(this.pool);
   private effects = new Effects();
   private sky = new SkyDome();
   private sunLight: THREE.DirectionalLight;
   private hemi: THREE.HemisphereLight;
   /** Soft "headlight" along the view direction so hulls stay readable when back-lit. */
   private fill = new THREE.DirectionalLight('#b8c8ff', 0.7);
+  private envLight: EnvLighting;
+  private qualityApplied = false;
 
   private infos = new Map<number, EntityInfo>();
   private remotes = new Map<number, Remote>();
@@ -107,19 +117,21 @@ export class Game {
   private charPos = v3();
   private charFwd = v3(0, 0, -1);
   private stats = flightStats(defaultUpgrades());
+  private harvestPos: V3 | null = null;
+  private prevFwd = v3(0, 0, -1);
   private nearPlanet: PlanetDef | null = null;
   private nearAlt = 1e9;
 
-  constructor(canvas: HTMLCanvasElement, name: string, token: string | undefined, private onFatal: (msg: string) => void, offline = false, low = false) {
-    this.r = new Renderer(canvas, low);
+  constructor(canvas: HTMLCanvasElement, name: string, token: string | undefined, private onFatal: (msg: string) => void, offline: boolean, private settings: Settings) {
+    this.r = new Renderer(canvas, QUALITY[settings.quality]);
+    this.envLight = new EnvLighting(this.r.gl);
     this.input = new Input(canvas);
     this.ctrl = new Controller(this.input);
     this.pred = new Predictor(() => this.env!, () => this.stats);
     this.r.scene.add(this.world, this.sky.mesh);
     this.world.add(this.props.group, this.effects.group);
     this.sunLight = new THREE.DirectionalLight('#ffffff', 2.6);
-    this.sunLight.shadow.mapSize.set(2048, 2048);
-    Object.assign(this.sunLight.shadow.camera, { left: -45, right: 45, top: 45, bottom: -45, near: 1, far: 2000 });
+    Object.assign(this.sunLight.shadow.camera, { near: 1, far: 2400 });
     this.sunLight.shadow.bias = -0.0005;
     this.sunLight.shadow.normalBias = 0.05;
     this.hemi = new THREE.HemisphereLight('#6a7a9a', '#2a2630', 1.6);
@@ -143,8 +155,51 @@ export class Game {
     };
     if (offline) this.conn = new LocalConnection(name, token, handlers);
     else this.conn = new Connection(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`, name, token, handlers);
+    this.bindSettings();
+    this.applySettings(settings);
     requestAnimationFrame(() => this.frame());
     (window as unknown as { __game: Game }).__game = this;
+  }
+
+  // ------------------------------------------------------------------ settings
+  private bindSettings() {
+    const $ = (id: string) => document.getElementById(id)!;
+    $('set-quality').addEventListener('click', (e) => {
+      const q = (e.target as HTMLElement).closest('button')?.dataset.q;
+      if (q && q in QUALITY) this.applySettings({ ...this.settings, quality: q as Settings['quality'] });
+    });
+    ($('set-sens') as HTMLInputElement).addEventListener('input', (e) => this.applySettings({ ...this.settings, sensitivity: Number((e.target as HTMLInputElement).value) }));
+    ($('set-vol') as HTMLInputElement).addEventListener('input', (e) => this.applySettings({ ...this.settings, volume: Number((e.target as HTMLInputElement).value) }));
+    $('set-close').addEventListener('click', () => this.toggleSettings(false));
+  }
+
+  private toggleSettings(force?: boolean) {
+    const el = document.getElementById('settings')!;
+    const open = force ?? el.classList.contains('hidden');
+    el.classList.toggle('hidden', !open);
+    if (open) this.input.releaseLock();
+  }
+
+  private applySettings(s: Settings) {
+    const prev = this.settings;
+    this.settings = s;
+    saveSettings(s);
+    const q = QUALITY[s.quality];
+    if (prev.quality !== s.quality || !this.qualityApplied) {
+      this.qualityApplied = true;
+      this.r.apply(q);
+      for (const pv of this.planets) pv.splitK = q.splitK;
+      if (this.sys && prev.quality !== s.quality) {
+        for (const c of this.clouds) c.group.removeFromParent();
+        this.clouds = this.sys.planets.map((p) => new CloudLayer(p, q.clouds));
+        this.clouds.forEach((c) => this.world.add(c.group));
+      }
+    }
+    this.input.sensitivity = s.sensitivity;
+    this.sfx.setVolume(s.volume);
+    document.querySelectorAll<HTMLButtonElement>('#set-quality button').forEach((b) => b.classList.toggle('on', b.dataset.q === s.quality));
+    (document.getElementById('set-sens') as HTMLInputElement).value = String(s.sensitivity);
+    (document.getElementById('set-vol') as HTMLInputElement).value = String(s.volume);
   }
 
   // ------------------------------------------------------------------ network
@@ -179,6 +234,7 @@ export class Game {
   private buildSystem(id: number) {
     for (const p of this.planets) p.group.removeFromParent();
     for (const a of this.atmos) a?.group.removeFromParent();
+    for (const c of this.clouds) c.group.removeFromParent();
     this.station?.group.removeFromParent();
     this.gates.forEach((g) => g.group.removeFromParent());
     this.fields.forEach((f) => f.group.removeFromParent());
@@ -191,13 +247,16 @@ export class Game {
     this.env = { star: sys.star, planets: sys.planets, fields: sys.fields, station: sys.station };
     this.backdrop = new SpaceBackdrop(this.r.gl, sys.seed, this.r.low ? 512 : 1024);
     this.r.scene.background = this.backdrop.texture;
+    this.envLight.space(this.backdrop.texture);
     this.sun = new Sun(sys.star);
     this.sunLight.color.copy(this.sun.color);
     this.world.add(this.sun.group);
-    this.planets = sys.planets.map((p) => new PlanetView(p, this.pool));
+    this.planets = sys.planets.map((p) => new PlanetView(p, this.pool, this.r.q.splitK));
     this.atmos = sys.planets.map((p) => (p.atmo ? new AtmosphereView(p.radius, p.atmo) : null));
     this.planets.forEach((p) => this.world.add(p.group));
     this.atmos.forEach((a) => a && this.world.add(a.group));
+    this.clouds = sys.planets.map((p) => new CloudLayer(p, this.r.q.clouds));
+    this.clouds.forEach((c) => this.world.add(c.group));
     const facing = new THREE.Vector3(sys.spawn.x - sys.station.pos.x, sys.spawn.y - sys.station.pos.y, sys.spawn.z - sys.station.pos.z);
     this.station = new StationView(sys.station, facing);
     this.world.add(this.station.group);
@@ -246,14 +305,17 @@ export class Game {
     if (mode === MODE.DEAD || prev === MODE.DOCKED) { this.ctrl.throttle = 0; this.ctrl.cruiseOn = false; }
     if (mode === MODE.FOOT) {
       this.ctrl.footPitch = -0.12;
-      if (!this.myAstro) { this.myAstro = new AstronautView(); this.world.add(this.myAstro.group); }
+      if (!this.myAstro) {
+        this.myAstro = this.makeAstronaut(() => this.charPos);
+        this.world.add(this.myAstro.group);
+      }
     }
     if (mode !== MODE.FOOT && this.myAstro) { this.myAstro.dispose(); this.myAstro = null; }
     if (mode === MODE.SHIP && prev === MODE.FOOT) this.ctrl.throttle = 0;
   }
 
   private addRemote(id: number): Remote {
-    const r: Remote = { info: this.infos.get(id) ?? null, buf: new InterpBuffer(), view: null, p: v3(), q: quat(), state: null, visible: false, smokeT: 0 };
+    const r: Remote = { info: this.infos.get(id) ?? null, buf: new InterpBuffer(), view: null, p: v3(), q: quat(), state: null, visible: false, smokeT: 0, harvestPos: null };
     this.remotes.set(id, r);
     return r;
   }
@@ -277,9 +339,37 @@ export class Game {
   private ensureView(r: Remote) {
     if (r.view || !r.info) return;
     if (r.info.kind === KIND.SHIP && r.info.bp) r.view = new ShipView(r.info.bp);
-    else if (r.info.kind === KIND.CHAR) r.view = new AstronautView();
+    else if (r.info.kind === KIND.CHAR) r.view = this.makeAstronaut(() => r.p, 0.5);
     else if (r.info.kind === KIND.MISSILE) r.view = new MissileView();
     if (r.view) this.world.add(r.view.group);
+  }
+
+  private planetNear(p: V3): PlanetDef {
+    let best = this.sys!.planets[0], bd = Infinity;
+    for (const pl of this.sys!.planets) {
+      const d = vdist(p, pl.center) - pl.radius;
+      if (d < bd) { bd = d; best = pl; }
+    }
+    return best;
+  }
+
+  private makeAstronaut(pos: () => V3, vol = 1): AstronautView {
+    const a = new AstronautView();
+    const dust = (n: number, k: number) => {
+      const p = pos();
+      const pl = this.planetNear(p);
+      const up = vnorm(v3(), vsub(v3(), p, pl.center));
+      if (vdist(p, this.origin) < 60) this.effects.dust(p, up, new THREE.Color(DUST[pl.type] ?? '#9a948e'), n, k);
+    };
+    a.onStep = () => {
+      if (vdist(pos(), this.origin) < 40) this.sfx.step(vol);
+      dust(3, 0.7);
+    };
+    a.onLand = (k) => {
+      if (vdist(pos(), this.origin) < 60) this.sfx.thud(k * vol);
+      dust(14, 1 + k);
+    };
+    return a;
   }
 
   private shotColor(shooter: number, level: number) {
@@ -323,11 +413,24 @@ export class Game {
         case 'kill': this.hud.feed(`${e.killer} ✕ ${e.victim}`); break;
         case 'chat': this.hud.chat(e.from, e.text); break;
         case 'msg': this.hud.toast(e.text, e.kind); this.hud.chat(null, e.text); break;
-        case 'harvest':
+        case 'harvest': {
           this.harvested.set(`${e.planet}:${e.node}`, this.timeline.serverNow + e.left);
           this.harvestVersion++;
+          const pl = this.sys?.planets[e.planet];
+          const node = pl ? resourceNode(pl, e.node) : null;
+          if (node && pl && e.by !== this.welcome?.playerId) {
+            const r = pl.radius + node.h;
+            const pos = v3(pl.center.x + node.dir.x * r, pl.center.y + node.dir.y * r, pl.center.z + node.dir.z * r);
+            for (const rm of this.remotes.values()) {
+              if (rm.info?.kind === KIND.CHAR && rm.info.owner === e.by && rm.view instanceof AstronautView) {
+                rm.harvestPos = pos;
+                rm.view.harvest(new THREE.Vector3(pos.x - this.origin.x, pos.y - this.origin.y, pos.z - this.origin.z));
+              }
+            }
+          }
           if (e.by === this.welcome?.playerId) { this.sfx.pickup(); this.hud.toast('Ресурс собран', 'good'); }
           break;
+        }
         case 'missile':
           if (e.target === myShip) { this.hud.toast('Внимание: ракета!', 'warn'); this.sfx.beep(true); }
           else this.sfx.missile();
@@ -382,7 +485,8 @@ export class Game {
   private handleKeys(dt: number, mode: number) {
     const i = this.input;
     if (i.hit('KeyH')) this.hud.toggleHelp();
-    if (i.hit('Escape')) this.hud.toggleHelp(false);
+    if (i.hit('KeyO')) this.toggleSettings();
+    if (i.hit('Escape')) { this.hud.toggleHelp(false); this.toggleSettings(false); }
     if (i.hit('Enter')) { this.hud.focusChat(); i.releaseLock(); }
     if (i.hit('KeyZ')) i.releaseLock();
     if (i.hit('Tab')) this.navIndex = (this.navIndex + 1) % Math.max(1, this.navItems.length);
@@ -394,8 +498,12 @@ export class Game {
     if (i.hit('KeyF')) {
       if (mode === MODE.FOOT) {
         const n = this.nearestNode();
-        if (n) this.conn.action({ a: 'harvest', node: n.id });
-        else this.hud.toast('Рядом нет ресурсов', 'warn');
+        if (n) {
+          this.conn.action({ a: 'harvest', node: n.id });
+          this.harvestPos = n.pos;
+          this.myAstro?.harvest(new THREE.Vector3(n.pos.x - this.origin.x, n.pos.y - this.origin.y, n.pos.z - this.origin.z));
+          this.sfx.mining();
+        } else this.hud.toast('Рядом нет ресурсов', 'warn');
       } else if (mode === MODE.SHIP) {
         const p = this.pred.ship.p;
         if (vdist(p, this.sys!.station.pos) < DOCK_RANGE) this.conn.action({ a: 'dock' });
@@ -495,10 +603,12 @@ export class Game {
     // world
     this.place(this.sun!.group, sys.star.pos);
     const toSun = vnorm(v3(), vsub(v3(), sys.star.pos, this.origin));
+    // props first: they only need a couple of worker jobs and must not starve behind terrain chunks
+    this.props.update(np && this.nearAlt < 2500 ? np : null, this.origin, this.harvestedSet(), this.harvestVersion, this.time, { props: true, small: this.r.q.smallProps });
     this.planets.forEach((pv, i) => {
       const p = pv.def;
       this.place(pv.group, p.center);
-      pv.update(tv.set(this.origin.x - p.center.x, this.origin.y - p.center.y, this.origin.z - p.center.z));
+      pv.update(tv.set(this.origin.x - p.center.x, this.origin.y - p.center.y, this.origin.z - p.center.z), this.time);
       const a = this.atmos[i];
       if (a) {
         this.place(a.group, p.center);
@@ -507,12 +617,14 @@ export class Game {
         const alt = vdist(this.origin, p.center) - p.radius;
         a.uniforms.k.value = THREE.MathUtils.smoothstep(alt, p.radius * 0.08, p.radius * 0.4);
       }
+      const cl = this.clouds[i];
+      this.place(cl.group, p.center);
+      cl.update(dt, 1);
     });
     this.place(this.station!.group, sys.station.pos);
     this.station!.update(dt);
     this.gates.forEach((g) => { this.place(g.group, g.def.pos); g.update(dt); });
     this.fields.forEach((f) => this.place(f.group, f.def.center));
-    this.props.update(np && this.nearAlt < 2500 ? np : null, this.origin, this.harvestedSet(), this.harvestVersion);
     this.props.sync(this.origin);
 
     // own ship / astronaut
@@ -526,13 +638,18 @@ export class Game {
     ms.landed = !!ship.landed || mode === MODE.FOOT;
     ms.update(dt, this.time);
     if (this.myAstro && onFoot) {
+      const up = charUp(this.pred.char!, sys.planets[this.pred.charPlanet], v3());
       this.place(this.myAstro.group, this.charPos);
-      const q = qlook(quat(), this.charFwd, charUp(this.pred.char!, sys.planets[this.pred.charPlanet], v3()));
+      const q = qlook(quat(), this.charFwd, up);
       this.myAstro.group.quaternion.set(q.x, q.y, q.z, q.w);
       const c = this.pred.char!;
-      this.myAstro.speed = Math.hypot(c.v.x, c.v.y, c.v.z);
-      this.myAstro.flying = !c.ground && this.input.down('Space');
-      this.myAstro.update(dt);
+      const vUp = c.v.x * up.x + c.v.y * up.y + c.v.z * up.z;
+      const hs = Math.hypot(c.v.x - up.x * vUp, c.v.y - up.y * vUp, c.v.z - up.z * vUp);
+      const cr = vcross(v3(), this.prevFwd, this.charFwd);
+      const turn = dt > 0 ? -Math.asin(Math.max(-1, Math.min(1, cr.x * up.x + cr.y * up.y + cr.z * up.z))) / dt : 0;
+      this.prevFwd = { ...this.charFwd };
+      if (this.harvestPos) this.myAstro.setHarvestTarget(new THREE.Vector3(this.harvestPos.x - this.origin.x, this.harvestPos.y - this.origin.y, this.harvestPos.z - this.origin.z));
+      this.myAstro.update(dt, { speed: hs, vUp, ground: !!c.ground, jet: !c.ground && this.input.down('Space') && c.fuel > 0.01, look: this.ctrl.footPitch, turn });
     }
     if (mode === MODE.SHIP) this.sfx.engineLevel(this.ctrl.throttle, this.input.down('ShiftLeft'), isCruising(ship));
     else this.sfx.silenceEngine();
@@ -556,9 +673,13 @@ export class Game {
         r.view.landed = !!(st.flags & EFLAG.LANDED);
         r.view.update(dt, this.time);
       } else if (r.view instanceof AstronautView) {
-        r.view.speed = Math.hypot(st.vx, st.vy, st.vz);
-        r.view.flying = !!(st.flags & EFLAG.BOOST);
-        r.view.update(dt);
+        const pl = this.planetNear(r.p);
+        const up = vnorm(v3(), vsub(v3(), r.p, pl.center));
+        const vUp = st.vx * up.x + st.vy * up.y + st.vz * up.z;
+        const hs = Math.hypot(st.vx - up.x * vUp, st.vy - up.y * vUp, st.vz - up.z * vUp);
+        const ground = !(st.flags & EFLAG.BOOST);
+        if (r.harvestPos) r.view.setHarvestTarget(new THREE.Vector3(r.harvestPos.x - this.origin.x, r.harvestPos.y - this.origin.y, r.harvestPos.z - this.origin.z));
+        r.view.update(dt, { speed: hs, vUp, ground, jet: !ground && vUp > 2.5, look: 0, turn: 0 });
       } else {
         r.smokeT -= dt;
         if (r.smokeT <= 0) { r.smokeT = 0.03; this.effects.smoke(r.p); }
@@ -567,7 +688,7 @@ export class Game {
     this.effects.setViewport(window.innerHeight, cam.fov);
     this.effects.update(dt, this.origin);
 
-    this.updateEnvironment(toSun);
+    this.updateEnvironment(toSun, onFoot ? this.charPos : this.shipPos);
     this.updateHud(self, mode, speed);
     this.r.render();
   }
@@ -579,52 +700,76 @@ export class Game {
     return s;
   }
 
-  private updateEnvironment(toSun: V3) {
-    this.sunLight.position.set(toSun.x * 1000, toSun.y * 1000, toSun.z * 1000);
-    this.sunLight.target.position.set(0, 0, 0);
+  private updateEnvironment(toSun: V3, focus: V3) {
+    const q = this.r.q;
+    // Sun shadows follow the player (not the chase camera) inside a quality-sized box.
+    const tx = focus.x - this.origin.x, ty = focus.y - this.origin.y, tz = focus.z - this.origin.z;
+    this.sunLight.target.position.set(tx, ty, tz);
+    this.sunLight.position.set(tx + toSun.x * 1000, ty + toSun.y * 1000, tz + toSun.z * 1000);
+    const cam = this.sunLight.shadow.camera;
+    if (cam.right !== q.shadowRange || this.sunLight.shadow.mapSize.x !== q.shadowSize) {
+      Object.assign(cam, { left: -q.shadowRange, right: q.shadowRange, top: q.shadowRange, bottom: -q.shadowRange });
+      cam.updateProjectionMatrix();
+      this.sunLight.shadow.mapSize.set(q.shadowSize, q.shadowSize);
+      this.sunLight.shadow.map?.dispose();
+      this.sunLight.shadow.map = null;
+    }
+
     const np = this.nearPlanet;
-    let inside = 0, day = 1;
+    let inside = 0, day = 1, dusk = 0;
     const fog = this.r.scene.fog as THREE.Fog;
+    const u = this.sky.u;
     if (np) {
       const up = vnorm(v3(), vsub(v3(), this.origin, np.center));
-      day = THREE.MathUtils.smoothstep(up.x * toSun.x + up.y * toSun.y + up.z * toSun.z, -0.2, 0.25);
+      const se = up.x * toSun.x + up.y * toSun.y + up.z * toSun.z;
+      day = THREE.MathUtils.smoothstep(se, -0.2, 0.25);
+      dusk = THREE.MathUtils.smoothstep(se, 0.5, 0.05) * THREE.MathUtils.smoothstep(se, -0.3, 0.02);
       if (np.atmo) {
         inside = 1 - THREE.MathUtils.smoothstep(this.nearAlt, np.radius * 0.05, np.radius * 0.35);
-        const u = this.sky.u;
         u.zen.value.set(np.atmo.zenith);
         u.hor.value.set(np.atmo.horizon);
+        u.sunset.value.set('#ff8a4a').lerp(new THREE.Color(np.atmo.color), 0.25);
+        u.ground.value.set(DUST[np.type] ?? '#3a3530').multiplyScalar(0.55);
         u.up.value.set(up.x, up.y, up.z);
         u.sun.value.set(toSun.x, toSun.y, toSun.z);
         u.sunC.value.copy(this.sun!.color);
         u.alpha.value = inside;
         u.day.value = day;
-        const hor = new THREE.Color(np.atmo.horizon).multiplyScalar(0.12 + 0.88 * day);
+        const hor = new THREE.Color(np.atmo.horizon).lerp(u.sunset.value, dusk * 0.45).multiplyScalar(0.1 + 0.9 * day);
         fog.color.copy(hor);
         fog.near = THREE.MathUtils.lerp(1e8, 600, inside);
         fog.far = THREE.MathUtils.lerp(2e8, 14000, inside);
       }
-      if (np.atmo && inside > 0) {
-        this.hemi.color.set('#6a7a9a').lerp(new THREE.Color(np.atmo.zenith), inside).multiplyScalar(0.35 + 0.65 * Math.max(day, 1 - inside));
-        this.hemi.groundColor.set('#2a2630');
-        this.hemi.intensity = 1.6;
-      } else {
-        this.hemi.color.set('#6a7a9a');
-        this.hemi.groundColor.set('#2a2630');
-        this.hemi.intensity = 1.6;
-      }
     }
     if (!np?.atmo || inside <= 0) {
-      this.sky.u.alpha.value = 0;
+      u.alpha.value = 0;
       fog.near = 1e8;
       fog.far = 2e8;
     }
+
+    // Ambient: hemisphere tinted by the sky, image-based reflections when enabled.
+    const env = q.env;
+    this.hemi.groundColor.set('#2a2630');
+    if (np?.atmo && inside > 0) this.hemi.color.set('#6a7a9a').lerp(new THREE.Color(np.atmo.zenith), inside).multiplyScalar(0.35 + 0.65 * Math.max(day, 1 - inside));
+    else this.hemi.color.set('#6a7a9a');
+    this.hemi.intensity = env ? 1.0 : 1.6;
+    if (env) {
+      if (np?.atmo && inside > 0.5) {
+        this.r.scene.environment = this.envLight.sky(this.sys!.id * 16 + np.index, u);
+        this.r.scene.environmentIntensity = 0.35 + 0.55 * day;
+      } else {
+        this.r.scene.environment = this.envLight.spaceTexture;
+        this.r.scene.environmentIntensity = 0.6;
+      }
+    } else this.r.scene.environment = null;
+
     this.r.scene.backgroundIntensity = 1 - inside * day * 0.97;
     this.sunLight.intensity = 2.6 * (np?.atmo ? 1 - inside * (1 - day) : 1);
+    this.sunLight.color.copy(this.sun!.color).lerp(new THREE.Color('#ffb070'), dusk * inside * 0.6);
     const back = new THREE.Vector3(0, 0.3, 1).applyQuaternion(this.rig.quat);
     this.fill.position.copy(back).multiplyScalar(100);
-    this.fill.intensity = 0.7 * (1 - inside * 0.6);
-    const shadows = this.nearAlt < 1500;
-    this.sunLight.castShadow = shadows;
+    this.fill.intensity = 0.6 * (1 - inside * 0.6);
+    this.sunLight.castShadow = q.shadows && this.nearAlt < 2000;
   }
 
   private project(p: V3): { x: number; y: number; behind: boolean } {

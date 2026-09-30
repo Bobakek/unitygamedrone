@@ -210,3 +210,34 @@ describe('weapons', () => {
     expect(lp.y).toBeCloseTo(100 * t, 3);
   });
 });
+
+describe('solid props', () => {
+  it('pilots cannot walk through tree trunks and colliders are deterministic', async () => {
+    const { collidersNear } = await import('../src/shared/planet/prop-rules.ts');
+    const p = sys.planets.find((x) => x.type === 'terran')!;
+    // find a direction with a collider nearby
+    const rng = new Rng(3);
+    let dir = v3(), cols: ReturnType<typeof collidersNear> = [];
+    for (let i = 0; i < 400 && !cols.length; i++) {
+      dir = vnorm(v3(), v3(rng.range(-1, 1), rng.range(-1, 1), rng.range(-1, 1)));
+      if (surfaceHeight(p, dir.x, dir.y, dir.z) < 5) continue;
+      cols = collidersNear(p, dir, 40).filter((c) => Math.hypot(c.x - dir.x * p.radius, c.y - dir.y * p.radius, c.z - dir.z * p.radius) < 400);
+    }
+    expect(cols.length).toBeGreaterThan(0);
+    const col = cols[0];
+    const cd = vnorm(v3(), v3(col.x, col.y, col.z));
+    expect(collidersNear(p, cd).some((c) => c.x === col.x && c.r === col.r)).toBe(true);
+    // start 3 m away from the trunk and walk straight into it
+    const tangent = vnorm(v3(), v3(-cd.z, 0, cd.x));
+    const startDir = vnorm(v3(), v3(cd.x + tangent.x * (3 / p.radius), cd.y, cd.z + tangent.z * (3 / p.radius)));
+    const g = p.radius + surfaceHeight(p, startDir.x, startDir.y, startDir.z);
+    const c = newChar(v3(p.center.x + startDir.x * g, p.center.y + startDir.y * g, p.center.z + startDir.z * g), v3(-tangent.x, 0, -tangent.z));
+    for (let k = 0; k < 90; k++) stepChar(c, { ...emptyCharInput(), mz: 1 }, p, DT);
+    const base = v3(p.center.x + col.x, p.center.y + col.y, p.center.z + col.z);
+    const up = vnorm(v3(), v3(c.p.x - p.center.x, c.p.y - p.center.y, c.p.z - p.center.z));
+    const dx = c.p.x - base.x, dy = c.p.y - base.y, dz = c.p.z - base.z;
+    const du = dx * up.x + dy * up.y + dz * up.z;
+    const horiz = Math.hypot(dx - up.x * du, dy - up.y * du, dz - up.z * du);
+    expect(horiz).toBeGreaterThanOrEqual(col.r + 0.3);
+  });
+});

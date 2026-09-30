@@ -1,25 +1,34 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { PlanetDef } from '../../shared/galaxy/system-gen.ts';
-import { nodesNear, propsNear, type ResourceNode, type ResourceType } from '../../shared/planet/resources.ts';
+import { nodesNear, type ResourceNode, type ResourceType } from '../../shared/planet/resources.ts';
+import { PROP_STRIDE } from '../../shared/planet/prop-rules.ts';
 import { v3, type V3 } from '../../shared/math/vec.ts';
-import { add, newParts } from '../entities/ship-builder.ts';
-import { rockGeometries } from '../world/structures.ts';
+import type { WorkerPool } from './worker-pool.ts';
+import { kitGeometries, type KindGeo } from './prop-kits.ts';
 
-function treeGeometry(kind: 'pine' | 'mushroom'): THREE.BufferGeometry {
-  const p = newParts();
-  if (kind === 'pine') {
-    add(p, new THREE.CylinderGeometry(0.3, 0.4, 2.4, 5), '#6b4a2f', false, [0, 0.9, 0]);
-    add(p, new THREE.ConeGeometry(2, 5.5, 6), '#ffffff', false, [0, 4.6, 0]);
-  } else {
-    add(p, new THREE.CylinderGeometry(0.35, 0.5, 3.6, 6), '#f6e7c8', false, [0, 1.6, 0]);
-    add(p, new THREE.SphereGeometry(1.8, 8, 5), '#ffffff', false, [0, 3.5, 0], [0, 0, 0], [1, 0.5, 1]);
-  }
-  return mergeGeometries(p.hull)!;
+const windU = { uTime: { value: 0 } };
+/** Wind sway driven by the per-vertex `aSway` weight and the instance position. */
+function withSway<T extends THREE.Material>(m: T, key: string): T {
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uTime = windU.uTime;
+    sh.vertexShader = 'attribute float aSway;\nuniform float uTime;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+      #ifdef USE_INSTANCING
+        vec3 ip = instanceMatrix[3].xyz;
+      #else
+        vec3 ip = vec3(0.0);
+      #endif
+      float sw = sin(uTime * 1.7 + ip.x * 0.35 + ip.z * 0.27 + ip.y * 0.19) * 0.6 + sin(uTime * 2.9 + ip.x * 0.8) * 0.25;
+      transformed.x += sw * aSway;
+      transformed.z += sw * aSway * 0.6;`);
+  };
+  m.customProgramCacheKey = () => key;
+  return m;
 }
 
-const propMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.9 });
-const rockMat = new THREE.MeshStandardMaterial({ flatShading: true, roughness: 0.95 });
+const solidMat = withSway(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.86 }), 'prop-solid');
+const iceMat = withSway(new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.1, metalness: 0.1, transparent: true, opacity: 0.86, emissive: '#16324a' }), 'prop-ice');
+const glowMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false });
+
 const NODE_COLORS: Record<ResourceType, THREE.Color> = {
   ore: new THREE.Color(1.7, 0.75, 0.3),
   crystal: new THREE.Color(0.45, 1.9, 2.3),
@@ -28,116 +37,166 @@ const NODE_COLORS: Record<ResourceType, THREE.Color> = {
 const nodeMat = new THREE.MeshBasicMaterial({ toneMapped: false });
 const beamMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.18, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
 
-const TREE_PALETTE: Record<string, string[]> = {
-  terran: ['#2f6b3a', '#3f7f45', '#4f8f3a'],
-  ocean: ['#2f7f4a', '#3a8f5a', '#5a9f3a'],
-  alien: ['#2ee6c9', '#ff7ab8', '#b98cff'],
-};
+interface KindMeshes { solid: THREE.InstancedMesh; glow: THREE.InstancedMesh | null }
 
-/**
- * Near-surface decoration (trees, rocks) and harvestable resource nodes,
- * rebuilt as instanced meshes around the player when they move far enough.
- */
-export class SurfaceProps {
+/** One tier of decoration (big: trees/rocks far out; small: grass/flowers close by). */
+class PropTier {
   readonly group = new THREE.Group();
-  private trees: THREE.InstancedMesh;
-  private rocks: THREE.InstancedMesh;
-  private nodes: THREE.InstancedMesh;
-  private beams: THREE.InstancedMesh;
-  private treeKind: 'pine' | 'mushroom' | null = null;
+  private meshes: KindMeshes[] = [];
   private planet: PlanetDef | null = null;
   private last = v3(1e12, 0, 0);
-  /** World-space anchor that instance matrices are relative to. */
-  readonly anchor = v3();
-  visibleNodes: (ResourceNode & { pos: V3 })[] = [];
-  private harvestVersion = -1;
+  private pending = false;
+  /** Planet-relative anchor of the built instances. */
+  private anchorRel = v3();
 
-  constructor() {
-    this.trees = new THREE.InstancedMesh(treeGeometry('pine'), propMat, 1600);
-    this.rocks = new THREE.InstancedMesh(rockGeometries()[1], rockMat, 700);
-    this.nodes = new THREE.InstancedMesh(new THREE.OctahedronGeometry(0.6, 0), nodeMat, 200);
-    this.beams = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.35, 0.35, 1, 6, 1, true), beamMat, 200);
-    for (const m of [this.trees, this.rocks, this.nodes, this.beams]) {
-      m.count = 0;
-      m.frustumCulled = false;
-      this.group.add(m);
+  constructor(private tier: 'big' | 'small', private cap: number, private rebuildDist: number) {}
+
+  private setKit(planet: PlanetDef) {
+    for (const m of this.meshes) {
+      m.solid.removeFromParent();
+      m.solid.dispose();
+      m.glow?.removeFromParent();
+      m.glow?.dispose();
     }
-    this.trees.castShadow = true;
-    this.rocks.castShadow = true;
-    this.rocks.receiveShadow = true;
+    this.meshes = kitGeometries(planet.type)[this.tier].map((k: KindGeo) => {
+      const solid = new THREE.InstancedMesh(k.solid, k.ice ? iceMat : solidMat, this.cap);
+      solid.count = 0;
+      solid.frustumCulled = false;
+      solid.castShadow = k.shadow;
+      solid.receiveShadow = true;
+      this.group.add(solid);
+      let glow: THREE.InstancedMesh | null = null;
+      if (k.glow) {
+        glow = new THREE.InstancedMesh(k.glow, glowMat, this.cap);
+        glow.count = 0;
+        glow.frustumCulled = false;
+        this.group.add(glow);
+      }
+      return { solid, glow };
+    });
   }
 
   clear() {
     this.planet = null;
-    for (const m of [this.trees, this.rocks, this.nodes, this.beams]) m.count = 0;
+    for (const m of this.meshes) { m.solid.count = 0; if (m.glow) m.glow.count = 0; }
+    this.last = v3(1e12, 0, 0);
+  }
+
+  update(planet: PlanetDef, cam: V3, pool: WorkerPool) {
+    if (planet !== this.planet) {
+      if (!this.planet || this.planet.type !== planet.type || !this.meshes.length) this.setKit(planet);
+      this.planet = planet;
+      this.last = v3(1e12, 0, 0);
+      for (const m of this.meshes) { m.solid.count = 0; if (m.glow) m.glow.count = 0; }
+    }
+    const moved = Math.hypot(cam.x - this.last.x, cam.y - this.last.y, cam.z - this.last.z);
+    if (this.pending || moved < this.rebuildDist || pool.free <= 0) return;
+    this.pending = true;
+    const rel = v3(cam.x - planet.center.x, cam.y - planet.center.y, cam.z - planet.center.z);
+    const l = Math.hypot(rel.x, rel.y, rel.z);
+    const dir = v3(rel.x / l, rel.y / l, rel.z / l);
+    this.last = { ...cam };
+    pool.requestProps(planet, dir, this.tier, (data) => {
+      this.pending = false;
+      if (planet !== this.planet) return;
+      this.apply(data, rel);
+    });
+  }
+
+  private apply(data: Float32Array, anchorRel: V3) {
+    this.anchorRel = anchorRel;
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), qy = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3(), up = new THREE.Vector3(), c = new THREE.Color();
+    const Y = new THREE.Vector3(0, 1, 0);
+    const counts = this.meshes.map(() => 0);
+    const n = data.length / PROP_STRIDE;
+    for (let i = 0; i < n; i++) {
+      const o = i * PROP_STRIDE;
+      const ki = data[o];
+      const km = this.meshes[ki];
+      if (!km || counts[ki] >= this.cap) continue;
+      up.set(data[o + 4], data[o + 5], data[o + 6]);
+      q.setFromUnitVectors(Y, up).multiply(qy.setFromAxisAngle(Y, data[o + 7]));
+      p.set(data[o + 1] - anchorRel.x, data[o + 2] - anchorRel.y, data[o + 3] - anchorRel.z);
+      m.compose(p, q, s.setScalar(data[o + 8]));
+      km.solid.setMatrixAt(counts[ki], m);
+      km.solid.setColorAt(counts[ki], c.setScalar(data[o + 9]));
+      km.glow?.setMatrixAt(counts[ki], m);
+      counts[ki]++;
+    }
+    this.meshes.forEach((km, i) => {
+      km.solid.count = counts[i];
+      km.solid.instanceMatrix.needsUpdate = true;
+      if (km.solid.instanceColor) km.solid.instanceColor.needsUpdate = true;
+      if (km.glow) { km.glow.count = counts[i]; km.glow.instanceMatrix.needsUpdate = true; }
+    });
+  }
+
+  sync(origin: V3) {
+    const pl = this.planet;
+    if (!pl) return;
+    this.group.position.set(pl.center.x + this.anchorRel.x - origin.x, pl.center.y + this.anchorRel.y - origin.y, pl.center.z + this.anchorRel.z - origin.z);
+  }
+}
+
+/**
+ * Near-surface decoration (two instanced tiers built in workers) and
+ * harvestable resource nodes with light beacons.
+ */
+export class SurfaceProps {
+  readonly group = new THREE.Group();
+  private big = new PropTier('big', 2400, 90);
+  private small = new PropTier('small', 1600, 25);
+  private nodes: THREE.InstancedMesh;
+  private beams: THREE.InstancedMesh;
+  private nodeGroup = new THREE.Group();
+  private planet: PlanetDef | null = null;
+  private lastNodes = v3(1e12, 0, 0);
+  private nodeAnchor = v3();
+  private harvestVersion = -1;
+  visibleNodes: (ResourceNode & { pos: V3 })[] = [];
+
+  constructor(private pool: WorkerPool) {
+    this.nodes = new THREE.InstancedMesh(new THREE.OctahedronGeometry(0.6, 0), nodeMat, 200);
+    this.beams = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.35, 0.35, 1, 6, 1, true), beamMat, 200);
+    for (const m of [this.nodes, this.beams]) {
+      m.count = 0;
+      m.frustumCulled = false;
+      this.nodeGroup.add(m);
+    }
+    this.group.add(this.big.group, this.small.group, this.nodeGroup);
+  }
+
+  clear() {
+    this.planet = null;
+    this.big.clear();
+    this.small.clear();
+    this.nodes.count = 0;
+    this.beams.count = 0;
     this.visibleNodes = [];
   }
 
-  /**
-   * @param cam camera world position; @param harvested set of "planet:node" keys;
-   * @param version bump to force a node refresh after harvesting.
-   */
-  update(planet: PlanetDef | null, cam: V3, harvested: Set<string>, version: number) {
+  /** `cam` = camera world position; `harvested` = "planet:node" keys; bump `version` after harvesting. */
+  update(planet: PlanetDef | null, cam: V3, harvested: Set<string>, version: number, time: number, quality: { props: boolean; small: boolean }) {
+    windU.uTime.value = time;
     if (!planet) { if (this.planet) this.clear(); return; }
-    const moved = (cam.x - this.last.x) ** 2 + (cam.y - this.last.y) ** 2 + (cam.z - this.last.z) ** 2;
-    if (planet === this.planet && moved < 70 * 70 && version === this.harvestVersion) return;
-    const planetChanged = planet !== this.planet;
-    this.planet = planet;
+    if (planet !== this.planet) { this.planet = planet; this.lastNodes = v3(1e12, 0, 0); }
+    if (quality.props) this.big.update(planet, cam, this.pool);
+    if (quality.small) this.small.update(planet, cam, this.pool);
+    this.big.group.visible = quality.props;
+    this.small.group.visible = quality.small;
+
+    const moved = Math.hypot(cam.x - this.lastNodes.x, cam.y - this.lastNodes.y, cam.z - this.lastNodes.z);
+    if (moved < 60 && version === this.harvestVersion) return;
+    this.lastNodes = { ...cam };
     this.harvestVersion = version;
+    this.nodeAnchor = { ...cam };
     const d = v3(cam.x - planet.center.x, cam.y - planet.center.y, cam.z - planet.center.z);
     const len = Math.hypot(d.x, d.y, d.z);
     d.x /= len; d.y /= len; d.z /= len;
-    const doProps = planetChanged || moved >= 70 * 70;
-    this.last = { ...cam };
-    this.anchor.x = cam.x; this.anchor.y = cam.y; this.anchor.z = cam.z;
-
-    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), q2 = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), up = new THREE.Vector3(), Y = new THREE.Vector3(0, 1, 0), c = new THREE.Color();
-    const place = (dir: V3, h: number) => {
-      const r = planet.radius + h;
-      p.set(planet.center.x + dir.x * r - cam.x, planet.center.y + dir.y * r - cam.y, planet.center.z + dir.z * r - cam.z);
-      up.set(dir.x, dir.y, dir.z);
-      q.setFromUnitVectors(Y, up);
-    };
-
-    if (doProps) {
-      const kind = planet.type === 'alien' ? 'mushroom' : 'pine';
-      if (kind !== this.treeKind) {
-        this.trees.geometry.dispose();
-        this.trees.geometry = treeGeometry(kind);
-        this.treeKind = kind;
-      }
-      const pal = TREE_PALETTE[planet.type] ?? TREE_PALETTE.terran;
-      let nt = 0, nr = 0;
-      for (const pr of propsNear(planet, d, 650)) {
-        place(pr.dir, pr.h - 0.3);
-        q.multiply(q2.setFromAxisAngle(Y, pr.rot));
-        if (pr.kind === 0 && nt < 1600) {
-          m.compose(p, q, s.setScalar(pr.scale));
-          this.trees.setMatrixAt(nt, m);
-          this.trees.setColorAt(nt, c.set(pal[pr.id % pal.length]));
-          nt++;
-        } else if (pr.kind === 1 && nr < 700) {
-          m.compose(p, q, s.setScalar(pr.scale * 1.4));
-          this.rocks.setMatrixAt(nr, m);
-          this.rocks.setColorAt(nr, c.setHSL(0.08, 0.1, 0.32 + (pr.id % 7) * 0.02));
-          nr++;
-        }
-      }
-      this.trees.count = nt;
-      this.rocks.count = nr;
-      this.trees.instanceMatrix.needsUpdate = true;
-      this.rocks.instanceMatrix.needsUpdate = true;
-      if (this.trees.instanceColor) this.trees.instanceColor.needsUpdate = true;
-      if (this.rocks.instanceColor) this.rocks.instanceColor.needsUpdate = true;
-    } else {
-      // Keep the prop anchor where the props were built.
-      this.anchor.x = this.propAnchor.x; this.anchor.y = this.propAnchor.y; this.anchor.z = this.propAnchor.z;
-    }
-    if (doProps) this.propAnchor = { ...this.anchor };
-
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), up = new THREE.Vector3(), c = new THREE.Color();
+    const Y = new THREE.Vector3(0, 1, 0);
     let nn = 0;
     this.visibleNodes = [];
-    const a = this.anchor;
     for (const node of nodesNear(planet, d, 500)) {
       if (harvested.has(`${planet.index}:${node.id}`) || nn >= 200) continue;
       const r = planet.radius + node.h;
@@ -145,7 +204,7 @@ export class SurfaceProps {
       this.visibleNodes.push({ ...node, pos });
       up.set(node.dir.x, node.dir.y, node.dir.z);
       q.setFromUnitVectors(Y, up);
-      p.set(pos.x - a.x, pos.y - a.y, pos.z - a.z);
+      p.set(pos.x - cam.x, pos.y - cam.y, pos.z - cam.z);
       const sc = node.type === 'crystal' ? s.set(0.8, 2.4, 0.8) : node.type === 'relic' ? s.set(1.2, 1.2, 1.2) : s.set(1.3, 1, 1.3);
       m.compose(p.clone().addScaledVector(up, sc.y * 0.5), q, sc);
       this.nodes.setMatrixAt(nn, m);
@@ -163,10 +222,11 @@ export class SurfaceProps {
     if (this.beams.instanceColor) this.beams.instanceColor.needsUpdate = true;
   }
 
-  private propAnchor = v3();
-
-  /** Place the group relative to the floating origin. */
+  /** Place the groups relative to the floating origin. */
   sync(origin: V3) {
-    this.group.position.set(this.anchor.x - origin.x, this.anchor.y - origin.y, this.anchor.z - origin.z);
+    this.big.sync(origin);
+    this.small.sync(origin);
+    this.nodeGroup.position.set(this.nodeAnchor.x - origin.x, this.nodeAnchor.y - origin.y, this.nodeAnchor.z - origin.z);
   }
 }
+

@@ -1,9 +1,11 @@
 import * as THREE from 'three';
 import type { Blueprint } from '../../shared/ships/blueprint.ts';
-import { buildAstronaut, buildShip, type BuiltShip } from './ship-builder.ts';
+import { buildShip, type BuiltShip } from './ship-builder.ts';
 import { glowTexture } from '../world/textures.ts';
 
-const hullMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.78, metalness: 0.08 });
+const hullMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.55, metalness: 0.12 });
+const metalMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.32, metalness: 0.85 });
+const glassMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.06, metalness: 0.3, emissive: '#10202a' });
 const glowMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false });
 
 const FRESNEL_VS = `varying vec3 vN; varying vec3 vV;
@@ -34,10 +36,13 @@ export class ShipView {
 
   constructor(public bp: Blueprint) {
     this.built = buildShip(bp);
-    const hull = new THREE.Mesh(this.built.hull, hullMat);
-    hull.castShadow = true;
-    hull.receiveShadow = true;
-    this.group.add(hull, new THREE.Mesh(this.built.glow, glowMat));
+    for (const [g, m] of [[this.built.hull, hullMat], [this.built.metal, metalMat], [this.built.glass, glassMat]] as const) {
+      const mesh = new THREE.Mesh(g, m);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      this.group.add(mesh);
+    }
+    this.group.add(new THREE.Mesh(this.built.glow, glowMat));
     const gc = new THREE.Color(bp.glow);
     for (const e of this.built.engines) {
       const m = new THREE.MeshBasicMaterial({ color: gc.clone().multiplyScalar(1.6), transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
@@ -87,60 +92,6 @@ export class ShipView {
     this.flameMats.forEach((m) => m.dispose());
     this.flames.forEach((f) => f.geometry.dispose());
     this.shield.geometry.dispose();
-  }
-}
-
-const astroMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.7 });
-
-export class AstronautView {
-  readonly group = new THREE.Group();
-  private legs: THREE.Object3D[] = [];
-  private arms: THREE.Object3D[] = [];
-  private phase = 0;
-  private jet: THREE.Sprite;
-  speed = 0;
-  flying = false;
-
-  constructor() {
-    const a = buildAstronaut();
-    const body = new THREE.Mesh(a.body, astroMat);
-    body.castShadow = true;
-    this.group.add(body);
-    for (const s of [-1, 1]) {
-      const leg = new THREE.Group();
-      leg.position.set(s * 0.13, 0.82, 0);
-      const lm = new THREE.Mesh(a.leg, astroMat);
-      lm.castShadow = true;
-      leg.add(lm);
-      const arm = new THREE.Group();
-      arm.position.set(s * 0.36, 1.38, 0);
-      arm.rotation.z = s * 0.18;
-      const am = new THREE.Mesh(a.arm, astroMat);
-      am.castShadow = true;
-      arm.add(am);
-      this.legs.push(leg);
-      this.arms.push(arm);
-      this.group.add(leg, arm);
-    }
-    this.jet = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: new THREE.Color('#8ff8ff').multiplyScalar(1.5), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, toneMapped: false }));
-    this.jet.position.set(0, 0.9, 0.35);
-    this.jet.scale.setScalar(0.9);
-    this.group.add(this.jet);
-  }
-
-  update(dt: number) {
-    this.phase += dt * Math.min(this.speed, 9) * 1.9;
-    const sw = Math.min(1, this.speed / 4) * 0.6;
-    const a = Math.sin(this.phase) * sw;
-    this.legs[0].rotation.x = a;
-    this.legs[1].rotation.x = -a;
-    this.arms[0].rotation.x = -a * 0.8;
-    this.arms[1].rotation.x = a * 0.8;
-    this.jet.visible = this.flying;
-  }
-
-  dispose() {
-    this.group.removeFromParent();
   }
 }
 

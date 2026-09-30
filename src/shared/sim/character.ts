@@ -1,5 +1,6 @@
 import type { PlanetDef } from '../galaxy/system-gen.ts';
-import { heightAt, surfaceHeight } from '../planet/terrain.ts';
+import { footHeight, heightAt } from '../planet/terrain.ts';
+import { collidersNear } from '../planet/prop-rules.ts';
 import { qlook, v3, vcross, vdot, vlen, vnorm, vsub, type Quat, type V3 } from '../math/vec.ts';
 
 export interface CharState {
@@ -81,9 +82,25 @@ export function stepChar(c: CharState, inp: CharInput, pl: PlanetDef, dt: number
 
   c.p.x += c.v.x * dt; c.p.y += c.v.y * dt; c.p.z += c.v.z * dt;
 
+  // Trunks and boulders are solid: push out horizontally (in the local tangent plane).
+  charUp(c, pl, up);
+  for (const col of collidersNear(pl, up)) {
+    const dx = c.p.x - pl.center.x - col.x, dy = c.p.y - pl.center.y - col.y, dz = c.p.z - pl.center.z - col.z;
+    const du = dx * up.x + dy * up.y + dz * up.z;
+    if (du < -1 || du > 6 * col.r + 3) continue;
+    const hx = dx - up.x * du, hy = dy - up.y * du, hz = dz - up.z * du;
+    const hd = Math.sqrt(hx * hx + hy * hy + hz * hz);
+    const rr = col.r + 0.35;
+    if (hd >= rr || hd < 1e-6) continue;
+    const k = (rr - hd) / hd;
+    c.p.x += hx * k; c.p.y += hy * k; c.p.z += hz * k;
+    const vn = (c.v.x * hx + c.v.y * hy + c.v.z * hz) / hd;
+    if (vn < 0) { c.v.x -= (hx / hd) * vn; c.v.y -= (hy / hd) * vn; c.v.z -= (hz / hd) * vn; }
+  }
+
   charUp(c, pl, up);
   const dist = vlen(vsub(tmp, c.p, pl.center));
-  const ground = pl.radius + surfaceHeight(pl, up.x, up.y, up.z);
+  const ground = pl.radius + footHeight(pl, up.x, up.y, up.z);
   const alt = dist - ground;
   const falling = vdot(c.v, up) <= 0.01;
   if (alt <= 0 || (c.ground && alt < 0.7 && falling)) {
