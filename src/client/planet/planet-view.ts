@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import type { PlanetDef } from '../../shared/galaxy/system-gen.ts';
-import { CHUNK_N, type ChunkData } from '../../shared/planet/chunk-gen.ts';
-import { cubeToSphere, maxLevelFor } from '../../shared/planet/cubesphere.ts';
-import { v3 } from '../../shared/math/vec.ts';
+import { CHUNK_N, meshHeightAt, type ChunkData } from '../../shared/planet/chunk-gen.ts';
+import { cubeToSphere, maxLevelFor, sphereToCube } from '../../shared/planet/cubesphere.ts';
+import { v3, type V3 } from '../../shared/math/vec.ts';
 import type { WorkerPool } from './worker-pool.ts';
 
 const terrainMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.93, metalness: 0 });
@@ -44,6 +44,9 @@ function liquidMaterial(def: PlanetDef, u: LiquidUniforms): THREE.Material {
 
 interface QNode {
   face: number; level: number; x: number; y: number;
+  /** Face-coordinate bounds (u0..u0+span, v0..v0+span). */
+  u0: number; v0: number; span: number;
+  heights: Float32Array | null;
   dir: THREE.Vector3;
   center: THREE.Vector3;
   size: number;
@@ -75,6 +78,8 @@ export class PlanetView {
   private horizon = 0;
   private mountain: number;
   chunks = 0;
+  /** Bumped whenever the set of displayed chunks changes (props re-snap to the ground). */
+  lodVersion = 0;
   private liquidU: LiquidUniforms = { uTime: { value: 0 }, uPlanet: { value: new THREE.Vector3() }, uRotInv: { value: new THREE.Matrix3() } };
   private liquid: THREE.Material | null;
 
@@ -90,7 +95,7 @@ export class PlanetView {
     const d = cubeToSphere(face, -1 + (x + 0.5) * size, -1 + (y + 0.5) * size, v3());
     const dir = new THREE.Vector3(d.x, d.y, d.z);
     return {
-      face, level, x, y, dir, center: dir.clone().multiplyScalar(this.def.radius),
+      face, level, x, y, u0: -1 + x * size, v0: -1 + y * size, span: size, heights: null, dir, center: dir.clone().multiplyScalar(this.def.radius),
       size: (Math.PI / 4) * this.def.radius * size, children: null, mesh: null, water: null, pending: false, disposed: false, lastUsed: 0,
     };
   }
@@ -117,11 +122,14 @@ export class PlanetView {
     this.reqs.length = 0;
     this.nextShown.clear();
     for (const r of this.roots) this.visit(r);
+    let changed = this.shown.size !== this.nextShown.size;
     for (const n of this.shown) {
       if (this.nextShown.has(n) || !n.mesh) continue;
+      changed = true;
       n.mesh.visible = false;
       if (n.water) n.water.visible = false;
     }
+    if (changed) this.lodVersion++;
     for (const n of this.nextShown) {
       n.mesh!.visible = true;
       if (n.water) n.water.visible = true;
@@ -188,6 +196,7 @@ export class PlanetView {
       m.matrixAutoUpdate = false;
       m.updateMatrix();
       n.center.set(c.cx, c.cy, c.cz);
+      n.heights = c.heights;
       n.mesh = m;
       this.group.add(m);
       if (this.liquid && c.water.positions.length) {
@@ -207,6 +216,32 @@ export class PlanetView {
       }
     });
   }
+
+  /** Displayed chunk covering face coordinates (face, u, v), or null (culled / not loaded). */
+  shownNodeAt(face: number, u: number, v: number): QNode | null {
+    let n = this.roots[face];
+    while (n) {
+      if (this.shown.has(n) && n.heights) return n;
+      if (!n.children) return null;
+      const cx = u >= n.u0 + n.span / 2 ? 1 : 0, cy = v >= n.v0 + n.span / 2 ? 1 : 0;
+      n = n.children[cy * 2 + cx];
+    }
+    return null;
+  }
+
+  /** Height of the drawn terrain along `dir` (face coords given), or null when nothing is drawn there. */
+  renderedHeight(face: number, u: number, v: number, dir: V3, node = this.shownNodeAt(face, u, v)): number | null {
+    if (!node?.heights) return null;
+    return meshHeightAt(this.def.radius, face, node.u0, node.v0, node.span, CHUNK_N, node.heights, u, v, dir);
+  }
+
+  /** Drawn minus exact terrain height at unit direction `dir` (0 when unknown). */
+  groundDelta(dir: V3, exactH: number): number {
+    const c = sphereToCube(dir, this.cube);
+    const h = this.renderedHeight(c.face, c.u, c.v, dir);
+    return h === null ? 0 : h - exactH;
+  }
+  private cube = { face: 0, u: 0, v: 0 };
 
   /** Frees subtrees that have not been visited recently. */
   private prune(n: QNode) {
@@ -232,6 +267,7 @@ export class PlanetView {
     }
     n.mesh = null;
     n.water = null;
+    n.heights = null;
     n.children = null;
   }
 }

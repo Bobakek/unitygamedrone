@@ -154,6 +154,55 @@ describe('ship simulation', () => {
   });
 });
 
+describe('terrain level of detail', () => {
+  it('sphereToCube inverts cubeToSphere', async () => {
+    const { sphereToCube } = await import('../src/shared/planet/cubesphere.ts');
+    const rng = new Rng(11);
+    for (let k = 0; k < 2000; k++) {
+      const face = rng.int(0, 5), u = rng.range(-0.999, 0.999), v = rng.range(-0.999, 0.999);
+      const c = sphereToCube(cubeToSphere(face, u, v, v3()));
+      expect(c.face).toBe(face);
+      expect(Math.abs(c.u - u)).toBeLessThan(1e-9);
+      expect(Math.abs(c.v - v)).toBeLessThan(1e-9);
+    }
+  });
+
+  it('meshHeightAt matches the drawn chunk triangles at every level', async () => {
+    const { buildChunk, meshHeightAt, CHUNK_N } = await import('../src/shared/planet/chunk-gen.ts');
+    const p = sys.planets[2];
+    const rng = new Rng(4);
+    for (const [level, x, y] of [[2, 1, 2], [5, 12, 20], [8, 100, 140]]) {
+      const face = 4, size = 2 / (1 << level), u0 = -1 + x * size, v0 = -1 + y * size;
+      const ch = buildChunk(p, face, level, x, y);
+      const P = ch.positions;
+      for (let k = 0; k < 60; k++) {
+        const u = u0 + rng.range(0.01, 0.99) * size, v = v0 + rng.range(0.01, 0.99) * size;
+        const d = cubeToSphere(face, u, v, v3());
+        const hm = meshHeightAt(p.radius, face, u0, v0, size, CHUNK_N, ch.heights, u, v, d);
+        // brute force: ray from the planet centre against the chunk's terrain triangles
+        let hit: number | null = null;
+        for (let t = 0; t < CHUNK_N * CHUNK_N * 2 && hit === null; t++) {
+          const o = t * 9;
+          const A = v3(P[o] + ch.cx, P[o + 1] + ch.cy, P[o + 2] + ch.cz);
+          const e1 = v3(P[o + 3] + ch.cx - A.x, P[o + 4] + ch.cy - A.y, P[o + 5] + ch.cz - A.z);
+          const e2 = v3(P[o + 6] + ch.cx - A.x, P[o + 7] + ch.cy - A.y, P[o + 8] + ch.cz - A.z);
+          const pv = v3(d.y * e2.z - d.z * e2.y, d.z * e2.x - d.x * e2.z, d.x * e2.y - d.y * e2.x);
+          const det = e1.x * pv.x + e1.y * pv.y + e1.z * pv.z;
+          const tv = v3(-A.x, -A.y, -A.z);
+          const a = (tv.x * pv.x + tv.y * pv.y + tv.z * pv.z) / det;
+          if (a < -1e-7 || a > 1 + 1e-7) continue;
+          const qv = v3(tv.y * e1.z - tv.z * e1.y, tv.z * e1.x - tv.x * e1.z, tv.x * e1.y - tv.y * e1.x);
+          const b = (d.x * qv.x + d.y * qv.y + d.z * qv.z) / det;
+          if (b < -1e-7 || a + b > 1 + 1e-7) continue;
+          hit = (e2.x * qv.x + e2.y * qv.y + e2.z * qv.z) / det - p.radius;
+        }
+        expect(hit).not.toBeNull();
+        expect(Math.abs(hm - hit!)).toBeLessThan(0.03);
+      }
+    }
+  });
+});
+
 describe('rotating planet frames', () => {
   const p = sys.planets[2];
 

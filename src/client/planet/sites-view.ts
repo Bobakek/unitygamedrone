@@ -6,6 +6,7 @@ import { siteDir, TURRET_HEIGHT, type SiteDef } from '../../shared/planet/sites.
 import { heightAt } from '../../shared/planet/terrain.ts';
 import { add, newParts, taperedBox, type Parts } from '../entities/ship-builder.ts';
 import { glowTexture } from '../world/textures.ts';
+import type { PlanetView } from './planet-view.ts';
 
 const solidMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.88, metalness: 0.05 });
 const metalMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.45, metalness: 0.6 });
@@ -29,6 +30,8 @@ export class SiteView {
   private blink: THREE.Sprite[] = [];
   private inv = new THREE.Quaternion();
   private center = new THREE.Vector3();
+  private up = new THREE.Vector3();
+  private lod = -1;
 
   constructor(private pl: PlanetDef, readonly site: SiteDef) {
     const s = site;
@@ -36,6 +39,7 @@ export class SiteView {
     const east = new THREE.Vector3(s.east.x, s.east.y, s.east.z);
     const south = new THREE.Vector3(-s.north.x, -s.north.y, -s.north.z);
     const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(east, up, south));
+    this.up.copy(up);
     this.center.copy(up).multiplyScalar(pl.radius + s.h);
     this.group.position.copy(this.center);
     this.group.quaternion.copy(q);
@@ -189,6 +193,13 @@ export class SiteView {
   private local(dir: { x: number; y: number; z: number }, h: number, lift: number): number[] {
     tmp.set(dir.x, dir.y, dir.z).multiplyScalar(this.pl.radius + h).sub(this.center).applyQuaternion(this.inv);
     return [tmp.x, tmp.y + lift, tmp.z];
+  }
+
+  /** Sits the whole site on the terrain as currently drawn (coarse LOD far away). */
+  ground(pv: PlanetView) {
+    if (pv.lodVersion === this.lod) return;
+    this.lod = pv.lodVersion;
+    this.group.position.copy(this.center).addScaledVector(this.up, pv.groundDelta(this.site.dir, this.site.h));
   }
 
   update(time: number) {

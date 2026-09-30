@@ -2,6 +2,7 @@ import type { PlanetDef, PlanetType } from '../galaxy/system-gen.ts';
 import type { V3 } from '../math/vec.ts';
 import { scatter, type Scattered } from './resources.ts';
 import { heightAt } from './terrain.ts';
+import { sphereToCube } from './cubesphere.ts';
 import { inSite, sitesNear } from './sites.ts';
 
 /**
@@ -60,8 +61,12 @@ export const PROP_RULES: Record<PlanetType, PlanetPropRules> = {
   },
 };
 
-/** Floats per placed instance: kind, x, y, z (planet-relative), upX, upY, upZ, yaw, scale, tint. */
-export const PROP_STRIDE = 10;
+/**
+ * Floats per placed instance: kind, x, y, z (planet-relative), upX, upY, upZ, yaw, scale, tint,
+ * exact terrain height h, and the cube-face coordinates face, u, v of the base (so the client can
+ * snap the prop onto whatever level of detail of the terrain is currently drawn).
+ */
+export const PROP_STRIDE = 14;
 
 function slopeAt(p: PlanetDef, d: V3, h: number): number {
   const e = 3 / p.radius;
@@ -99,6 +104,7 @@ export function placeProps(p: PlanetDef, d: V3, tier: 'big' | 'small'): Float32A
   const pts = scatter(p, d, rule.radius, rule.grid, rule.density, rule.salt);
   const out = new Float32Array(pts.length * PROP_STRIDE);
   const total = totalWeight(rule);
+  const cube = { face: 0, u: 0, v: 0 };
   let n = 0;
   for (const pt of pts) {
     const pl = placeOne(p, rule, total, pt);
@@ -110,6 +116,9 @@ export function placeProps(p: PlanetDef, d: V3, tier: 'big' | 'small'): Float32A
     out[o + 7] = pt.r[1] * Math.PI * 2;
     out[o + 8] = pl.scale;
     out[o + 9] = 0.86 + pt.r[3] * 0.26;
+    out[o + 10] = pt.h;
+    sphereToCube(pt.dir, cube);
+    out[o + 11] = cube.face; out[o + 12] = cube.u; out[o + 13] = cube.v;
     n++;
   }
   return out.subarray(0, n * PROP_STRIDE);

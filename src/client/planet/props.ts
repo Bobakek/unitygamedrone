@@ -4,6 +4,70 @@ import { nodesNear, type ResourceNode, type ResourceType } from '../../shared/pl
 import { PROP_STRIDE } from '../../shared/planet/prop-rules.ts';
 import { qrot, v3, type Quat, type V3 } from '../../shared/math/vec.ts';
 import type { WorkerPool } from './worker-pool.ts';
+import type { PlanetView } from './planet-view.ts';
+import { sphereToCube } from '../../shared/planet/cubesphere.ts';
+
+type ShownNode = ReturnType<PlanetView['shownNodeAt']>;
+
+/**
+ * Per-instance data needed to drop a prop onto the terrain as currently drawn:
+ * the worker places props on the exact height, but distant terrain is a
+ * coarser mesh, so each base is moved along its up vector by the difference.
+ */
+class GroundSnap {
+  n = 0;
+  mesh = new Int16Array(0);
+  slot = new Int32Array(0);
+  base = new Float32Array(0);
+  up = new Float32Array(0);
+  h = new Float32Array(0);
+  cube = new Float32Array(0);
+  node: ShownNode[] = [];
+  delta = new Float32Array(0);
+
+  reset(cap: number) {
+    this.n = 0;
+    if (this.slot.length < cap) {
+      this.mesh = new Int16Array(cap); this.slot = new Int32Array(cap); this.base = new Float32Array(cap * 3); this.up = new Float32Array(cap * 3);
+      this.h = new Float32Array(cap); this.cube = new Float32Array(cap * 3); this.delta = new Float32Array(cap);
+    }
+    this.node = [];
+  }
+
+  push(mesh: number, slot: number, bx: number, by: number, bz: number, ux: number, uy: number, uz: number, h: number, face: number, u: number, v: number) {
+    const i = this.n++;
+    this.mesh[i] = mesh; this.slot[i] = slot;
+    this.base[i * 3] = bx; this.base[i * 3 + 1] = by; this.base[i * 3 + 2] = bz;
+    this.up[i * 3] = ux; this.up[i * 3 + 1] = uy; this.up[i * 3 + 2] = uz;
+    this.h[i] = h; this.cube[i * 3] = face; this.cube[i * 3 + 1] = u; this.cube[i * 3 + 2] = v;
+    this.delta[i] = 0;
+    this.node.push(null);
+  }
+
+  /**
+   * Re-evaluates the ground under every instance and rewrites the translation
+   * of changed ones via `write(mesh, slot, x, y, z)`; returns the touched meshes.
+   */
+  snap(pv: PlanetView, write: (mesh: number, slot: number, x: number, y: number, z: number) => void): Set<number> {
+    const touched = new Set<number>();
+    const dir = v3();
+    for (let i = 0; i < this.n; i++) {
+      const face = this.cube[i * 3], u = this.cube[i * 3 + 1], v = this.cube[i * 3 + 2];
+      const node = pv.shownNodeAt(face, u, v);
+      if (node === this.node[i] && node) continue;
+      this.node[i] = node;
+      dir.x = this.up[i * 3]; dir.y = this.up[i * 3 + 1]; dir.z = this.up[i * 3 + 2];
+      const hr = node ? pv.renderedHeight(face, u, v, dir, node) : null;
+      // where this level of detail puts the ground under the sea, the prop would stand in water: sink it out of sight
+      const d = hr === null ? 0 : pv.def.sea && hr < 0.3 ? -300 : hr - this.h[i];
+      if (Math.abs(d - this.delta[i]) < 0.005) continue;
+      this.delta[i] = d;
+      write(this.mesh[i], this.slot[i], this.base[i * 3] + dir.x * d, this.base[i * 3 + 1] + dir.y * d, this.base[i * 3 + 2] + dir.z * d);
+      touched.add(this.mesh[i]);
+    }
+    return touched;
+  }
+}
 import { kitGeometries, type KindGeo } from './prop-kits.ts';
 
 const windU = { uTime: { value: 0 } };
@@ -56,8 +120,29 @@ class PropTier {
   private pending = false;
   /** Planet-relative anchor of the built instances. */
   private anchorRel = v3();
+  private ground = new GroundSnap();
+  /** Set when new instances arrived and have not been dropped onto the drawn terrain yet. */
+  fresh = false;
 
   constructor(private tier: 'big' | 'small', private cap: number, private rebuildDist: number) {}
+
+  /** Drops instances onto the currently drawn terrain. */
+  snap(pv: PlanetView) {
+    if (pv.def !== this.planet) return;
+    const touched = this.ground.snap(pv, (mi, slot, x, y, z) => {
+      const km = this.meshes[mi];
+      for (const im of [km.solid, km.glow]) {
+        if (!im) continue;
+        const a = im.instanceMatrix.array as Float32Array;
+        a[slot * 16 + 12] = x; a[slot * 16 + 13] = y; a[slot * 16 + 14] = z;
+      }
+    });
+    for (const mi of touched) {
+      const km = this.meshes[mi];
+      km.solid.instanceMatrix.needsUpdate = true;
+      if (km.glow) km.glow.instanceMatrix.needsUpdate = true;
+    }
+  }
 
   private setKit(planet: PlanetDef) {
     for (const m of this.meshes) {
@@ -114,10 +199,12 @@ class PropTier {
 
   private apply(data: Float32Array, anchorRel: V3) {
     this.anchorRel = anchorRel;
+    this.fresh = true;
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), qy = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3(), up = new THREE.Vector3(), c = new THREE.Color();
     const Y = new THREE.Vector3(0, 1, 0);
     const counts = this.meshes.map(() => 0);
     const n = data.length / PROP_STRIDE;
+    this.ground.reset(n);
     for (let i = 0; i < n; i++) {
       const o = i * PROP_STRIDE;
       const ki = data[o];
@@ -130,6 +217,7 @@ class PropTier {
       km.solid.setMatrixAt(counts[ki], m);
       km.solid.setColorAt(counts[ki], c.setScalar(data[o + 9]));
       km.glow?.setMatrixAt(counts[ki], m);
+      this.ground.push(ki, counts[ki], p.x, p.y, p.z, up.x, up.y, up.z, data[o + 10], data[o + 11], data[o + 12], data[o + 13]);
       counts[ki]++;
     }
     this.meshes.forEach((km, i) => {
@@ -161,6 +249,10 @@ export class SurfaceProps {
   private planet: PlanetDef | null = null;
   private lastNodes = v3(1e12, 0, 0);
   private nodeAnchor = v3();
+  private nodeGround = new GroundSnap();
+  private lodSeen = -1;
+  private lastSnap = -1;
+  private nodesFresh = false;
   private harvestVersion = -1;
   /** Nodes near the camera; `pos` is in the planet's body frame. */
   visibleNodes: (ResourceNode & { pos: V3 })[] = [];
@@ -178,6 +270,7 @@ export class SurfaceProps {
 
   clear() {
     this.planet = null;
+    this.nodeGround.reset(0);
     this.big.clear();
     this.small.clear();
     this.nodes.count = 0;
@@ -185,15 +278,44 @@ export class SurfaceProps {
     this.visibleNodes = [];
   }
 
-  /** `cam` = camera position in the planet's body frame; `harvested` = "planet:node" keys; bump `version` after harvesting. */
-  update(planet: PlanetDef | null, cam: V3, harvested: Set<string>, version: number, time: number, quality: { props: boolean; small: boolean }) {
+  /**
+   * `pv` = the planet being walked/flown over; `cam` = camera position in its body frame;
+   * `harvested` = "planet:node" keys; bump `version` after harvesting.
+   */
+  update(pv: PlanetView | null, cam: V3, harvested: Set<string>, version: number, time: number, quality: { props: boolean; small: boolean }) {
     windU.uTime.value = time;
-    if (!planet) { if (this.planet) this.clear(); return; }
+    const planet = pv?.def ?? null;
+    if (!pv || !planet) { if (this.planet) this.clear(); return; }
     if (planet !== this.planet) { this.planet = planet; this.lastNodes = v3(1e12, 0, 0); }
     if (quality.props) this.big.update(planet, cam, this.pool);
     if (quality.small) this.small.update(planet, cam, this.pool);
     this.big.group.visible = quality.props;
     this.small.group.visible = quality.small;
+    this.updateNodes(planet, cam, harvested, version);
+    // keep everything standing on the terrain as it is currently drawn (LOD changes, new batches);
+    // throttled in wall-clock time so slow frames still re-snap every frame
+    const now = performance.now() / 1000;
+    const lodChanged = pv.lodVersion !== this.lodSeen && now - this.lastSnap > 0.15;
+    if (lodChanged || this.big.fresh || this.small.fresh || this.nodesFresh) {
+      this.lodSeen = pv.lodVersion;
+      this.lastSnap = now;
+      this.big.snap(pv); this.big.fresh = false;
+      this.small.snap(pv); this.small.fresh = false;
+      this.snapNodes(pv);
+    }
+  }
+
+  private snapNodes(pv: PlanetView) {
+    this.nodesFresh = false;
+    const ims = [this.nodes, this.beams];
+    const touched = this.nodeGround.snap(pv, (mi, slot, x, y, z) => {
+      const a = ims[mi].instanceMatrix.array as Float32Array;
+      a[slot * 16 + 12] = x; a[slot * 16 + 13] = y; a[slot * 16 + 14] = z;
+    });
+    for (const mi of touched) ims[mi].instanceMatrix.needsUpdate = true;
+  }
+
+  private updateNodes(planet: PlanetDef, cam: V3, harvested: Set<string>, version: number) {
 
     const moved = Math.hypot(cam.x - this.lastNodes.x, cam.y - this.lastNodes.y, cam.z - this.lastNodes.z);
     if (moved < 60 && version === this.harvestVersion) return;
@@ -207,6 +329,9 @@ export class SurfaceProps {
     const Y = new THREE.Vector3(0, 1, 0);
     let nn = 0;
     this.visibleNodes = [];
+    this.nodeGround.reset(400);
+    this.nodesFresh = true;
+    const cube = { face: 0, u: 0, v: 0 };
     for (const node of nodesNear(planet, d, 500)) {
       if (harvested.has(`${planet.index}:${node.id}`) || nn >= 200) continue;
       const r = planet.radius + node.h;
@@ -216,11 +341,16 @@ export class SurfaceProps {
       q.setFromUnitVectors(Y, up);
       p.set(pos.x - cam.x, pos.y - cam.y, pos.z - cam.z);
       const sc = node.type === 'crystal' ? s.set(0.8, 2.4, 0.8) : node.type === 'relic' ? s.set(1.2, 1.2, 1.2) : s.set(1.3, 1, 1.3);
-      m.compose(p.clone().addScaledVector(up, sc.y * 0.5), q, sc);
+      const np = p.clone().addScaledVector(up, sc.y * 0.5);
+      m.compose(np, q, sc);
       this.nodes.setMatrixAt(nn, m);
       this.nodes.setColorAt(nn, NODE_COLORS[node.type]);
-      m.compose(p.clone().addScaledVector(up, 20), q, s.set(1, 40, 1));
+      const bp = p.clone().addScaledVector(up, 20);
+      m.compose(bp, q, s.set(1, 40, 1));
       this.beams.setMatrixAt(nn, m);
+      sphereToCube(node.dir, cube);
+      this.nodeGround.push(0, nn, np.x, np.y, np.z, up.x, up.y, up.z, node.h, cube.face, cube.u, cube.v);
+      this.nodeGround.push(1, nn, bp.x, bp.y, bp.z, up.x, up.y, up.z, node.h, cube.face, cube.u, cube.v);
       this.beams.setColorAt(nn, c.copy(NODE_COLORS[node.type]).multiplyScalar(0.6));
       nn++;
     }

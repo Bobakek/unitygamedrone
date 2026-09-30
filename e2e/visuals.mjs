@@ -28,6 +28,44 @@ try {
   const chat = (t) => page.evaluate((x) => window.__game.conn.chat(x), t);
   const mode = (m) => page.waitForFunction((x) => window.__game.pred.mode === x, m, { timeout: 20000, polling: 250 });
   const only = process.argv[2];
+  // Share of props whose base is off the terrain as currently drawn (LOD) by more than 0.3 m.
+  const grounding = () => page.evaluate(() => {
+    const g = window.__game;
+    const np = g.nearPlanet;
+    if (!np) return null;
+    const pv = g.planets[np.index];
+    const out = { n: 0, bad: 0, worst: 0 };
+    for (const tier of [g.props.big, g.props.small]) {
+      const gr = tier.ground;
+      for (let i = 0; i < gr.n; i++) {
+        const dir = { x: gr.up[i * 3], y: gr.up[i * 3 + 1], z: gr.up[i * 3 + 2] };
+        const hr = pv.renderedHeight(gr.cube[i * 3], gr.cube[i * 3 + 1], gr.cube[i * 3 + 2], dir);
+        if (hr === null) continue;
+        const a = tier.meshes[gr.mesh[i]].solid.instanceMatrix.array, o = gr.slot[i] * 16;
+        const lift = (a[o + 12] - gr.base[i * 3]) * dir.x + (a[o + 13] - gr.base[i * 3 + 1]) * dir.y + (a[o + 14] - gr.base[i * 3 + 2]) * dir.z;
+        if (lift < -100) continue; // deliberately sunk: that LOD puts its ground under the sea
+        const err = Math.abs(gr.h[i] + lift - hr);
+        out.n++;
+        if (err > 0.3) out.bad++;
+        out.worst = Math.max(out.worst, err);
+      }
+    }
+    return out;
+  });
+  const checkGround = async (label) => {
+    // measure once the terrain has settled (the props re-snap right after each LOD change)
+    for (let i = 0; i < 40; i++) {
+      const settled = await page.evaluate(() => {
+        const g = window.__game, np = g.nearPlanet;
+        return !np || g.planets[np.index].lodVersion === g.props.lodSeen;
+      });
+      if (settled) break;
+      await sleep(250);
+    }
+    const gm = await grounding();
+    console.log('grounding', label, JSON.stringify(gm));
+    if (gm && gm.n > 50 && gm.bad / gm.n > 0.01) errors.push(`${label}: ${gm.bad}/${gm.n} props off the drawn terrain`);
+  };
   const tour = [[0, 2, 'terran'], [0, 1, 'alien'], [0, 3, 'ice'], [0, 0, 'barren'], [1, 2, 'desert']];
   for (const [sys, idx, name] of tour) {
     if (only && only !== name) continue;
@@ -38,9 +76,11 @@ try {
     await chat(`/tp low${idx}`);
     await sleep(9000);
     await page.screenshot({ path: `${OUT}/${name}-1-flight.png` });
+    await checkGround(`${name} flight`);
     await chat(`/land ${idx}`);
     await sleep(9000);
     await page.screenshot({ path: `${OUT}/${name}-2-landed.png` });
+    await checkGround(`${name} landed`);
     await page.keyboard.press('KeyG');
     await mode(1);
     await page.keyboard.down('KeyW');

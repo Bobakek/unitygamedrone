@@ -1,5 +1,5 @@
 import type { PlanetDef } from '../galaxy/system-gen.ts';
-import { v3 } from '../math/vec.ts';
+import { v3, type V3 } from '../math/vec.ts';
 import { cubeToSphere } from './cubesphere.ts';
 import { heightAt, surfaceColor } from './terrain.ts';
 
@@ -13,6 +13,42 @@ export interface ChunkData {
   /** Liquid surface (sea / lava / ice sheet) for this chunk; empty when fully dry. */
   water: { positions: Float32Array; normals: Float32Array; colors: Float32Array };
   radius: number;
+  /** Terrain height at each grid vertex, (N+1)² row-major (j * (N+1) + i). */
+  heights: Float32Array;
+}
+
+const _a = v3(), _b = v3(), _c = v3();
+
+/**
+ * Height (above the planet radius) of the rendered, flat-shaded chunk surface
+ * along unit direction `d`, where (u, v) are d's face coordinates inside the
+ * chunk (u0..u0+size, v0..v0+size). Uses the same triangle split as
+ * `buildChunk` and intersects the actual flat triangle, so objects placed with
+ * it sit exactly on what is drawn at that level of detail.
+ */
+export function meshHeightAt(radius: number, face: number, u0: number, v0: number, size: number, N: number, heights: ArrayLike<number>, u: number, v: number, d: V3): number {
+  const G = N + 1;
+  const fu = Math.max(0, Math.min(N, ((u - u0) / size) * N)), fv = Math.max(0, Math.min(N, ((v - v0) / size) * N));
+  const i = Math.min(N - 1, Math.floor(fu)), j = Math.min(N - 1, Math.floor(fv));
+  const tx = fu - i, ty = fv - j;
+  const a = j * G + i;
+  // triangles (a, b, c) for tx ≥ ty and (a, c, d) otherwise — see buildChunk
+  const k1 = tx >= ty ? a + 1 : a + G + 1;
+  const k2 = tx >= ty ? a + G + 1 : a + G;
+  const cell = size / N;
+  const at = (k: number, o: V3) => {
+    const ii = k % G, jj = (k - ii) / G;
+    cubeToSphere(face, u0 + ii * cell, v0 + jj * cell, o);
+    const r = radius + heights[k];
+    o.x *= r; o.y *= r; o.z *= r;
+    return o;
+  };
+  const A = at(a, _a), B = at(k1, _b), C = at(k2, _c);
+  const e1x = B.x - A.x, e1y = B.y - A.y, e1z = B.z - A.z, e2x = C.x - A.x, e2y = C.y - A.y, e2z = C.z - A.z;
+  const nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+  const dn = nx * d.x + ny * d.y + nz * d.z;
+  if (Math.abs(dn) < 1e-12) return heights[a];
+  return (nx * A.x + ny * A.y + nz * A.z) / dn - radius;
 }
 
 export const CHUNK_N = 16;
@@ -130,5 +166,6 @@ export function buildChunk(p: PlanetDef, face: number, level: number, x: number,
     key: `${face}/${level}/${x}/${y}`, cx, cy, cz, positions: P, normals: Nn, colors: C,
     water: { positions: new Float32Array(W), normals: new Float32Array(WN), colors: new Float32Array(WC) },
     radius: Math.sqrt(maxR2),
+    heights: Float32Array.from(raw),
   };
 }

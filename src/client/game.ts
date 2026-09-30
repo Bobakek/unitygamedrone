@@ -6,7 +6,7 @@ import { FWD, qlook, qrot, quat, v3, vcross, vdist, vlen, vnorm, vsub, type Quat
 import {
   BLASTER_LEVEL, EFLAG, IFLAG, KIND, MODE, type EntityInfo, type EntityState, type GameEvent, type PilotInfo, type SelfState, type Shot, type Snapshot, type Welcome,
 } from '../shared/net/protocol.ts';
-import { surfaceHeight } from '../shared/planet/terrain.ts';
+import { heightAt, surfaceHeight } from '../shared/planet/terrain.ts';
 import { resourceNode } from '../shared/planet/resources.ts';
 import type { SimEnv } from '../shared/sim/env.ts';
 import { newPose, planetRot, toBodyDir, toBodyPoint, toWorldDir, toWorldPoint, toWorldQuat, toWorldVel, worldPose, type Pose } from '../shared/sim/frames.ts';
@@ -695,6 +695,34 @@ export class Game {
     obj.position.set(p.x - this.origin.x, p.y - this.origin.y, p.z - this.origin.z);
   }
 
+  /**
+   * Visual lift (metres along local up) that puts something standing on a planet onto the
+   * terrain as it is drawn: far away the mesh is a coarser LOD than the exact height used by
+   * physics. Fades out a few metres above the ground (jumps, hovering).
+   */
+  private groundFix(planet: number, bodyP: V3): number {
+    const pv = this.planets[planet];
+    if (!pv) return 0;
+    const pl = pv.def;
+    const l = vlen(bodyP);
+    const d = v3(bodyP.x / l, bodyP.y / l, bodyP.z / l);
+    const h = heightAt(pl, d.x, d.y, d.z);
+    if (pl.sea && h < 0) return 0;
+    const alt = l - pl.radius - h;
+    if (alt > 5) return 0;
+    return pv.groundDelta(d, h) * (alt <= 2.5 ? 1 : 1 - (alt - 2.5) / 2.5);
+  }
+
+  /** Moves `obj` along its planet's world up by the ground fix of body position `bodyP`. */
+  private liftToGround(obj: THREE.Object3D, frame: number, bodyP: V3, worldP: V3) {
+    if (!frame) return;
+    const fix = this.groundFix(frame - 1, bodyP);
+    if (!fix) return;
+    const c = this.sys!.planets[frame - 1].center;
+    const up = vnorm(v3(), vsub(v3(), worldP, c));
+    obj.position.x += up.x * fix; obj.position.y += up.y * fix; obj.position.z += up.z * fix;
+  }
+
   /** Render-space vector (relative to the floating origin) of a world point. */
   private rel(p: V3): THREE.Vector3 {
     return new THREE.Vector3(p.x - this.origin.x, p.y - this.origin.y, p.z - this.origin.z);
@@ -758,7 +786,7 @@ export class Game {
     // props first: they only need a couple of worker jobs and must not starve behind terrain chunks
     const propsPlanet = np && this.nearAlt < 2500 ? np : null;
     const camB = propsPlanet ? toBodyPoint(propsPlanet, this.rots[propsPlanet.index], this.origin, v3()) : this.origin;
-    this.props.update(propsPlanet, camB, this.harvestedSet(), this.harvestVersion, this.time, { props: true, small: this.r.q.smallProps });
+    this.props.update(propsPlanet ? this.planets[propsPlanet.index] : null, camB, this.harvestedSet(), this.harvestVersion, this.time, { props: true, small: this.r.q.smallProps });
     this.planets.forEach((pv, i) => {
       const p = pv.def;
       const R = this.rots[i];
@@ -781,7 +809,7 @@ export class Game {
       // ruins and outposts ride the planet group; built lazily on approach
       const near = vdist(this.origin, p.center) < p.radius * 3;
       if (near && !this.siteViews[i]) this.siteViews[i] = planetSites(p).map((s) => { const v = new SiteView(p, s); pv.group.add(v.group); return v; });
-      if (near) for (const v of this.siteViews[i]!) v.update(this.time);
+      if (near) for (const v of this.siteViews[i]!) { v.update(this.time); v.ground(pv); }
     });
     this.place(this.station!.group, sys.station.pos);
     this.station!.update(dt);
@@ -794,6 +822,7 @@ export class Game {
     ms.group.visible = mode === MODE.SHIP || mode === MODE.FOOT;
     this.place(ms.group, this.shipPos);
     ms.group.quaternion.set(this.shipQ.x, this.shipQ.y, this.shipQ.z, this.shipQ.w);
+    if (ship.landed) this.liftToGround(ms.group, ship.frame, this.shipPosF, this.shipPos);
     ms.throttle = Math.abs(this.ctrl.throttle);
     ms.boost = this.input.down('ShiftLeft');
     ms.cruise = isCruising(ship);
@@ -802,6 +831,7 @@ export class Game {
     if (this.myAstro && onFoot && charPl) {
       const up = vnorm(v3(), vsub(v3(), this.charPos, charPl.center));
       this.place(this.myAstro.group, this.charPos);
+      this.liftToGround(this.myAstro.group, charPl.index + 1, this.charPosB, this.charPos);
       const q = qlook(quat(), this.charFwd, up);
       this.myAstro.group.quaternion.set(q.x, q.y, q.z, q.w);
       // animation inputs in the body frame (independent of the planet's spin)
@@ -844,6 +874,8 @@ export class Game {
       if (!r.visible || !st) continue;
       this.place(r.view.group, r.p);
       r.view.group.quaternion.set(r.q.x, r.q.y, r.q.z, r.q.w);
+      const grounded = r.view instanceof AstronautView || r.view instanceof CreatureView || (r.view instanceof ShipView && !!(st.flags & EFLAG.LANDED));
+      if (grounded) this.liftToGround(r.view.group, st.frame, r.bp, r.p);
       if (r.view instanceof ShipView) {
         r.view.throttle = st.throttle;
         r.view.boost = !!(st.flags & EFLAG.BOOST);
