@@ -6,10 +6,10 @@ import { Reader, Writer } from './buffer.ts';
 
 export const MSG = {
   HELLO: 1, INPUT: 2, ACTION: 3, CHAT: 4, PING: 5,
-  WELCOME: 20, SNAPSHOT: 21, INFO: 22, GONE: 23, SHOTS: 24, EVENTS: 25, PILOT: 26, PONG: 27, ERROR: 28,
+  WELCOME: 20, SNAPSHOT: 21, INFO: 22, GONE: 23, SHOTS: 24, EVENTS: 25, PILOT: 26, PONG: 27, ERROR: 28, WORLD: 29,
 } as const;
 
-export const KIND = { SHIP: 1, CHAR: 2, MISSILE: 3 } as const;
+export const KIND = { SHIP: 1, CHAR: 2, MISSILE: 3, LOOT: 4 } as const;
 export const EFLAG = { LANDED: 1, CRUISE: 2, BOOST: 4, HIDDEN: 8, NPC: 16, SAFE: 32, DEAD: 64 } as const;
 export const IFLAG = { FIRE: 1, BOOST: 2, CRUISE: 4, JUMP: 8, SPRINT: 16 } as const;
 export const MODE = { SHIP: 0, FOOT: 1, DOCKED: 2, DEAD: 3 } as const;
@@ -33,13 +33,19 @@ export type GameEvent =
   | { t: 'chat'; from: string; text: string }
   | { t: 'msg'; text: string; kind?: 'info' | 'warn' | 'good' }
   | { t: 'harvest'; planet: number; node: number; left: number; by: number }
-  | { t: 'missile'; id: number; target: number };
+  | { t: 'missile'; id: number; target: number }
+  /** Big centred banner for world events. */
+  | { t: 'announce'; text: string; sub?: string; kind?: 'info' | 'warn' | 'good' }
+  /** Anomaly scan progress for this pilot (k in 0..1, -1 = left the field). */
+  | { t: 'scan'; id: number; k: number }
+  | { t: 'loot'; text: string; pos: [number, number, number] };
 
 export type Action =
   | { a: 'exit' } | { a: 'board' } | { a: 'dock' } | { a: 'undock' } | { a: 'jump' }
   | { a: 'harvest'; node: number }
   | { a: 'sell' } | { a: 'repair' } | { a: 'buyMissiles' } | { a: 'upgrade'; key: string }
-  | { a: 'missile'; target: number } | { a: 'respawn' };
+  | { a: 'missile'; target: number } | { a: 'respawn' }
+  | { a: 'salvage'; id: number };
 
 export function encodeJson(type: number, payload: unknown): Uint8Array {
   const body = new TextEncoder().encode(JSON.stringify(payload));

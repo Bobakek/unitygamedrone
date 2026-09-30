@@ -118,6 +118,42 @@ function pirate(bp: Blueprint, parts: Parts) {
   }
 }
 
+/** Convoy hauler (~55 m): bridge up front, a spine of cargo containers, heavy engine block. */
+function freighter(bp: Blueprint, parts: Parts) {
+  const r = new Rng(bp.seed);
+  const segs = r.int(4, 5), segL = 9.5, spineL = segs * segL + 6;
+  const z0 = -spineL / 2;
+  add(parts, new THREE.BoxGeometry(4.5, 4.5, spineL), bp.hull2, false);
+  // bridge
+  add(parts, taperedBox(11, 7, 12, 0.55, 1, 0.7), bp.hull, false, [0, 1.5, spineL / 2 + 5]);
+  add(parts, new THREE.BoxGeometry(8, 1.2, 0.4), bp.glass, 'glass', [0, 3.2, spineL / 2 + 9.6], [-0.35, 0, 0]);
+  add(parts, taperedBox(5, 3, 5, 0.6, 1), bp.hull, false, [0, 6, spineL / 2 + 2]);
+  add(parts, new THREE.CylinderGeometry(0.15, 0.15, 6, 4), bp.engine, 'metal', [1.6, 10, spineL / 2 + 1]);
+  add(parts, new THREE.SphereGeometry(0.4, 5, 3), '#ff3040', true, [1.6, 13, spineL / 2 + 1]);
+  // container rack
+  const colors = [bp.accent, bp.hull, '#5a7a8a', '#9a5a3a', bp.accent, '#6a8a4a'];
+  for (let i = 0; i < segs; i++) {
+    const z = z0 + 3 + segL * (i + 0.5);
+    add(parts, new THREE.BoxGeometry(17, 1, 1), bp.engine, 'metal', [0, -3.5, z - segL / 2 + 0.6]);
+    for (const [x, y] of [[-5.2, 0], [5.2, 0], [0, 5.2], [-5.2, 5.2], [5.2, 5.2]]) {
+      if (r.chance(0.18)) continue;
+      add(parts, new THREE.BoxGeometry(5, 5, segL - 1.2), r.pick(colors), false, [x, y - 0.3, z]);
+    }
+  }
+  // engine block
+  add(parts, new THREE.BoxGeometry(15, 9, 8), bp.hull, false, [0, 1, z0 - 3]);
+  for (const x of [-4.5, 0, 4.5]) {
+    add(parts, cyl(2.1, 2.6, 4), bp.engine, 'metal', [x, 1, z0 - 9]);
+    add(parts, cyl(1.8, 1.8, 0.1), bp.glow, true, [x, 1, z0 - 11.05], undefined, undefined, 1.1);
+    parts.engines.push({ pos: new THREE.Vector3(x, 1, z0 - 11.1), r: 1.9 });
+  }
+  for (const s of [-1, 1]) {
+    add(parts, new THREE.BoxGeometry(0.4, 10, 7), bp.engine, 'metal', [s * 8.5, 2, z0 - 2]);
+    add(parts, new THREE.SphereGeometry(0.35, 5, 3), s < 0 ? '#ff3040' : '#30ff70', true, [s * 8.9, 7.5, z0 - 2]);
+    add(parts, new THREE.BoxGeometry(0.6, 0.6, spineL * 0.8), bp.accent, true, [s * 2.4, -2.4, 0], undefined, undefined, 0.6);
+  }
+}
+
 const cache = new Map<string, BuiltShip>();
 
 export function buildShip(bp: Blueprint): BuiltShip {
@@ -125,7 +161,9 @@ export function buildShip(bp: Blueprint): BuiltShip {
   const hit = cache.get(key);
   if (hit) return hit;
   const parts: Parts = newParts();
-  if (bp.cls === 'pirate') pirate(bp, parts); else fighter(bp, parts);
+  if (bp.cls === 'pirate') pirate(bp, parts);
+  else if (bp.cls === 'freighter') freighter(bp, parts);
+  else fighter(bp, parts);
   const [hull, metal, glass, glow] = [parts.hull, parts.metal, parts.glass, parts.glow].map((l) => {
     const g = mergeGeometries(l)!;
     g.rotateY(Math.PI); // nose from +Z to -Z

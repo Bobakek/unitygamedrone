@@ -76,6 +76,20 @@ export class Hud {
     if (!this.station.classList.contains('hidden')) this.renderStation(p);
   }
 
+  /** Big centred banner for world events. */
+  announce(text: string, sub: string, kind: 'info' | 'warn' | 'good' = 'info') {
+    const box = $('#announce');
+    const d = document.createElement('div');
+    d.className = kind;
+    const b = document.createElement('b');
+    b.textContent = text;
+    const s = document.createElement('span');
+    s.textContent = sub;
+    d.append(b, s);
+    box.replaceChildren(d);
+    setTimeout(() => d.remove(), 7200);
+  }
+
   /** Local solar time on the planet below (null hides it). */
   clock(c: { planet: string; hours: number } | null) {
     $('.pp-clock').classList.toggle('hidden', !c);

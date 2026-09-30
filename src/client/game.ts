@@ -35,11 +35,13 @@ import { Radar, type Blip } from './ui/radar.ts';
 import { Effects } from './world/effects.ts';
 import { SpaceBackdrop, Sun } from './world/space.ts';
 import { FieldView, GateView, StationView } from './world/structures.ts';
+import { AnomalyView, LootView, WreckView, type PoiView } from './world/poi-views.ts';
+import { POI_LABEL, SALVAGE_MAX_SPEED, SALVAGE_RANGE, type Poi } from '../shared/events.ts';
 
 interface Remote {
   info: EntityInfo | null;
   buf: InterpBuffer;
-  view: ShipView | AstronautView | MissileView | null;
+  view: ShipView | AstronautView | MissileView | LootView | null;
   /** World pose at the current render time. */
   p: V3;
   q: Quat;
@@ -54,7 +56,7 @@ interface Remote {
   harvestPos: V3 | null;
 }
 
-interface NavItem { name: string; pos: V3; kind: 'planet' | 'station' | 'gate'; radius: number }
+interface NavItem { name: string; pos: V3; kind: 'planet' | 'station' | 'gate' | 'event'; radius: number; ship?: number }
 
 const RESOURCE_NAMES = { ore: 'руда', crystal: 'кристалл', relic: 'реликт' } as const;
 const DUST: Record<string, string> = { terran: '#9a8a6a', ocean: '#b0a080', alien: '#c090d0', desert: '#d9a060', ice: '#e8f4ff', lava: '#5a4a4a', barren: '#9a948e' };
@@ -110,6 +112,11 @@ export class Game {
   private locked = false;
   private navIndex = 0;
   private navItems: NavItem[] = [];
+  private baseNav: NavItem[] = [];
+  /** Active world events (convoys, wrecks, anomalies) and their scene views. */
+  private pois: Poi[] = [];
+  private poiViews = new Map<number, PoiView>();
+  private scan: { id: number; k: number } | null = null;
   private fireCd = 0;
   private energy = 100;
   private gun = 0;
@@ -166,6 +173,7 @@ export class Game {
       shots: (s) => this.onShots(s),
       events: (e) => this.onEvents(e),
       pilot: (p) => this.setPilot(p),
+      world: (p) => this.onWorld(p),
       error: (m) => this.onFatal(m),
       closed: () => this.onFatal('Соединение с сервером потеряно'),
     };
@@ -281,11 +289,47 @@ export class Game {
     this.gates.forEach((g) => this.world.add(g.group));
     this.fields = sys.fields.map((f) => new FieldView(f));
     this.fields.forEach((f) => this.world.add(f.group));
-    this.navItems = [
+    this.baseNav = [
       { name: sys.station.name, pos: sys.station.pos, kind: 'station', radius: 200 },
       ...sys.planets.map((p) => ({ name: p.name, pos: p.center, kind: 'planet' as const, radius: p.radius })),
       ...sys.gates.map((g) => ({ name: g.name, pos: g.pos, kind: 'gate' as const, radius: 150 })),
     ];
+    for (const v of this.poiViews.values()) v.dispose();
+    this.poiViews.clear();
+    this.pois = [];
+    this.scan = null;
+    this.rebuildNav();
+  }
+
+  private rebuildNav() {
+    const cur = this.navItems[this.navIndex]?.name;
+    this.navItems = [
+      ...this.baseNav,
+      ...this.pois.map((p) => ({ name: p.kind === 'convoy' ? p.name : `${POI_LABEL[p.kind]}: ${p.name.replace(/^(Обломки|Аномалия) /, '')}`, pos: v3(p.pos[0], p.pos[1], p.pos[2]), kind: 'event' as const, radius: 0, ship: p.ship })),
+    ];
+    const i = this.navItems.findIndex((n) => n.name === cur);
+    this.navIndex = i >= 0 ? i : Math.min(this.navIndex, this.navItems.length - 1);
+  }
+
+  private onWorld(list: Poi[]) {
+    const ids = new Set(list.map((p) => p.id));
+    for (const [id, v] of this.poiViews) if (!ids.has(id)) { v.dispose(); this.poiViews.delete(id); }
+    for (const p of list) {
+      if (this.poiViews.has(p.id)) continue;
+      const v = p.kind === 'wreck' ? new WreckView(p) : p.kind === 'anomaly' ? new AnomalyView(p) : null;
+      if (v) { this.poiViews.set(p.id, v); this.world.add(v.group); }
+    }
+    this.pois = list;
+    if (this.scan && !ids.has(this.scan.id)) this.scan = null;
+    this.rebuildNav();
+  }
+
+  /** Wreck close enough to salvage from the ship. */
+  private nearWreck(): Poi | null {
+    for (const p of this.pois) {
+      if (p.kind === 'wreck' && (p.charges ?? 0) > 0 && vdist(this.shipW.p, v3(p.pos[0], p.pos[1], p.pos[2])) < SALVAGE_RANGE) return p;
+    }
+    return null;
   }
 
   private setPilot(p: PilotInfo) {
@@ -361,6 +405,7 @@ export class Game {
     if (r.info.kind === KIND.SHIP && r.info.bp) r.view = new ShipView(r.info.bp);
     else if (r.info.kind === KIND.CHAR) r.view = this.makeAstronaut(() => r.p, 0.5);
     else if (r.info.kind === KIND.MISSILE) r.view = new MissileView();
+    else if (r.info.kind === KIND.LOOT) r.view = new LootView();
     if (r.view) this.world.add(r.view.group);
   }
 
@@ -450,6 +495,21 @@ export class Game {
           if (e.by === this.welcome?.playerId) { this.sfx.pickup(); this.hud.toast('Ресурс собран', 'good'); }
           break;
         }
+        case 'announce':
+          this.hud.announce(e.text, e.sub ?? '', e.kind ?? 'info');
+          this.hud.chat(null, e.sub ? `${e.text}: ${e.sub}` : e.text);
+          this.sfx.beep(e.kind === 'warn');
+          break;
+        case 'scan':
+          this.scan = e.k < 0 || e.k >= 1 ? null : { id: e.id, k: e.k };
+          break;
+        case 'loot': {
+          this.hud.toast(e.text, 'good');
+          this.hud.chat(null, e.text);
+          this.sfx.pickup();
+          this.effects.flash(v3(e.pos[0], e.pos[1], e.pos[2]), new THREE.Color(0.6, 2.2, 2.6), 26, 0.5);
+          break;
+        }
         case 'missile':
           if (e.target === myShip) { this.hud.toast('Внимание: ракета!', 'warn'); this.sfx.beep(true); }
           else this.sfx.missile();
@@ -526,7 +586,9 @@ export class Game {
         } else this.hud.toast('Рядом нет ресурсов', 'warn');
       } else if (mode === MODE.SHIP) {
         const p = this.shipW.p;
-        if (vdist(p, this.sys!.station.pos) < DOCK_RANGE) this.conn.action({ a: 'dock' });
+        const wreck = this.nearWreck();
+        if (wreck) this.conn.action({ a: 'salvage', id: wreck.id });
+        else if (vdist(p, this.sys!.station.pos) < DOCK_RANGE) this.conn.action({ a: 'dock' });
         else if (this.sys!.gates.some((g) => vdist(g.pos, p) < GATE_RANGE)) this.conn.action({ a: 'jump' });
       }
     }
@@ -745,10 +807,18 @@ export class Game {
         const ground = !(st.flags & EFLAG.BOOST);
         if (r.harvestPos) r.view.setHarvestTarget(this.rel(this.toWorld(st.frame, r.harvestPos, v3())));
         r.view.update(dt, { speed: hs, vUp, ground, jet: !ground && vUp > 2.5, look: 0, turn: 0 });
+      } else if (r.view instanceof LootView) {
+        r.view.update(dt);
       } else {
         r.smokeT -= dt;
         if (r.smokeT <= 0) { r.smokeT = 0.03; this.effects.smoke(r.p); }
       }
+    }
+    for (const p of this.pois) {
+      const v = this.poiViews.get(p.id);
+      if (!v) continue;
+      this.place(v.group, v3(p.pos[0], p.pos[1], p.pos[2]));
+      v.update(dt, this.time, p);
     }
     this.effects.setViewport(window.innerHeight, cam.fov);
     this.effects.update(dt, this.origin);
@@ -899,7 +969,11 @@ export class Game {
       } else { this.hud.target(null); this.hud.leadAt(null); }
     } else { this.hud.target(null); this.hud.leadAt(null); }
 
-    // nav
+    // nav (a convoy follows its freighter when that ship is in view)
+    for (const n of this.navItems) {
+      const r = n.ship ? this.remotes.get(n.ship) : undefined;
+      if (r?.visible) Object.assign(n.pos, r.p);
+    }
     const items = this.navItems.map((n) => ({ name: n.name, dist: this.fmtDist(Math.max(0, vdist(n.pos, me) - (n.kind === 'planet' ? n.radius : 0))) }));
     this.hud.navList(items, this.navIndex);
     const nav = this.navItems[this.navIndex];
@@ -925,12 +999,14 @@ export class Game {
       const d = vdist(r.p, me);
       const c = rel(r.p);
       if (r.info.kind === KIND.MISSILE) { blips.push({ x: c.x, y: c.y, z: c.z, kind: 'missile' }); continue; }
+      if (r.info.kind === KIND.LOOT) { blips.push({ x: c.x, y: c.y, z: c.z, kind: 'loot' }); continue; }
       blips.push({ x: c.x, y: c.y, z: c.z, kind: r.info.npc ? 'npc' : 'player', sel: id === this.targetId });
       if (d < 4000 && mode !== MODE.DOCKED) {
         const sp = this.project(v3(r.p.x, r.p.y, r.p.z));
         if (!sp.behind) labels.push({ id, x: sp.x, y: sp.y - 18, text: r.info.name, sub: this.fmtDist(d), npc: !!r.info.npc, hull: r.state?.hull ?? 1 });
       }
     }
+    for (const p of this.pois) { const pc = rel(v3(p.pos[0], p.pos[1], p.pos[2])); blips.push({ x: pc.x, y: pc.y, z: pc.z, kind: 'poi' }); }
     const sc = rel(sys.station.pos);
     blips.push({ x: sc.x, y: sc.y, z: sc.z, kind: 'station' });
     for (const g of sys.gates) { const gc = rel(g.pos); blips.push({ x: gc.x, y: gc.y, z: gc.z, kind: 'gate' }); }
@@ -948,7 +1024,11 @@ export class Game {
     // context prompt
     let prompt: string | null = null;
     if (mode === MODE.SHIP) {
+      const wreck = this.nearWreck();
+      const anomaly = this.scan ? this.pois.find((p) => p.id === this.scan!.id) : null;
       if (ship.landed) prompt = '<kbd>G</kbd> выйти из корабля · <kbd>W</kbd> взлёт';
+      else if (anomaly && this.scan) prompt = `Сканирование аномалии: ${Math.round(this.scan.k * 100)}% — оставайтесь внутри`;
+      else if (wreck) prompt = vlen(this.shipW.v) > SALVAGE_MAX_SPEED ? `Обломки рядом — сбросьте скорость до ${SALVAGE_MAX_SPEED} м/с` : `<kbd>F</kbd> разобрать обломки (осталось: ${wreck.charges})`;
       else if (vdist(this.shipW.p, sys.station.pos) < DOCK_RANGE) prompt = '<kbd>F</kbd> стыковка со станцией';
       else if (sys.gates.some((g) => vdist(g.pos, this.shipW.p) < GATE_RANGE)) prompt = '<kbd>F</kbd> прыжок через врата';
       else if (this.nearPlanet && this.nearAlt < 250 && speed < 80 && Math.abs(this.ctrl.throttle) >= 0.05) prompt = '<kbd>X</kbd> сброс тяги — корабль сам опустится и сядет';

@@ -1,6 +1,7 @@
 export * from './constants.ts';
 export * from './color.ts';
 export * from './economy.ts';
+export * from './events.ts';
 export * from './math/rng.ts';
 export * from './math/noise.ts';
 export * from './math/vec.ts';

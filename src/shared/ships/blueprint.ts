@@ -1,7 +1,7 @@
 import { hueToHex } from '../color.ts';
 import { hashString, Rng } from '../math/rng.ts';
 
-export type ShipClass = 'fighter' | 'pirate';
+export type ShipClass = 'fighter' | 'pirate' | 'freighter';
 
 export interface Blueprint {
   cls: ShipClass;
@@ -30,5 +30,16 @@ export function pirateBlueprint(seed: number): Blueprint {
     hull: rng.pick(['#6a557c', '#5a4a5e', '#6e5048']),
     hull2: '#3a3046', accent: rng.pick(['#e8485a', '#ff7a2a', '#d83a8a']),
     glass: '#ffcf6b', engine: '#2d2733', glow: '#ff7a3d',
+  };
+}
+
+/** Slow armoured cargo hauler escorted by pirates. */
+export function freighterBlueprint(seed: number): Blueprint {
+  const rng = new Rng(seed);
+  return {
+    cls: 'freighter', seed,
+    hull: rng.pick(['#8a7a62', '#6f6a60', '#7c6450']),
+    hull2: '#3c3a40', accent: rng.pick(['#e8a23a', '#d0482e', '#c8c030']),
+    glass: '#ffd27a', engine: '#2f2c30', glow: '#ffae4a',
   };
 }

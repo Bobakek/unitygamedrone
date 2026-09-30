@@ -31,6 +31,10 @@ export interface ShipEntity {
   session: Session | null;
   npc: NpcBrain | null;
   lastInput: ShipInput;
+  /** Event NPCs (convoys, ambushes) are not replaced when destroyed. */
+  transient?: boolean;
+  /** Bounty override for the killer. */
+  bounty?: number;
 }
 
 export interface CharEntity {

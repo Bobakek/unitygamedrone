@@ -53,6 +53,19 @@ try {
     await sleep(1500);
     console.log('done', name);
   }
+  // world events spawned right in front of the ship
+  if (!only || only === 'events') {
+    await chat('/god');
+    for (const kind of ['wreck', 'anomaly', 'convoy']) {
+      await chat('/tp open');
+      await sleep(1500);
+      await chat(`/event ${kind}`);
+      await sleep(kind === 'convoy' ? 1500 : 4000);
+      await page.screenshot({ path: `${OUT}/event-${kind}.png` });
+      console.log('done event', kind, await page.evaluate(() => document.querySelector('#announce b')?.textContent ?? ''));
+    }
+    await chat('/god');
+  }
   // day/night: the same terran planet at dusk and at night
   if (!only || only === 'daynight') {
     if ((await page.evaluate(() => window.__game.sys.id)) !== 0) {

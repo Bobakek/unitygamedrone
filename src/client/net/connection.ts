@@ -3,6 +3,7 @@ import {
   decodeJson, decodeShots, decodeSnapshot, encodeInput, encodeJson, MSG,
   type Action, type EntityInfo, type GameEvent, type InputMsg, type PilotInfo, type Shot, type Snapshot, type Welcome,
 } from '../../shared/net/protocol.ts';
+import type { Poi } from '../../shared/events.ts';
 
 export interface NetHandlers {
   welcome(w: Welcome): void;
@@ -12,6 +13,7 @@ export interface NetHandlers {
   shots(s: Shot[]): void;
   events(ev: GameEvent[]): void;
   pilot(p: PilotInfo): void;
+  world(pois: Poi[]): void;
   error(message: string): void;
   closed(): void;
 }
@@ -34,6 +36,7 @@ export function dispatchMessage(d: Uint8Array, h: NetHandlers): { c: number } | 
     case MSG.INFO: h.info(decodeJson<{ list: EntityInfo[] }>(d).list); break;
     case MSG.GONE: h.gone(decodeJson<{ ids: number[] }>(d).ids); break;
     case MSG.PILOT: h.pilot(decodeJson<PilotInfo>(d)); break;
+    case MSG.WORLD: h.world(decodeJson<{ pois: Poi[] }>(d).pois); break;
     case MSG.WELCOME: h.welcome(decodeJson<Welcome>(d)); break;
     case MSG.ERROR: h.error(decodeJson<{ message: string }>(d).message); break;
     case MSG.PONG: return decodeJson<{ c: number }>(d);

@@ -112,6 +112,7 @@ export class Game implements GameContext {
     };
     s.sendJson(MSG.WELCOME, w);
     s.sendJson(MSG.INFO, { list: s.system.allInfos() });
+    s.sendJson(MSG.WORLD, { pois: s.system.world.list() });
   }
 
   private disconnect(s: Session) {
@@ -169,7 +170,7 @@ export class Game implements GameContext {
     const sys = s.system;
     switch (cmd) {
       case 'help':
-        s.msg('Команды: /who, /help' + (this.dev ? ' | dev: /tp <n|lowN|station|dock|field|gate>, /land <n>, /credits <n>, /god, /pirate, /system <n>' : ''));
+        s.msg('Команды: /who, /help' + (this.dev ? ' | dev: /tp <n|lowN|station|dock|field|gate|open> [dusk|night], /land <n> [dusk|night], /event <convoy|wreck|anomaly>, /credits <n>, /god, /pirate, /system <n>' : ''));
         return;
       case 'who':
         s.msg(`Онлайн (${this.sessions.size}): ${[...this.sessions.values()].map((o) => o.pilot.name).join(', ')}`);
@@ -188,6 +189,12 @@ export class Game implements GameContext {
         break;
       }
       case 'system': this.transfer(s, Number(args[0]) || 0); break;
+      case 'event': {
+        const kind = args[0] as 'convoy' | 'wreck' | 'anomaly';
+        if (!['convoy', 'wreck', 'anomaly'].includes(kind)) { s.msg('/event convoy|wreck|anomaly', 'warn'); break; }
+        s.msg(sys.world.devSpawn(kind, s.ship));
+        break;
+      }
       default: s.msg('Неизвестная команда', 'warn');
     }
   }
@@ -229,10 +236,13 @@ export class Game implements GameContext {
     const infos = sys.infos.length ? encodeJson(MSG.INFO, { list: sys.infos }) : null;
     const gone = sys.gone.length ? encodeJson(MSG.GONE, { ids: sys.gone }) : null;
     const events = sys.events.length ? encodeJson(MSG.EVENTS, { ev: sys.events }) : null;
+    const world = sys.world.dirty ? encodeJson(MSG.WORLD, { pois: sys.world.list() }) : null;
+    sys.world.dirty = false;
     for (const s of sys.sessions) {
       if (infos) s.send(infos);
       if (gone) s.send(gone);
       if (events) s.send(events);
+      if (world) s.send(world);
       if (sys.shots.length) {
         const focus = sys.focusOf(s);
         const near = sys.shots.filter((sh) => sh.shooter !== s.ship.id && vdist({ x: sh.px, y: sh.py, z: sh.pz }, focus) < 8000);

@@ -23,6 +23,7 @@ import { pirateBlueprint, playerBlueprint } from '../../shared/ships/blueprint.t
 import type { PilotRecord } from '../storage.ts';
 import type { CharEntity, Laser, Missile, ShipEntity } from './entities.ts';
 import { NpcBrain, npcThink, type NpcWorld } from './npc.ts';
+import { WorldEvents } from './world-events.ts';
 import type { Session } from './session.ts';
 
 export interface GameContext {
@@ -51,12 +52,29 @@ export class SystemInstance implements NpcWorld {
   gone: number[] = [];
   private npcRespawn: number[] = [];
   private rng: Rng;
+  readonly world: WorldEvents;
 
   constructor(private ctx: GameContext, id: number) {
     this.def = getSystem(id);
     this.env = { star: this.def.star, planets: this.def.planets, fields: this.def.fields, station: this.def.station, time: 0 };
     this.rng = new Rng(hashInts(this.def.seed, 0xabc));
     for (let i = 0; i < this.def.pirates; i++) this.spawnPirate();
+    this.world = new WorldEvents(this);
+  }
+
+  nextId() { return this.ctx.nextId(); }
+
+  /** Registers an NPC ship built elsewhere (event spawns). */
+  addNpc(ship: ShipEntity) {
+    this.syncWorld(ship);
+    this.ships.set(ship.id, ship);
+    this.infos.push(this.shipInfo(ship));
+  }
+
+  /** Removes an NPC without an explosion (jumped out). */
+  despawn(ship: ShipEntity) {
+    this.ships.delete(ship.id);
+    this.gone.push(ship.id);
   }
 
   get time() { return this.ctx.time; }
@@ -120,6 +138,7 @@ export class SystemInstance implements NpcWorld {
     for (const s of this.ships.values()) out.push(this.shipInfo(s));
     for (const c of this.chars.values()) out.push({ id: c.id, kind: KIND.CHAR, name: c.name, owner: c.session.id });
     for (const m of this.missiles.values()) out.push({ id: m.id, kind: KIND.MISSILE, name: '', owner: m.owner });
+    for (const l of this.world.loot.values()) out.push({ id: l.id, kind: KIND.LOOT, name: 'Контейнер' });
     return out;
   }
 
@@ -217,6 +236,7 @@ export class SystemInstance implements NpcWorld {
     target.hull -= dmg - absorbed;
     const hp = pos ?? target.world.p;
     this.events.push({ t: 'hit', target: target.id, pos: [hp.x, hp.y, hp.z], shield: absorbed >= dmg - 1e-9, dmg: Math.round(dmg), by: attacker });
+    this.world.onHit(target, attacker);
     if (target.npc && attacker && target.npc.state !== 'flee') {
       const a = this.ships.get(attacker);
       if (a && !a.npc) { target.npc.target = attacker; target.npc.state = 'attack'; }
@@ -244,10 +264,11 @@ export class SystemInstance implements NpcWorld {
     } else {
       this.ships.delete(target.id);
       this.gone.push(target.id);
-      this.npcRespawn.push(this.time + 40);
+      if (!target.transient) this.npcRespawn.push(this.time + 40);
+      this.world.onKill(target);
     }
     if (killer?.session && killer !== target) {
-      const bounty = target.npc ? BOUNTY.npc : BOUNTY.player;
+      const bounty = target.bounty ?? (target.npc ? BOUNTY.npc : BOUNTY.player);
       killer.session.pilot.credits += bounty;
       killer.session.pilot.kills++;
       killer.session.sendPilot();
@@ -301,6 +322,7 @@ export class SystemInstance implements NpcWorld {
 
     this.stepLasers();
     this.stepMissiles();
+    this.world.step(DT);
 
     for (const ship of this.ships.values()) {
       if (ship.dead) {
@@ -442,6 +464,10 @@ export class SystemInstance implements NpcWorld {
       qlook(q, m.v, Math.abs(m.v.y) > Math.abs(m.v.x) ? v3(1, 0, 0) : v3(0, 1, 0));
       entities.push({ id: m.id, kind: KIND.MISSILE, flags: 0, frame: 0, px: m.p.x, py: m.p.y, pz: m.p.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, vx: m.v.x, vy: m.v.y, vz: m.v.z, hull: 1, shield: 0, throttle: 1 });
     }
+    for (const l of this.world.loot.values()) {
+      if (vdistSq(l.p, focus) > r2) continue;
+      entities.push({ id: l.id, kind: KIND.LOOT, flags: 0, frame: 0, px: l.p.x, py: l.p.y, pz: l.p.z, qx: 0, qy: 0, qz: 0, qw: 1, vx: l.v.x, vy: l.v.y, vz: l.v.z, hull: 1, shield: 0, throttle: 0 });
+    }
     const ship = s.ship;
     return {
       tick: this.ctx.tick, time: this.time, ack: s.lastSeq, entities,
@@ -580,6 +606,9 @@ export class SystemInstance implements NpcWorld {
       case 'respawn':
         if (ship.dead && this.time >= ship.respawnAt) this.respawn(s);
         return null;
+      case 'salvage':
+        if (s.mode !== MODE.SHIP || ship.dead) return null;
+        return this.world.salvage(s, Number(act.id));
       default:
         return null;
     }
@@ -620,6 +649,11 @@ export class SystemInstance implements NpcWorld {
       const g = this.def.gates[0];
       const toSt = vnorm(v3(), vsub(v3(), this.def.station.pos, g.pos));
       ship.state = newShip(v3(g.pos.x + toSt.x * 200, g.pos.y + toSt.y * 200, g.pos.z + toSt.z * 200), qlook(quat(), vscale(v3(), toSt, -1), v3(0, 1, 0)));
+    } else if (target === 'open') {
+      // empty space beyond the station, looking away from its planet
+      const st = this.def.station.pos;
+      const out = vnorm(v3(), vsub(v3(), st, this.def.planets[this.def.station.planet].center));
+      ship.state = newShip(v3(st.x + out.x * 9000, st.y + out.y * 9000 + 1500, st.z + out.z * 9000), qlook(quat(), out, v3(0, 1, 0)));
     } else if (target === 'field') {
       const f = this.def.fields[0];
       const out = vnorm(v3(), vsub(v3(), this.def.station.pos, f.center));

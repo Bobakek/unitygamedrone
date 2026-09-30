@@ -65,8 +65,11 @@ try {
   // the landed ship sits still in the planet's rotating frame while moving through world space
   const ride = await a.evaluate(async () => {
     const g = window.__game;
+    const frame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    await frame();
     const b0 = { ...g.pred.ship.p }, w0 = { ...g.shipPos };
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, 2000));
+    await frame();
     const b1 = g.pred.ship.p, w1 = g.shipPos;
     return { frame: g.pred.ship.frame, body: Math.hypot(b1.x - b0.x, b1.y - b0.y, b1.z - b0.z), world: Math.hypot(w1.x - w0.x, w1.y - w0.y, w1.z - w0.z) };
   });

@@ -4,9 +4,10 @@ export const LASER = { speed: 1500, life: 1.25, cost: 4, cooldown: 0.11 } as con
 export const MISSILE = { speed: 330, turn: 2.8, life: 9, damage: 55, lockTime: 0.8, coneCos: Math.cos((16 * Math.PI) / 180), range: 3500 } as const;
 export const ENERGY_REGEN = 22;
 /** Muzzle positions in ship-local space (forward = -Z), alternated when firing. */
-export const GUN_OFFSETS: Record<'fighter' | 'pirate', V3[]> = {
+export const GUN_OFFSETS: Record<'fighter' | 'pirate' | 'freighter', V3[]> = {
   fighter: [{ x: -4.2, y: -0.4, z: -1.5 }, { x: 4.2, y: -0.4, z: -1.5 }],
   pirate: [{ x: -0.9, y: -0.8, z: -7 }, { x: 0.9, y: -0.8, z: -7 }],
+  freighter: [{ x: 0, y: 5, z: -20 }],
 };
 export const SHIELD_DELAY = 3;
 

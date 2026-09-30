@@ -65,6 +65,13 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #03040b; col
 #toasts .warn { border-color: rgba(255, 90, 106, 0.6); color: #ffc2c8; }
 #toasts .good { border-color: rgba(109, 255, 156, 0.6); color: #c6ffd6; }
 @keyframes fade { 0%, 75% { opacity: 1; } 100% { opacity: 0; } }
+#announce { position: absolute; left: 50%; top: 24%; transform: translateX(-50%); text-align: center; pointer-events: none; width: min(640px, 90vw); }
+#announce div { animation: announce 7s forwards; }
+#announce b { display: block; font-size: 22px; letter-spacing: 0.18em; text-transform: uppercase; color: #8ff8ff; text-shadow: 0 0 18px rgba(143, 248, 255, 0.55), 0 2px 3px #000; }
+#announce span { display: block; margin-top: 4px; font-size: 14px; color: #dfe8ff; text-shadow: 0 1px 3px #000; }
+#announce .warn b { color: #ff9aa6; text-shadow: 0 0 18px rgba(255, 90, 106, 0.55), 0 2px 3px #000; }
+#announce .good b { color: #8dffb0; text-shadow: 0 0 18px rgba(109, 255, 156, 0.5), 0 2px 3px #000; }
+@keyframes announce { 0% { opacity: 0; transform: translateY(-8px); } 8%, 80% { opacity: 1; transform: none; } 100% { opacity: 0; } }
 #prompt { position: absolute; left: 50%; bottom: 210px; transform: translateX(-50%); font-size: 15px; padding: 6px 14px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); display: none; }
 #prompt kbd, .help-card kbd { display: inline-block; padding: 0 6px; border: 1px solid var(--dim); border-radius: 4px; font: inherit; font-size: 12px; }
 

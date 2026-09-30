@@ -41,3 +41,6 @@ export function flightStats(u: Upgrades): ShipStats {
 /** NPC pirate stats — slightly weaker than a starter player ship. */
 export const PIRATE_FLIGHT: ShipStats = { ...BASE_STATS, maxSpeed: 200, boostSpeed: 330, turn: 1.25, radius: 7 };
 export const PIRATE_COMBAT: CombatStats = { maxHull: 80, maxShield: 50, shieldRegen: 6, laserDamage: 6, cargoCap: 0 };
+/** Convoy freighter: slow, tough, unarmed. */
+export const FREIGHTER_FLIGHT: ShipStats = { ...BASE_STATS, maxSpeed: 75, boostSpeed: 110, accel: 30, turn: 0.35, roll: 0.6, radius: 26 };
+export const FREIGHTER_COMBAT: CombatStats = { maxHull: 950, maxShield: 320, shieldRegen: 8, laserDamage: 0, cargoCap: 0 };
