@@ -73,6 +73,7 @@ export class Controller {
       if (k('Space')) flags |= IFLAG.JUMP;
       if (k('ShiftLeft') || k('ShiftRight')) flags |= IFLAG.SPRINT;
       if (i.mouse(0) && !i.typing && i.locked) flags |= IFLAG.FIRE;
+      if (i.mouse(2) && !i.typing) flags |= IFLAG.AIM;
     }
     return quantizeInput({ seq: ++this.seq, mode: m, flags, t, ship, char });
   }

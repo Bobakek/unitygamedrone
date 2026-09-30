@@ -34,6 +34,10 @@ export interface SiteDef {
   turrets: SitePoint[];
   /** Solid vertical cylinders pilots on foot collide with. */
   pillars: SitePillar[];
+  /** Low solid obstacles pilots can vault or climb over (fallen blocks, wall sections). */
+  blocks: SitePillar[];
+  /** Straight wall sections in the site plane (x east, z north), height WALL_HEIGHT. */
+  walls: { x0: number; z0: number; x1: number; z1: number }[];
 }
 
 /** Resource-node ids for site caches start here (well above the regular node grid). */
@@ -42,6 +46,9 @@ export const SITE_CACHES = 8;
 /** Turret pedestal height; the gun ball sits on top. */
 export const TURRET_HEIGHT = 7;
 export const TURRET_RANGE = 1500;
+/** Outpost wall height — low enough to climb over. */
+export const WALL_HEIGHT = 2.6;
+const WALL_RADIUS = 50, WALL_SEGMENTS = 12, WALL_GAPS = [2, 8];
 
 const cache = new Map<number, SiteDef[]>();
 
@@ -109,7 +116,7 @@ function layout(pl: PlanetDef, kind: SiteKind, id: number, base: { dir: V3; h: n
   const s: SiteDef = {
     id, planet: pl.index, kind, radius, seed, ...base,
     name: kind === 'ruin' ? `Руины ${makeName(r)}` : `База «${makeName(r)}»`,
-    caches: [], turrets: [], pillars: [],
+    caches: [], turrets: [], pillars: [], blocks: [], walls: [],
   };
   if (kind === 'ruin') {
     // a broken colonnade around a central obelisk, caches among the stones
@@ -125,6 +132,11 @@ function layout(pl: PlanetDef, kind: SiteKind, id: number, base: { dir: V3; h: n
       const a = r.range(0, Math.PI * 2), d = r.range(7, 14);
       s.caches.push({ ...point(pl, s, Math.cos(a) * d, Math.sin(a) * d), type: 'relic' });
     }
+    // fallen stones: low enough to vault over
+    for (let i = 0; i < 6; i++) {
+      const a = r.range(0, Math.PI * 2), d = r.range(24, 32);
+      s.blocks.push({ ...point(pl, s, Math.cos(a) * d, Math.sin(a) * d), r: r.range(0.9, 1.3), tall: r.range(0.8, 1.5) });
+    }
   } else {
     // walled compound: landing pad, hangar, three flak towers, loot in the depot
     for (let i = 0; i < 3; i++) {
@@ -134,6 +146,18 @@ function layout(pl: PlanetDef, kind: SiteKind, id: number, base: { dir: V3; h: n
       s.pillars.push({ ...p, r: 2.4, tall: TURRET_HEIGHT });
     }
     s.caches.push({ ...point(pl, s, -22, 18), type: 'relic' }, { ...point(pl, s, -26, 12), type: 'crystal' });
+    // perimeter wall (with two gates), solid along its length but climbable
+    for (let k = 0; k < WALL_SEGMENTS; k++) {
+      if (WALL_GAPS.includes(k)) continue;
+      const a0 = (k / WALL_SEGMENTS) * Math.PI * 2, a1 = ((k + 1) / WALL_SEGMENTS) * Math.PI * 2;
+      const w = { x0: Math.cos(a0) * WALL_RADIUS, z0: Math.sin(a0) * WALL_RADIUS, x1: Math.cos(a1) * WALL_RADIUS, z1: Math.sin(a1) * WALL_RADIUS };
+      s.walls.push(w);
+      const len = Math.hypot(w.x1 - w.x0, w.z1 - w.z0), n = Math.ceil(len / 1.4);
+      for (let j = 0; j <= n; j++) {
+        const t = j / n;
+        s.blocks.push({ ...point(pl, s, w.x0 + (w.x1 - w.x0) * t, w.z0 + (w.z1 - w.z0) * t), r: 0.85, tall: WALL_HEIGHT });
+      }
+    }
   }
   return s;
 }

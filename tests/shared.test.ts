@@ -3,12 +3,13 @@ import {
   buildChunkLike, cubeToSphere, decodeInput, decodeShots, decodeSnapshot, emptyCharInput, emptyInput, encodeInput, encodeShots,
   encodeSnapshot, flightStats, defaultUpgrades, generateSystem, getSystem, heightAt, leadPoint, MODE, newChar, newShip, nodesNear,
   noiseFor, qlook, quantizeInput, resourceNode, segmentSphere, SHIP_LAND_HEIGHT, stepChar, stepShip, surfaceHeight, v3, vdist, vlen, vnorm,
-  type ShipInput, type SimEnv, Rng, DT, cloneShip, CRUISE_SPOOL, quat, newPose, planetRot, setFrame, toWorldPoint, worldPose,
+  type ShipInput, type SimEnv, Rng, DT, cloneShip, CRUISE_SPOOL, footHeight, copyChar, quat, newPose, planetRot, setFrame, toWorldPoint, worldPose,
 } from './helpers.ts';
 
 const sys = getSystem(0);
 const env: SimEnv = { star: sys.star, planets: sys.planets, fields: sys.fields, station: sys.station, time: 0 };
 const stats = flightStats(defaultUpgrades());
+const cloneChar = (c: ReturnType<typeof newChar>) => copyChar(newChar(v3(), v3()), c);
 
 describe('noise & generation', () => {
   it('noise is deterministic and bounded', () => {
@@ -292,6 +293,93 @@ describe('character simulation', () => {
     expect(c.ground).toBe(1);
     const dd = vnorm(v3(), c.p);
     expect(vlen(c.p) - (p.radius + surfaceHeight(p, dd.x, dd.y, dd.z))).toBeCloseTo(0, 5);
+  });
+});
+
+describe('obstacle traversal', () => {
+  const run = (c: ReturnType<typeof newChar>, p: typeof sys.planets[0], ticks: number, inp: Partial<ReturnType<typeof emptyCharInput>>) => {
+    const modes = new Set<number>();
+    for (let k = 0; k < ticks; k++) { stepChar(c, { ...emptyCharInput(), ...inp }, p, DT); modes.add(c.climbMode); }
+    return modes;
+  };
+  /** Pilot standing `dist` metres from site-plane point (x, z), facing towards (tx, tz). */
+  const start = async (p: typeof sys.planets[0], s: import('../src/shared/planet/sites.ts').SiteDef, x: number, z: number, tx: number, tz: number) => {
+    const { siteDir } = await import('../src/shared/planet/sites.ts');
+    const d = siteDir(p, s, x, z), t = siteDir(p, s, tx, tz);
+    const g = p.radius + footHeight(p, d.x, d.y, d.z);
+    const f = vnorm(v3(), v3(t.x - d.x, t.y - d.y, t.z - d.z));
+    return newChar(v3(d.x * g, d.y * g, d.z * g), f);
+  };
+  const across = (c: ReturnType<typeof newChar>, p: typeof sys.planets[0], s: import('../src/shared/planet/sites.ts').SiteDef) => {
+    // signed distance from the site centre in the site plane
+    const r = p.radius + s.h;
+    const dx = c.p.x - s.dir.x * r, dy = c.p.y - s.dir.y * r, dz = c.p.z - s.dir.z * r;
+    return Math.hypot(dx * s.east.x + dy * s.east.y + dz * s.east.z, dx * s.north.x + dy * s.north.y + dz * s.north.z);
+  };
+
+  it('vaults low ruin blocks on the run, deterministically', async () => {
+    const { planetSites } = await import('../src/shared/planet/sites.ts');
+    const p = sys.planets.find((x) => planetSites(x).some((s) => s.kind === 'ruin' && s.blocks.some((b) => b.tall < 1.2)))!;
+    const ruin = planetSites(p).find((s) => s.kind === 'ruin' && s.blocks.some((b) => b.tall < 1.2))!;
+    const b = ruin.blocks.find((x) => x.tall < 1.2)!;
+    // block position in the site plane
+    const r = p.radius + ruin.h;
+    const bx = (b.dir.x * r - ruin.dir.x * r) * ruin.east.x + (b.dir.y * r - ruin.dir.y * r) * ruin.east.y + (b.dir.z * r - ruin.dir.z * r) * ruin.east.z;
+    const bz = (b.dir.x * r - ruin.dir.x * r) * ruin.north.x + (b.dir.y * r - ruin.dir.y * r) * ruin.north.y + (b.dir.z * r - ruin.dir.z * r) * ruin.north.z;
+    const out = Math.hypot(bx, bz);
+    const ux = bx / out, uz = bz / out;
+    const c = await start(p, ruin, ux * (out + b.r + 2.5), uz * (out + b.r + 2.5), 0, 0);
+    const c2 = cloneChar(c);
+    const modes = run(c, p, 60, { mz: 1 });
+    expect(modes.has(1)).toBe(true);
+    // ended up on the inner side of the block
+    expect(across(c, p, ruin)).toBeLessThan(out - b.r - 0.2);
+    run(c2, p, 60, { mz: 1 });
+    expect(c2).toEqual(c);
+  });
+
+  it('climbs outpost walls only with jump; trees stay solid', async () => {
+    const { planetSites, WALL_HEIGHT } = await import('../src/shared/planet/sites.ts');
+    const p = sys.planets.find((x) => planetSites(x).some((s) => s.kind === 'base'))!;
+    const base = planetSites(p).find((s) => s.kind === 'base')!;
+    const w = base.walls[0];
+    const mx = (w.x0 + w.x1) / 2, mz = (w.z0 + w.z1) / 2, l = Math.hypot(mx, mz);
+    const o = (l + 3.5) / l;
+    // walking into the wall without jumping: blocked outside
+    const a = await start(p, base, mx * o, mz * o, 0, 0);
+    const modesA = run(a, p, 60, { mz: 1 });
+    expect(modesA.has(2)).toBe(false);
+    expect(across(a, p, base)).toBeGreaterThan(l - 0.5);
+    // at the wall, a tap on jump climbs over and drops inside
+    const b = cloneChar(a);
+    const modesB = run(b, p, 2, { mz: 1, jump: true });
+    run(b, p, 60, { mz: 1 });
+    expect(modesB.has(2)).toBe(true);
+    expect(across(b, p, base)).toBeLessThan(l - 1.5);
+    expect(WALL_HEIGHT).toBeLessThanOrEqual(3.2);
+  });
+
+  it('scrambles slowly up steep slopes', () => {
+    const p = sys.planets[2];
+    const rng = new Rng(21);
+    let best: { d: ReturnType<typeof v3>; f: ReturnType<typeof v3> } | null = null;
+    for (let i = 0; i < 20000 && !best; i++) {
+      const d = vnorm(v3(), v3(rng.range(-1, 1), rng.range(-1, 1), rng.range(-1, 1)));
+      const h = footHeight(p, d.x, d.y, d.z);
+      if (h < 2) continue;
+      const t = vnorm(v3(), v3(-d.z, 0, d.x));
+      const e = 1.5 / p.radius;
+      for (const sgn of [1, -1]) {
+        const q = vnorm(v3(), v3(d.x + t.x * e * sgn, d.y + t.y * e * sgn, d.z + t.z * e * sgn));
+        if ((footHeight(p, q.x, q.y, q.z) - h) / 1.5 > 1.3) { best = { d, f: v3(t.x * sgn, t.y * sgn, t.z * sgn) }; break; }
+      }
+    }
+    expect(best).not.toBeNull();
+    const g = p.radius + footHeight(p, best!.d.x, best!.d.y, best!.d.z);
+    const c = newChar(v3(best!.d.x * g, best!.d.y * g, best!.d.z * g), best!.f);
+    stepChar(c, { ...emptyCharInput(), mz: 1 }, p, DT);
+    stepChar(c, { ...emptyCharInput(), mz: 1 }, p, DT);
+    expect(c.scramble).toBe(1);
   });
 });
 

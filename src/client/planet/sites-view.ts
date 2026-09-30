@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { PlanetDef, PlanetType } from '../../shared/galaxy/system-gen.ts';
 import { Rng } from '../../shared/math/rng.ts';
-import { siteDir, TURRET_HEIGHT, type SiteDef } from '../../shared/planet/sites.ts';
+import { siteDir, TURRET_HEIGHT, WALL_HEIGHT, type SiteDef } from '../../shared/planet/sites.ts';
 import { heightAt } from '../../shared/planet/terrain.ts';
 import { add, newParts, taperedBox, type Parts } from '../entities/ship-builder.ts';
 import { glowTexture } from '../world/textures.ts';
@@ -19,6 +19,7 @@ const STONE: Record<PlanetType, [string, string]> = {
 const GLYPH: Record<PlanetType, string> = { terran: '#6af0ff', ocean: '#6af0ff', alien: '#ff7ae0', desert: '#ffb84a', ice: '#8ad8ff', lava: '#ff6a3a', barren: '#b0ff7a' };
 
 const tmp = new THREE.Vector3();
+const box3 = (s: number) => new THREE.BoxGeometry(s, s * 0.7, s * 0.9);
 
 /**
  * Buildings of one surface site, built in the site's local frame (x east,
@@ -101,11 +102,18 @@ export class SiteView {
         }
       } else {
         add(p, new THREE.ConeGeometry(c.r, 1.4, 5), stone, false, [base[0], base[1] + h + 0.5, base[2]], [0.3, 0, 0.2]);
-        const fa = r.range(0, Math.PI * 2);
-        const fp = this.at(x + Math.cos(fa) * 4, z + Math.sin(fa) * 4, 0.6);
-        add(p, new THREE.CylinderGeometry(c.r * 0.85, c.r * 0.85, r.range(3, 5), 6), stone, false, fp, [0, fa, Math.PI / 2]);
+        // rubble at its foot (low enough to step over)
+        for (let k = 0; k < 3; k++) {
+          const fa = r.range(0, Math.PI * 2), fd = r.range(2, 3.5);
+          add(p, box3(r.range(0.4, 0.7)), stone, false, this.at(x + Math.cos(fa) * fd, z + Math.sin(fa) * fd, 0.1), [r.range(0, 1), r.range(0, 3), r.range(0, 1)]);
+        }
       }
     });
+    // fallen blocks — solid, vaultable (see SiteDef.blocks)
+    for (const b of s.blocks) {
+      const loc = this.local(b.dir, b.h, -0.4);
+      add(p, new THREE.BoxGeometry(b.r * 2.1, b.tall + 0.4, b.r * 1.7), r.chance(0.3) ? moss : stone, false, [loc[0], loc[1] + (b.tall + 0.4) / 2, loc[2]], [r.range(-0.05, 0.05), r.range(0, Math.PI), r.range(-0.05, 0.05)]);
+    }
     // obelisk with glowing glyph bands
     const o = this.at(0, 0, -2);
     add(p, new THREE.BoxGeometry(6, 1.2, 6), moss, false, [o[0], o[1] + 2.2, o[2]]);
@@ -146,18 +154,18 @@ export class SiteView {
       const cp = this.at(-30 + r.range(-3, 3), 6 + r.range(-3, 3), 0.9);
       add(p, new THREE.BoxGeometry(1.8, 1.8, 1.8), r.pick(['#8a6a3a', '#5a6a4a', steel]), false, cp, [0, r.range(0, 1.5), 0]);
     }
-    // perimeter wall with gaps and spikes
-    const segs = 12, R = 50;
-    for (let k = 0; k < segs; k++) {
-      if (k === 2 || k === 8) continue;
-      const a0 = (k / segs) * Math.PI * 2, a1 = ((k + 1) / segs) * Math.PI * 2;
-      const w0 = this.at(Math.cos(a0) * R, Math.sin(a0) * R, -1.5), w1 = this.at(Math.cos(a1) * R, Math.sin(a1) * R, -1.5);
-      const lo = Math.min(w0[1], w1[1]), hi = Math.max(w0[1], w1[1]) + 5.5;
-      this.beam(p, w0, w1, (lo + hi) / 2, hi - lo, 1.4, k % 2 ? hull : steel, -0.5);
-      for (const f of [0.2, 0.5, 0.8]) {
-        add(p, new THREE.ConeGeometry(0.35, 1.8, 4), accent, false, [w0[0] + (w1[0] - w0[0]) * f, Math.max(w0[1], w1[1]) + 6.2, w0[2] + (w1[2] - w0[2]) * f]);
+    // perimeter wall sections (climbable height), following the ground in short pieces
+    s.walls.forEach((w, k) => {
+      const pieces = 4;
+      for (let j = 0; j < pieces; j++) {
+        const t0 = j / pieces, t1 = (j + 1) / pieces;
+        const w0 = this.at(w.x0 + (w.x1 - w.x0) * t0, w.z0 + (w.z1 - w.z0) * t0, -1.2);
+        const w1 = this.at(w.x0 + (w.x1 - w.x0) * t1, w.z0 + (w.z1 - w.z0) * t1, -1.2);
+        const lo = Math.min(w0[1], w1[1]), hi = Math.max(w0[1], w1[1]) + 1.2 + WALL_HEIGHT;
+        this.beam(p, w0, w1, (lo + hi) / 2, hi - lo, 1.4, (k + j) % 2 ? hull : steel, 0.1);
+        this.beam(p, w0, w1, hi + 0.12, 0.25, 1.6, accent, 0.1);
       }
-    }
+    });
     // flak towers (the gun balls themselves are networked entities)
     for (const t of s.turrets) {
       const loc = this.local(t.dir, t.h, -2);

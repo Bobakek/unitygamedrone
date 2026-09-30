@@ -13,7 +13,14 @@ export const KIND = { SHIP: 1, CHAR: 2, MISSILE: 3, LOOT: 4, CREATURE: 5 } as co
 /** Shot.level used for the pilot's hand blaster. */
 export const BLASTER_LEVEL = 10;
 export const EFLAG = { LANDED: 1, CRUISE: 2, BOOST: 4, HIDDEN: 8, NPC: 16, SAFE: 32, DEAD: 64 } as const;
-export const IFLAG = { FIRE: 1, BOOST: 2, CRUISE: 4, JUMP: 8, SPRINT: 16 } as const;
+/**
+ * Flags of pilots on foot (KIND.CHAR). For these entities `throttle` carries the traversal
+ * progress (vault in 0..0.5, climb in 0.5..1) and `shield` the aim pitch (see aimByte).
+ */
+export const CFLAG = { SCRAMBLE: 1, CLIMB: 2, AIR: 4, AIM: 128 } as const;
+export const aimByte = (pitch: number) => Math.max(0, Math.min(1, pitch / 2.6 + 0.5));
+export const aimPitch = (b: number) => (b - 0.5) * 2.6;
+export const IFLAG = { FIRE: 1, BOOST: 2, CRUISE: 4, JUMP: 8, SPRINT: 16, AIM: 32 } as const;
 export const MODE = { SHIP: 0, FOOT: 1, DOCKED: 2, DEAD: 3 } as const;
 export type Mode = (typeof MODE)[keyof typeof MODE];
 
@@ -146,7 +153,7 @@ export function encodeSnapshot(s: Snapshot): Uint8Array {
     const c = me.char;
     w.u8(1).u32(me.charId).i8(me.charPlanet);
     w.f64(c.p.x).f64(c.p.y).f64(c.p.z).f64(c.v.x).f64(c.v.y).f64(c.v.z).f64(c.f.x).f64(c.f.y).f64(c.f.z);
-    w.u8(c.ground).f64(c.fuel);
+    w.u8(c.ground).f64(c.fuel).u8(c.climbMode).f64(c.climb).f64(c.climbRise).f64(c.climbFwd).f64(c.climbUp).u8(c.scramble);
   } else w.u8(0);
   w.u16(s.entities.length);
   for (const e of s.entities) {
@@ -175,7 +182,7 @@ export function decodeSnapshot(data: Uint8Array): Snapshot {
     charId = r.u32(); charPlanet = r.i8();
     char = {
       p: { x: r.f64(), y: r.f64(), z: r.f64() }, v: { x: r.f64(), y: r.f64(), z: r.f64() }, f: { x: r.f64(), y: r.f64(), z: r.f64() },
-      ground: r.u8(), fuel: r.f64(),
+      ground: r.u8(), fuel: r.f64(), climbMode: r.u8(), climb: r.f64(), climbRise: r.f64(), climbFwd: r.f64(), climbUp: r.f64(), scramble: r.u8(),
     };
   }
   const n = r.u16();

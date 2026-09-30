@@ -48,6 +48,10 @@ export interface CharEntity {
   hp: number;
   hurtAt: number;
   cool: number;
+  /** Last aim pitch, aim button and time of the last blaster shot (for remote animation). */
+  pitch: number;
+  aim: boolean;
+  shotAt: number;
 }
 
 export interface Missile {

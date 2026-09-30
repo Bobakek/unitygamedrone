@@ -20,13 +20,15 @@ export interface PropRule {
   sink: number;
   /** Collision radius for pilots on foot (× scale); 0 = walk through. */
   solid: number;
+  /** Height of the obstacle above its base (× scale); Infinity = too tall to climb over. */
+  top: number;
 }
 export interface TierRule { density: number; grid: number; radius: number; salt: number; kinds: PropRule[] }
 export interface PlanetPropRules { big: TierRule; small: TierRule }
 
-const tree = (weight: number, scale: [number, number], hMax = 0.5, solid = 0.4): PropRule => ({ weight, scale, slopeMax: 0.28, hMin: 0, hMax, sink: 0.25, solid });
-const any = (weight: number, scale: [number, number], solid = 1.1): PropRule => ({ weight, scale, slopeMax: 1, hMin: -1, hMax: 2, sink: 0.2, solid });
-const small = (weight: number, scale: [number, number]): PropRule => ({ weight, scale, slopeMax: 0.45, hMin: -1, hMax: 0.7, sink: 0.04, solid: 0 });
+const tree = (weight: number, scale: [number, number], hMax = 0.5, solid = 0.4): PropRule => ({ weight, scale, slopeMax: 0.28, hMin: 0, hMax, sink: 0.25, solid, top: Infinity });
+const any = (weight: number, scale: [number, number], solid = 1.1, top = 1.3): PropRule => ({ weight, scale, slopeMax: 1, hMin: -1, hMax: 2, sink: 0.2, solid, top });
+const small = (weight: number, scale: [number, number]): PropRule => ({ weight, scale, slopeMax: 0.45, hMin: -1, hMax: 0.7, sink: 0.04, solid: 0, top: 0 });
 const big = (density: number, kinds: PropRule[]): TierRule => ({ density, grid: 420, radius: 620, salt: 0x3c, kinds });
 const sm = (density: number, kinds: PropRule[]): TierRule => ({ density, grid: 1700, radius: 110, salt: 0x5d, kinds });
 
@@ -40,7 +42,7 @@ export const PROP_RULES: Record<PlanetType, PlanetPropRules> = {
     small: sm(0.45, [small(0.72, [0.7, 1.4]), small(0.13, [0.8, 1.3]), small(0.15, [0.6, 1.8])]),
   },
   alien: {
-    big: big(0.3, [tree(0.3, [0.7, 1.6], 0.5, 0.5), tree(0.3, [0.7, 1.6], 0.5, 0.5), tree(0.2, [0.8, 1.5], 0.5, 0), any(0.2, [0.7, 1.6], 0.6)]),
+    big: big(0.3, [tree(0.3, [0.7, 1.6], 0.5, 0.5), tree(0.3, [0.7, 1.6], 0.5, 0.5), tree(0.2, [0.8, 1.5], 0.5, 0), any(0.2, [0.7, 1.6], 0.6, 2.2)]),
     small: sm(0.42, [small(0.45, [0.7, 1.5]), small(0.2, [0.7, 1.5]), small(0.35, [0.7, 1.4])]),
   },
   desert: {
@@ -48,11 +50,11 @@ export const PROP_RULES: Record<PlanetType, PlanetPropRules> = {
     small: sm(0.22, [small(0.5, [0.7, 1.4]), small(0.5, [0.6, 2.0])]),
   },
   ice: {
-    big: big(0.12, [any(0.55, [0.6, 1.5], 0.9), any(0.45, [0.8, 2.2])]),
+    big: big(0.12, [any(0.55, [0.6, 1.5], 0.9, Infinity), any(0.45, [0.8, 2.2], 1.1, 1.1)]),
     small: sm(0.25, [small(0.5, [0.7, 1.6]), small(0.5, [0.7, 1.8])]),
   },
   lava: {
-    big: big(0.13, [any(0.5, [0.6, 1.4], 1.2), any(0.5, [0.7, 1.8])]),
+    big: big(0.13, [any(0.5, [0.6, 1.4], 1.2, 2.4), any(0.5, [0.7, 1.8], 1.1, 1.4)]),
     small: sm(0.22, [small(0.35, [0.7, 1.5]), small(0.65, [0.6, 2.0])]),
   },
   barren: {
@@ -124,8 +126,11 @@ export function placeProps(p: PlanetDef, d: V3, tier: 'big' | 'small'): Float32A
   return out.subarray(0, n * PROP_STRIDE);
 }
 
-/** Solid prop (trunk / boulder) as a vertical cylinder: base point (planet-relative) and radius. */
-export interface Collider { x: number; y: number; z: number; r: number }
+/**
+ * Solid obstacle as a vertical cylinder: base point (planet-relative), radius and height of its
+ * top above the base (Infinity for trees and towers that cannot be climbed over).
+ */
+export interface Collider { x: number; y: number; z: number; r: number; top: number }
 
 const colliderCache = new Map<number, Collider[]>();
 
@@ -146,15 +151,16 @@ export function collidersNear(p: PlanetDef, d: V3, radiusM = 4): Collider[] {
   for (const pt of scatter(p, d, radiusM + cell * 2, rule.grid, rule.density, rule.salt)) {
     const pl = placeOne(p, rule, total, pt);
     if (!pl) continue;
-    const solid = rule.kinds[pl.kind].solid * pl.scale;
+    const kind = rule.kinds[pl.kind];
+    const solid = kind.solid * pl.scale;
     if (solid <= 0) continue;
-    out.push({ x: pt.dir.x * pl.r, y: pt.dir.y * pl.r, z: pt.dir.z * pl.r, r: solid });
+    out.push({ x: pt.dir.x * pl.r, y: pt.dir.y * pl.r, z: pt.dir.z * pl.r, r: solid, top: kind.top * pl.scale });
   }
   // pillars, obelisks and turret towers of surface sites
   for (const s of sitesNear(p, d, radiusM + cell * 2)) {
-    for (const c of s.pillars) {
+    for (const c of [...s.pillars, ...s.blocks]) {
       const r = p.radius + c.h - 1;
-      out.push({ x: c.dir.x * r, y: c.dir.y * r, z: c.dir.z * r, r: c.r });
+      out.push({ x: c.dir.x * r, y: c.dir.y * r, z: c.dir.z * r, r: c.r, top: c.tall + 1 });
     }
   }
   if (colliderCache.size > 4096) colliderCache.clear();

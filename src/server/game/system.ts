@@ -10,12 +10,12 @@ import {
   FWD, qlook, qrot, quat, v3, vcross, vdist, vdistSq, vdot, vlen, vnorm, vscale, vsub, type Quat, type V3,
 } from '../../shared/math/vec.ts';
 import {
-  EFLAG, IFLAG, KIND, MODE, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
+  aimByte, CFLAG, EFLAG, IFLAG, KIND, MODE, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
 } from '../../shared/net/protocol.ts';
 import { nodesNear, resourceNode } from '../../shared/planet/resources.ts';
 import { planetSites, SITE_NODE_BASE, siteDir, sitesNear } from '../../shared/planet/sites.ts';
 import { footHeight, surfaceHeight } from '../../shared/planet/terrain.ts';
-import { charQuat, newChar, stepChar } from '../../shared/sim/character.ts';
+import { charQuat, climbProgress, newChar, stepChar } from '../../shared/sim/character.ts';
 import type { SimEnv } from '../../shared/sim/env.ts';
 import { newPose, planetRot, toBodyDir, toWorldPoint, worldPose } from '../../shared/sim/frames.ts';
 import { emptyInput, isCruising, newShip, stepShip, type StepOut } from '../../shared/sim/ship.ts';
@@ -377,7 +377,9 @@ export class SystemInstance implements NpcWorld {
         if (m.flags & 1) this.tryFire(ship);
       } else if (s.mode === MODE.FOOT && m.mode === MODE.FOOT && s.char) {
         stepChar(s.char.state, m.char, this.def.planets[s.char.planet], DT);
-        if (m.flags & IFLAG.FIRE) this.fauna.shoot(s, m.char.pitch);
+        s.char.pitch = m.char.pitch;
+        s.char.aim = !!(m.flags & IFLAG.AIM);
+        if (m.flags & IFLAG.FIRE && !s.char.state.climbMode) this.fauna.shoot(s, m.char.pitch);
       }
     }
   }
@@ -470,9 +472,13 @@ export class SystemInstance implements NpcWorld {
     for (const c of this.chars.values()) {
       if (c.session === s || vdistSq(this.charWorld(c, cw), focus) > r2) continue;
       charQuat(c.state, q);
+      const cs = c.state;
+      const flags = (cs.ground ? 0 : CFLAG.AIR) | (cs.climbMode ? CFLAG.CLIMB : 0) | (cs.scramble ? CFLAG.SCRAMBLE : 0) | (c.aim || this.time - c.shotAt < 1.5 ? CFLAG.AIM : 0);
+      const prog = climbProgress(cs);
       entities.push({
-        id: c.id, kind: KIND.CHAR, flags: c.state.ground ? 0 : EFLAG.BOOST, frame: c.planet + 1, px: c.state.p.x, py: c.state.p.y, pz: c.state.p.z,
-        qx: q.x, qy: q.y, qz: q.z, qw: q.w, vx: c.state.v.x, vy: c.state.v.y, vz: c.state.v.z, hull: 1, shield: 0, throttle: 0,
+        id: c.id, kind: KIND.CHAR, flags, frame: c.planet + 1, px: cs.p.x, py: cs.p.y, pz: cs.p.z,
+        qx: q.x, qy: q.y, qz: q.z, qw: q.w, vx: cs.v.x, vy: cs.v.y, vz: cs.v.z, hull: c.hp / PILOT_HP, shield: aimByte(c.pitch),
+        throttle: cs.climbMode === 2 ? 0.5 + prog * 0.5 : prog * 0.5,
       });
     }
     for (const m of this.missiles.values()) {
@@ -515,7 +521,7 @@ export class SystemInstance implements NpcWorld {
         const g = pl.radius + footHeight(pl, d.x, d.y, d.z) + 0.05;
         const pos = vscale(v3(), d, g);
         const f = vnorm(v3(), v3(fwd.x - up.x * vdot(fwd, up), fwd.y - up.y * vdot(fwd, up), fwd.z - up.z * vdot(fwd, up)));
-        const c: CharEntity = { id: this.ctx.nextId(), name: p.name, state: newChar(pos, f), planet: pl.index, session: s, hp: PILOT_HP, hurtAt: -99, cool: 0 };
+        const c: CharEntity = { id: this.ctx.nextId(), name: p.name, state: newChar(pos, f), planet: pl.index, session: s, hp: PILOT_HP, hurtAt: -99, cool: 0, pitch: 0, aim: false, shotAt: -99 };
         s.char = c;
         this.chars.set(c.id, c);
         this.infos.push({ id: c.id, kind: KIND.CHAR, name: p.name, owner: s.id });

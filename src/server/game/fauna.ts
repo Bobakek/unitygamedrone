@@ -218,6 +218,7 @@ export class Fauna {
     const ch = s.char;
     if (!ch || ch.cool > 0) return;
     ch.cool = BLASTER.cooldown;
+    ch.shotAt = this.sys.time;
     const pl = this.sys.def.planets[ch.planet];
     const cs = ch.state;
     vnorm(up, cs.p);
