@@ -132,6 +132,7 @@ class PropTier {
     if (pv.def !== this.planet) return;
     const touched = this.ground.snap(pv, (mi, slot, x, y, z) => {
       const km = this.meshes[mi];
+      if (!km) return;
       for (const im of [km.solid, km.glow]) {
         if (!im) continue;
         const a = im.instanceMatrix.array as Float32Array;
@@ -140,6 +141,7 @@ class PropTier {
     });
     for (const mi of touched) {
       const km = this.meshes[mi];
+      if (!km) continue;
       km.solid.instanceMatrix.needsUpdate = true;
       if (km.glow) km.glow.instanceMatrix.needsUpdate = true;
     }
@@ -172,6 +174,7 @@ class PropTier {
 
   clear() {
     this.planet = null;
+    this.ground.reset(0);
     for (const m of this.meshes) { m.solid.count = 0; if (m.glow) m.glow.count = 0; }
     this.last = v3(1e12, 0, 0);
   }
@@ -182,6 +185,8 @@ class PropTier {
       if (!this.planet || this.planet.type !== planet.type || !this.meshes.length) this.setKit(planet);
       this.planet = planet;
       this.last = v3(1e12, 0, 0);
+      // the old batch's ground records point at the previous planet's kit
+      this.ground.reset(0);
       for (const m of this.meshes) { m.solid.count = 0; if (m.glow) m.glow.count = 0; }
     }
     const moved = Math.hypot(cam.x - this.last.x, cam.y - this.last.y, cam.z - this.last.z);
