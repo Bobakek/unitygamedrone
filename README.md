@@ -15,6 +15,15 @@
 | ![Пустынная планета](docs/screenshots/desert.png) | ![Ледяная планета](docs/screenshots/ice.png) |
 | ![Бой с пиратами](docs/screenshots/combat.png) | ![Другая система после прыжка](docs/screenshots/system.png) |
 
+**Живой мир:** вращение планет со сменой дня и ночи, события в космосе, руины и пиратские базы, фауна.
+
+| | |
+|---|---|
+| ![Закат на земной планете](docs/screenshots/dusk.png) | ![Ночь](docs/screenshots/night.png) |
+| ![Пиратский конвой](docs/screenshots/convoy.png) | ![Аномалия](docs/screenshots/anomaly.png) |
+| ![Руины на ледяной планете](docs/screenshots/ruins.png) | ![Пиратская база с турелями](docs/screenshots/outpost.png) |
+| ![Стая ледяных волков](docs/screenshots/fauna-ice.png) | ![Клыкач и травники](docs/screenshots/fauna-terran.png) |
+
 Скриншоты сделаны автотестами `npm run e2e` и `node e2e/visuals.mjs` (программный WebGL в headless Chromium).
 
 ## Быстрый старт

@@ -60,7 +60,6 @@ try {
       if ((await page.evaluate(() => window.__game.sys.id)) !== sys) {
         await chat(`/system ${sys}`);
         await page.waitForFunction((s) => window.__game.sys.id === s && window.__game.pred.ready, sys, { timeout: 30000, polling: 250 });
-        await chat('/god');
       }
       await chat(`/land ${idx}`);
       await sleep(6000);
