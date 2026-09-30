@@ -131,6 +131,16 @@ describe('ship simulation', () => {
     expect(s.landed).toBe(0);
   });
 
+  it('settles and lands by itself with idle controls near the ground', () => {
+    const p = sys.planets[1];
+    const dir = vnorm(v3(), v3(-0.4, 0.7, 0.6));
+    const g = p.radius + surfaceHeight(p, dir.x, dir.y, dir.z) + 60;
+    const s = newShip(v3(p.center.x + dir.x * g, p.center.y + dir.y * g, p.center.z + dir.z * g));
+    qlook(s.q, v3(dir.y, -dir.x, 0), dir);
+    for (let k = 0; k < 30 * 40 && !s.landed; k++) stepShip(s, emptyInput(), stats, env, DT);
+    expect(s.landed).toBe(p.index + 1);
+  });
+
   it('cruise spools up in open space and is inhibited near planets', () => {
     const far = newShip(v3(sys.station.pos.x + 20000, sys.station.pos.y + 20000, sys.station.pos.z));
     const cr = { ...emptyInput(), throttle: 1, cruise: true };

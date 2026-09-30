@@ -715,7 +715,7 @@ export class Game {
       if (ship.landed) prompt = '<kbd>G</kbd> выйти из корабля · <kbd>W</kbd> взлёт';
       else if (vdist(ship.p, sys.station.pos) < DOCK_RANGE) prompt = '<kbd>F</kbd> стыковка со станцией';
       else if (sys.gates.some((g) => vdist(g.pos, ship.p) < GATE_RANGE)) prompt = '<kbd>F</kbd> прыжок через врата';
-      else if (this.nearPlanet && this.nearAlt < 150 && speed < 80) prompt = '<kbd>X</kbd> стоп и <kbd>C</kbd> снижение — корабль сядет сам';
+      else if (this.nearPlanet && this.nearAlt < 250 && speed < 80 && Math.abs(this.ctrl.throttle) >= 0.05) prompt = '<kbd>X</kbd> сброс тяги — корабль сам опустится и сядет';
     } else if (mode === MODE.FOOT) {
       const n = this.nearestNode();
       if (n) prompt = `<kbd>F</kbd> собрать: ${RESOURCE_NAMES[n.type]}`;

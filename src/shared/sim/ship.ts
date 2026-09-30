@@ -32,6 +32,7 @@ export interface ShipStats {
 }
 
 export const CRUISE_SPOOL = 2;
+export const LAND_ASSIST_ALT = 250;
 export const BASE_STATS: ShipStats = {
   maxSpeed: 220, boostSpeed: 380, accel: 110, strafe: 70, turn: 1.6, roll: 2.4, cruiseSpeed: 3200, radius: 5,
 };
@@ -125,6 +126,17 @@ export function stepShip(s: ShipState, inp: ShipInput, st: ShipStats, env: SimEn
     vscale(desired, f, inp.throttle * spd);
     vaddScaled(desired, desired, r, inp.strafeX * st.strafe);
     vaddScaled(desired, desired, u, inp.strafeY * st.strafe);
+    // Landing assist: with the stick idle close to the ground the ship settles down gently.
+    if (Math.abs(inp.throttle) < 0.05 && inp.strafeY === 0) {
+      for (const pl of env.planets) {
+        vsub(d, s.p, pl.center);
+        const dist = vlen(d);
+        if (dist > pl.radius + pl.maxHeight + LAND_ASSIST_ALT) continue;
+        vscale(d, d, 1 / dist);
+        const alt = dist - pl.radius - surfaceHeight(pl, d.x, d.y, d.z);
+        if (alt < LAND_ASSIST_ALT) vaddScaled(desired, desired, d, -Math.min(8, 2 + alt * 0.05));
+      }
+    }
   }
   const speed = vlen(s.v);
   let accel = st.accel * (boosting ? 1.6 : 1);

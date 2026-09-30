@@ -593,6 +593,7 @@ export class SystemInstance implements NpcWorld {
       const pl = this.def.planets[idx];
       if (!pl) return 'Нет такой планеты';
       const land = target.startsWith('land');
+      if (target.startsWith('low') && !pl.atmo) return 'Нет атмосферы';
       const toSt = vnorm(v3(), vsub(v3(), this.def.station.pos, pl.center));
       let d = toSt;
       if (land) {
@@ -606,6 +607,10 @@ export class SystemInstance implements NpcWorld {
         const g = pl.radius + surfaceHeight(pl, off.x, off.y, off.z) + SHIP_LAND_HEIGHT;
         ship.state = newShip(v3(pl.center.x + off.x * g, pl.center.y + off.y * g, pl.center.z + off.z * g), qlook(quat(), vscale(v3(), tangent, -1), off));
         ship.state.landed = pl.index + 1;
+      } else if (target.startsWith('low')) {
+        // level flight ~180 m above the terrain, heading along the surface
+        const g = pl.radius + Math.max(0, surfaceHeight(pl, d.x, d.y, d.z)) + 180;
+        ship.state = newShip(v3(pl.center.x + d.x * g, pl.center.y + d.y * g, pl.center.z + d.z * g), qlook(quat(), tangent, d));
       } else {
         const g = pl.radius + pl.maxHeight + 900;
         const pos = v3(pl.center.x + d.x * g, pl.center.y + d.y * g, pl.center.z + d.z * g);

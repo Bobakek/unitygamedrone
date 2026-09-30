@@ -57,6 +57,9 @@ try {
   await chat(a, '/tp 1');
   await shot(a, '02-planet-orbit.png', 6000);
 
+  await chat(a, '/tp low1');
+  await shot(a, '02b-low-altitude.png', 7000);
+
   await chat(a, '/land 1');
   await shot(a, '03-landed.png', 7000);
 
