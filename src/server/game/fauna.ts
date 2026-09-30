@@ -324,7 +324,8 @@ export class Fauna {
     if (c.mood === 'hunt' && prey) {
       c.wish = vnorm(v3(), vsub(v3(), body, c.state.p));
       const reach = 1.1 + c.sp.size * 0.9;
-      speed = pd > 7 ? c.sp.run : pd > reach ? c.sp.walk * 1.4 : 0.6;
+      speed = pd > 7 ? c.sp.run : pd > reach ? c.sp.walk * 1.4 : 0;
+      if (speed === 0) c.state.f = vnorm(v3(), v3(c.state.f.x + c.wish.x * dt * 3, c.state.f.y + c.wish.y * dt * 3, c.state.f.z + c.wish.z * dt * 3));
       if (pd < reach + 0.5 && c.biteCool <= 0) {
         c.biteCool = 1.4;
         this.sys.events.push({ t: 'bite', id: c.id });

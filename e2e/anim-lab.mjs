@@ -27,12 +27,13 @@ try {
     await page.goto(`http://localhost:${PORT}/?lab${q}`);
     await page.waitForFunction(() => window.__lab?.ready, null, { timeout: 30000, polling: 200 });
   };
-  for (const [q, name] of [['&sheet=pilot&from=0&to=8', 'sheet-pilot-1'], ['&sheet=pilot&from=9&to=17', 'sheet-pilot-2'], ...[0, 1, 2, 3, 4, 5, 6, 7].map((i) => [`&sheet=creatures&from=${i}&to=${i}`, `sheet-creature-${i}`])]) {
+  const species = Array.from({ length: 12 }, (_, i) => i);
+  for (const [q, name] of [['&sheet=pilot&from=0&to=8', 'sheet-pilot-1'], ['&sheet=pilot&from=9&to=16', 'sheet-pilot-2'], ['&sheet=pilot&from=17&to=22', 'sheet-pilot-swim'], ...species.map((i) => [`&sheet=creatures&from=${i}&to=${i}`, `sheet-creature-${i}`])]) {
     await open(`${q}&ui=0`);
     await sleep(2500);
     await page.screenshot({ path: `${OUT}/${name}.png` });
   }
-  const clips = process.argv.slice(2).length ? process.argv.slice(2) : ['strafeR', 'back', 'vault', 'climb', 'shoot', 'harvest', 'scramble', 'hurt', 'fidget'];
+  const clips = process.argv.slice(2).length ? process.argv.slice(2) : ['strafeR', 'back', 'vault', 'climb', 'shoot', 'harvest', 'scramble', 'hurt', 'fidget', 'crawl', 'underSwim'];
   // clip times (s) to freeze for the montage
   const TIMES = { vault: [1.0, 1.2, 1.45], climb: [1.95, 2.35, 2.75], scramble: [1.5, 2.2, 2.6], shoot: [0.45, 0.8, 1.2], harvest: [0.6, 0.9, 1.3], hurt: [0.3, 0.38, 0.5], fidget: [0.9, 1.4, 1.9] };
   await open('&clip=walk&ui=0');

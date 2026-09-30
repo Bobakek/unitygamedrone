@@ -115,6 +115,37 @@ try {
     }
     await chat('/god');
   }
+  // the sea: a beach from the pilot's camera, then diving among sea life and sea creatures
+  if (!only || only === 'water') {
+    if ((await page.evaluate(() => window.__game.sys.id)) !== 0) {
+      await chat('/system 0');
+      await page.waitForFunction(() => window.__game.sys.id === 0 && window.__game.pred.ready, null, { timeout: 30000, polling: 250 });
+    }
+    await chat('/god');
+    await chat('/tp beach 2');
+    await sleep(14000);
+    await page.evaluate(() => { window.__game.ctrl.footPitch = -0.12; });
+    await sleep(3000);
+    await page.screenshot({ path: `${OUT}/water-beach.png` });
+    await chat('/tp dive 2');
+    await sleep(14000);
+    await chat('/fauna 9 16');
+    await chat('/fauna 8 12');
+    await page.evaluate(() => { window.__game.ctrl.footPitch = -0.15; });
+    await sleep(12000);
+    await page.screenshot({ path: `${OUT}/water-under.png` });
+    const st = await page.evaluate(() => {
+      const g = window.__game;
+      return { under: g.camUnder, swim: g.pred.char?.swim, fish: g.sealife.count, bed: g.props.sea.meshes.reduce((a, m) => a + m.solid.count, 0), sea: [...g.remotes.values()].filter((r) => r.info?.kind === 5 && [8, 9, 10, 11].includes(r.info.species)).length };
+    });
+    console.log('water', JSON.stringify(st));
+    if (!st.under || !st.swim) errors.push(`water: not under water (${JSON.stringify(st)})`);
+    if (st.fish < 20 || st.bed < 50 || st.sea < 1) errors.push(`water: sea life missing (${JSON.stringify(st)})`);
+    await page.evaluate(() => { window.__game.ctrl.footPitch = 0.9; });
+    await sleep(5000);
+    await page.screenshot({ path: `${OUT}/water-surface-below.png` });
+    await chat('/god');
+  }
   // surface sites: ruins and a pirate outpost
   if (!only || only === 'sites') {
     if ((await page.evaluate(() => window.__game.sys.id)) !== 0) {
