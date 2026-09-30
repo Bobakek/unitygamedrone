@@ -44,6 +44,12 @@ export const FAUNA: Partial<Record<PlanetType, [number, number]>> = {
   terran: [0, 1], ocean: [0, 1], alien: [2, 3], desert: [4, 5], ice: [6, 7],
 };
 
+/** Creature behaviour, sent to clients (EntityState.throttle = mood / 8) to pick animations. */
+export const MOOD = { graze: 0, wander: 1, flee: 2, hunt: 3, alert: 4, rest: 5 } as const;
+export type Mood = keyof typeof MOOD;
+export const moodByte = (m: Mood) => MOOD[m] / 8;
+export const moodOf = (b: number) => Math.round(b * 8);
+
 export const PILOT_HP = 100;
 export const BLASTER = { damage: 14, cooldown: 0.24, range: 140, speed: 320 } as const;
 export const SAMPLE_RANGE = 4;

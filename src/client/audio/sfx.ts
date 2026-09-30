@@ -58,6 +58,19 @@ export class Sfx {
     o.start(t); o.stop(t + 0.15);
   }
 
+  /** Hand blaster: a short, lower "pew" with a crackle. */
+  blaster(vol = 1) {
+    const c = this.ctx; if (!c || !this.master) return;
+    const t = c.currentTime, o = c.createOscillator(), g = c.createGain();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(900, t);
+    o.frequency.exponentialRampToValueAtTime(160, t + 0.1);
+    this.env(g, t, 0.003, 0.07 * vol, 0.1);
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + 0.13);
+    this.burst(0.05, 2600, 0.05 * vol, 'highpass');
+  }
+
   private burst(dur: number, freq: number, vol: number, type: BiquadFilterType = 'lowpass', sweep = 0) {
     const c = this.ctx; if (!c || !this.master || !this.noise) return;
     const t = c.currentTime, s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();

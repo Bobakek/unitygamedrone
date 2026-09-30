@@ -3,7 +3,7 @@ import { PilotStore } from '../src/server/db.ts';
 import { Game } from '../src/server/game/game.ts';
 import type { Transport } from '../src/server/game/session.ts';
 import {
-  ANOMALY_SCAN_TIME, BASE_BOUNTY, PILOT_HP, vnorm, vsub, cargoCount, decodeJson, encodeJson, FWD, MSG, nodesNear, PROTOCOL_VERSION, qrot, resourceNode, TICK_RATE, v3, vdist,
+  ANOMALY_SCAN_TIME, BASE_BOUNTY, PILOT_HP, vnorm, vsub, CFLAG, aimByte, aimPitch, KIND, MOOD, moodOf, cargoCount, decodeJson, encodeJson, FWD, MSG, nodesNear, PROTOCOL_VERSION, qrot, resourceNode, TICK_RATE, v3, vdist,
   type GameEvent, type Poi, getSystem,
 } from '../src/shared/index.ts';
 import { collidersNear } from '../src/shared/planet/prop-rules.ts';
@@ -189,6 +189,7 @@ describe('fauna and on-foot combat', () => {
     run(game, 6);
     expect(ch.hp).toBeLessThan(PILOT_HP);
     expect(me.events().some((e) => e.t === 'hurt')).toBe(true);
+    expect(me.events().some((e) => e.t === 'roar' && e.id === hunter.id)).toBe(true);
     // face the hunter and shoot until it drops
     ch.hp = PILOT_HP;
     for (let i = 0; i < 60 && !hunter.dead; i++) {
@@ -207,6 +208,23 @@ describe('fauna and on-foot combat', () => {
     expect(sys.handleAction(me.s, { a: 'sample', id: hunter.id })).toBeNull();
     expect(me.s.pilot.cargo.bio).toBe(bio + hunter.sp.samples);
     expect(sys.fauna.creatures.has(hunter.id)).toBe(false);
+  });
+
+  it('other pilots see aiming, pitch and creature moods', () => {
+    const watcher = pilot(game, 'Watcher');
+    ch.pitch = 0.3;
+    sys.fauna.shoot(me.s, 0.3);
+    const snap = sys.buildSnapshot(watcher.s);
+    const e = snap.entities.find((x) => x.id === ch.id)!;
+    expect(e.flags & CFLAG.AIM).toBeTruthy();
+    expect(aimPitch(aimByte(0.3))).toBeCloseTo(0.3, 5);
+    expect(e.shield).toBeCloseTo(aimByte(0.3), 5);
+    const herd = sys.fauna.devSpawn(pl.index, ch.state.p, 6, 30);
+    game.step();
+    const s2 = sys.buildSnapshot(me.s);
+    const c = s2.entities.find((x) => x.id === herd[0].id)!;
+    expect(c.kind).toBe(KIND.CREATURE);
+    expect([MOOD.graze, MOOD.alert, MOOD.flee, MOOD.wander]).toContain(moodOf(c.throttle));
   });
 
   it('a pilot whose suit fails is recalled to the ship and loses half the cargo', () => {

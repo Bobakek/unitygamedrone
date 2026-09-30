@@ -4,11 +4,12 @@ import { defaultUpgrades, flightStats } from '../shared/economy.ts';
 import { getSystem, type PlanetDef, type SystemDef } from '../shared/galaxy/system-gen.ts';
 import { FWD, qlook, qrot, quat, v3, vcross, vdist, vlen, vnorm, vsub, type Quat, type V3 } from '../shared/math/vec.ts';
 import {
-  BLASTER_LEVEL, EFLAG, IFLAG, KIND, MODE, type EntityInfo, type EntityState, type GameEvent, type PilotInfo, type SelfState, type Shot, type Snapshot, type Welcome,
+  aimPitch, BLASTER_LEVEL, CFLAG, EFLAG, IFLAG, KIND, MODE, type EntityInfo, type EntityState, type GameEvent, type PilotInfo, type SelfState, type Shot, type Snapshot, type Welcome,
 } from '../shared/net/protocol.ts';
 import { heightAt, surfaceHeight } from '../shared/planet/terrain.ts';
 import { resourceNode } from '../shared/planet/resources.ts';
 import type { SimEnv } from '../shared/sim/env.ts';
+import { climbProgress } from '../shared/sim/character.ts';
 import { newPose, planetRot, toBodyDir, toBodyPoint, toWorldDir, toWorldPoint, toWorldQuat, toWorldVel, worldPose, type Pose } from '../shared/sim/frames.ts';
 import { CRUISE_SPOOL, cruiseInhibited, isCruising } from '../shared/sim/ship.ts';
 import { ENERGY_REGEN, GUN_OFFSETS, LASER, leadPoint, MISSILE } from '../shared/sim/weapons.ts';
@@ -38,7 +39,7 @@ import { FieldView, GateView, StationView } from './world/structures.ts';
 import { AnomalyView, LootView, WreckView, type PoiView } from './world/poi-views.ts';
 import { SiteView } from './planet/sites-view.ts';
 import { CreatureView } from './entities/creature.ts';
-import { BLASTER, SAMPLE_RANGE, SPECIES } from '../shared/fauna.ts';
+import { BLASTER, moodOf, SAMPLE_RANGE, SPECIES } from '../shared/fauna.ts';
 import { planetSites } from '../shared/planet/sites.ts';
 import { POI_LABEL, SALVAGE_MAX_SPEED, SALVAGE_RANGE, type Poi } from '../shared/events.ts';
 
@@ -58,13 +59,23 @@ interface Remote {
   smokeT: number;
   /** Body-frame position of the node this remote pilot is mining (for the beam). */
   harvestPos: V3 | null;
+  /** Previous heading (creatures: turn-rate estimate). */
+  prevF?: V3;
 }
 
 interface NavItem { name: string; pos: V3; kind: 'planet' | 'station' | 'gate' | 'event'; radius: number; ship?: number }
 
 const RESOURCE_NAMES = { ore: 'руда', crystal: 'кристалл', relic: 'реликт' } as const;
 const DUST: Record<string, string> = { terran: '#9a8a6a', ocean: '#b0a080', alien: '#c090d0', desert: '#d9a060', ice: '#e8f4ff', lava: '#5a4a4a', barren: '#9a948e' };
-const tv = new THREE.Vector3();
+const tv = new THREE.Vector3(), tv3 = new THREE.Vector3();
+
+/** Splits a body-frame velocity into forward / sideways (right) / vertical parts for animation. */
+function moveParts(v: V3, up: V3, fwd: V3) {
+  const vUp = v.x * up.x + v.y * up.y + v.z * up.z;
+  const hx = v.x - up.x * vUp, hy = v.y - up.y * vUp, hz = v.z - up.z * vUp;
+  const rx = fwd.y * up.z - fwd.z * up.y, ry = fwd.z * up.x - fwd.x * up.z, rz = fwd.x * up.y - fwd.y * up.x;
+  return { speed: Math.hypot(hx, hy, hz), fwd: hx * fwd.x + hy * fwd.y + hz * fwd.z, side: hx * rx + hy * ry + hz * rz, vUp };
+}
 
 /** Owns the client session: world rendering, prediction, networking glue and HUD. */
 export class Game {
@@ -148,6 +159,9 @@ export class Game {
   private stats = flightStats(defaultUpgrades());
   private harvestPos: V3 | null = null;
   private prevFwd = v3(0, 0, -1);
+  /** Smoothed rifle aim (RMB on foot or recent shots) — drives camera and pose. */
+  private aimK = 0;
+  private lastShot = -99;
   private nearPlanet: PlanetDef | null = null;
   private nearAlt = 1e9;
 
@@ -455,6 +469,11 @@ export class Game {
   private onShots(shots: Shot[]) {
     for (const s of shots) {
       const p = v3(s.px, s.py, s.pz);
+      const shooter = s.level === BLASTER_LEVEL ? this.remotes.get(s.shooter)?.view : null;
+      if (shooter instanceof AstronautView) {
+        shooter.fire();
+        if (shooter.aiming) { const m = shooter.muzzleWorld(tv3); p.x = m.x + this.origin.x; p.y = m.y + this.origin.y; p.z = m.z + this.origin.z; }
+      }
       this.effects.bolt(p, v3(s.vx, s.vy, s.vz), this.shotColor(s.shooter, s.level), s.shooter, INTERP_DELAY, s.level === BLASTER_LEVEL ? 0.45 : undefined);
       const d = vdist(p, this.origin);
       if (d < 3000) setTimeout(() => this.sfx.laser(Math.max(0.1, 1 - d / 3000) * 0.7), INTERP_DELAY * 1000);
@@ -511,12 +530,18 @@ export class Game {
           this.sfx.beep(e.kind === 'warn');
           break;
         case 'hurt':
+          this.myAstro?.hurt(Math.min(1, e.dmg / 15));
           this.hud.hurt(Math.min(0.6, e.dmg / 30));
           this.sfx.hit(false);
           break;
         case 'bite': {
           const v = this.remotes.get(e.id)?.view;
           if (v instanceof CreatureView) v.attack();
+          break;
+        }
+        case 'roar': {
+          const v = this.remotes.get(e.id)?.view;
+          if (v instanceof CreatureView) { v.roar(); this.sfx.explosion(false, 0.12); }
           break;
         }
         case 'scan':
@@ -591,9 +616,20 @@ export class Game {
     const c = Math.cos(this.ctrl.footPitch), s = Math.sin(this.ctrl.footPitch);
     const d = v3(this.charFwd.x * c + up.x * s, this.charFwd.y * c + up.y * s, this.charFwd.z * c + up.z * s);
     const right = vnorm(v3(), vcross(v3(), this.charFwd, up));
-    const p = v3(this.charPos.x + up.x * 1.45 + right.x * 0.35, this.charPos.y + up.y * 1.45 + right.y * 0.35, this.charPos.z + up.z * 1.45 + right.z * 0.35);
+    let p = v3(this.charPos.x + up.x * 1.45 + right.x * 0.35, this.charPos.y + up.y * 1.45 + right.y * 0.35, this.charPos.z + up.z * 1.45 + right.z * 0.35);
+    const astro = this.myAstro;
+    if (astro?.aiming) {
+      // leave from the muzzle, converging on the point under the crosshair
+      const m = astro.muzzleWorld(tv3);
+      const target = v3(p.x + d.x * 60, p.y + d.y * 60, p.z + d.z * 60);
+      p = v3(m.x + this.origin.x, m.y + this.origin.y, m.z + this.origin.z);
+      const dd = vnorm(v3(), vsub(v3(), target, p));
+      d.x = dd.x; d.y = dd.y; d.z = dd.z;
+    }
+    astro?.fire();
+    this.lastShot = this.time;
     this.effects.bolt(p, v3(d.x * BLASTER.speed, d.y * BLASTER.speed, d.z * BLASTER.speed), this.shotColor(0, BLASTER_LEVEL), this.self!.charId, 0, 0.45);
-    this.sfx.laser(0.45);
+    this.sfx.blaster();
   }
 
   /** Carcass within reach of the pilot. */
@@ -767,7 +803,10 @@ export class Game {
     if (mode === MODE.SHIP) this.rig.ship(dt, this.shipPos, this.shipQ, speed, isCruising(ship), !!ship.landed);
     else if (onFoot && charPl) {
       const up = vnorm(v3(), vsub(v3(), this.charPos, charPl.center));
-      this.rig.foot(this.charPos, up, this.charFwd, this.ctrl.footPitch);
+      const wantAim = this.input.mouse(2) || this.time - this.lastShot < 1.5;
+      this.aimK += ((wantAim ? 1 : 0) - this.aimK) * (1 - Math.exp(-dt * 9));
+      this.ctrl.lookScale = 1 - 0.4 * this.aimK;
+      this.rig.foot(this.charPos, up, this.charFwd, this.ctrl.footPitch, this.input.mouse(2) ? this.aimK : 0);
     } else if (mode === MODE.DOCKED) this.rig.orbit(dt, sys.station.pos, 900);
     const np = this.nearPlanet;
     if (np && this.nearAlt < np.maxHeight * 3 + 400) {
@@ -837,13 +876,15 @@ export class Game {
       // animation inputs in the body frame (independent of the planet's spin)
       const c = this.pred.char!;
       const upB = vnorm(v3(), this.charPosB);
-      const vUp = c.v.x * upB.x + c.v.y * upB.y + c.v.z * upB.z;
-      const hs = Math.hypot(c.v.x - upB.x * vUp, c.v.y - upB.y * vUp, c.v.z - upB.z * vUp);
+      const mv = moveParts(c.v, upB, this.charFwdB);
       const cr = vcross(v3(), this.prevFwd, this.charFwdB);
       const turn = dt > 0 ? -Math.asin(Math.max(-1, Math.min(1, cr.x * upB.x + cr.y * upB.y + cr.z * upB.z))) / dt : 0;
       this.prevFwd = { ...this.charFwdB };
       if (this.harvestPos) this.myAstro.setHarvestTarget(this.rel(this.toWorld(charPl.index + 1, this.harvestPos, v3())));
-      this.myAstro.update(dt, { speed: hs, vUp, ground: !!c.ground, jet: !c.ground && this.input.down('Space') && c.fuel > 0.01, look: this.ctrl.footPitch, turn });
+      this.myAstro.update(dt, {
+        ...mv, ground: !!c.ground, jet: !c.ground && !c.climbMode && this.input.down('Space') && c.fuel > 0.01, look: this.ctrl.footPitch, turn,
+        aim: this.aimK > 0.5, aimPitch: this.ctrl.footPitch, climb: c.climbMode ? { mode: c.climbMode, t: climbProgress(c) } : null, scramble: !!c.scramble,
+      });
     }
     if (mode === MODE.SHIP) this.sfx.engineLevel(this.ctrl.throttle, this.input.down('ShiftLeft'), isCruising(ship));
     else this.sfx.silenceEngine();
@@ -884,15 +925,29 @@ export class Game {
         r.view.update(dt, this.time);
       } else if (r.view instanceof AstronautView) {
         const up = vnorm(v3(), r.bp);
-        const vUp = st.vx * up.x + st.vy * up.y + st.vz * up.z;
-        const hs = Math.hypot(st.vx - up.x * vUp, st.vy - up.y * vUp, st.vz - up.z * vUp);
-        const ground = !(st.flags & EFLAG.BOOST);
+        const fwd = qrot(v3(), r.bq, FWD);
+        const mv = moveParts(v3(st.vx, st.vy, st.vz), up, fwd);
+        const climbing = !!(st.flags & CFLAG.CLIMB);
+        const ground = !(st.flags & CFLAG.AIR);
+        const cm = st.throttle >= 0.5 ? 2 : 1;
         if (r.harvestPos) r.view.setHarvestTarget(this.rel(this.toWorld(st.frame, r.harvestPos, v3())));
-        r.view.update(dt, { speed: hs, vUp, ground, jet: !ground && vUp > 2.5, look: 0, turn: 0 });
+        r.view.update(dt, {
+          ...mv, ground, jet: !ground && !climbing && mv.vUp > 2.5, look: 0, turn: 0,
+          aim: !!(st.flags & CFLAG.AIM), aimPitch: aimPitch(st.shield),
+          climb: climbing ? { mode: cm, t: cm === 2 ? (st.throttle - 0.5) * 2 : st.throttle * 2 } : null, scramble: !!(st.flags & CFLAG.SCRAMBLE),
+        });
       } else if (r.view instanceof LootView) {
         r.view.update(dt);
       } else if (r.view instanceof CreatureView) {
-        r.view.update(dt, Math.hypot(st.vx, st.vy, st.vz), !!(st.flags & EFLAG.DEAD));
+        // heading change rate drives turning-in-place steps
+        const f = qrot(v3(), r.bq, FWD), up = vnorm(v3(), r.bp);
+        let turn = 0;
+        if (r.prevF && dt > 0) {
+          const cr = vcross(v3(), r.prevF, f);
+          turn = Math.asin(Math.max(-1, Math.min(1, cr.x * up.x + cr.y * up.y + cr.z * up.z))) / dt;
+        }
+        r.prevF = f;
+        r.view.update(dt, { speed: Math.hypot(st.vx, st.vy, st.vz), turn, mood: moodOf(st.throttle), dead: !!(st.flags & EFLAG.DEAD) });
       } else {
         r.smokeT -= dt;
         if (r.smokeT <= 0) { r.smokeT = 0.03; this.effects.smoke(r.p); }

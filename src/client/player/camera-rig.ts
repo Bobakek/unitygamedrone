@@ -23,14 +23,15 @@ export class CameraRig {
     this.quat.copy(this.lag).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), landed ? -0.2 : -0.07));
   }
 
-  foot(p: V3, up: V3, fwd: V3, pitch: number) {
+  /** Third-person camera behind the pilot; `aim` (0..1) pulls it in over the right shoulder. */
+  foot(p: V3, up: V3, fwd: V3, pitch: number, aim = 0) {
     const right = vnorm(v3(), vcross(v3(), fwd, up));
     const c = Math.cos(pitch), s = Math.sin(pitch);
     const dir = v3(fwd.x * c + up.x * s, fwd.y * c + up.y * s, fwd.z * c + up.z * s);
-    const back = 4.6;
-    this.pos.x = p.x + up.x * 1.8 - dir.x * back + right.x * 0.6;
-    this.pos.y = p.y + up.y * 1.8 - dir.y * back + right.y * 0.6;
-    this.pos.z = p.z + up.z * 1.8 - dir.z * back + right.z * 0.6;
+    const back = 4.6 - 2.4 * aim, side = 0.6 + 0.2 * aim, height = 1.8 - 0.15 * aim;
+    this.pos.x = p.x + up.x * height - dir.x * back + right.x * side;
+    this.pos.y = p.y + up.y * height - dir.y * back + right.y * side;
+    this.pos.z = p.z + up.z * height - dir.z * back + right.z * side;
     qlook(_q, dir, up);
     this.quat.set(_q.x, _q.y, _q.z, _q.w);
     this.lag.copy(this.quat);

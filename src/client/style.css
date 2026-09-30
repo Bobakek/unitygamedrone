@@ -152,3 +152,20 @@ button:disabled { opacity: 0.4; cursor: default; }
 #suit .suit-bar i { display: block; height: 100%; width: 100%; background: linear-gradient(90deg, #6dff9c, #8ff8ff); transition: width 0.2s; }
 #suit.low .suit-bar i { background: linear-gradient(90deg, #ff5a6a, #ffb060); }
 #hurt { position: absolute; inset: 0; pointer-events: none; opacity: 0; background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 45%, rgba(255, 30, 40, 0.55) 100%); transition: opacity 0.35s; }
+
+#login-lab { margin-top: 8px; width: 100%; }
+button.ghost { background: transparent; border: 1px solid var(--line); color: var(--dim); }
+button.ghost:hover { color: var(--ink); border-color: var(--cyan); }
+#lab { position: fixed; inset: 0; pointer-events: none; font-size: 12px; color: var(--ink); }
+#lab .lab-panel { left: 12px; top: 12px; width: 330px; max-height: calc(100vh - 24px); overflow: auto; pointer-events: auto; }
+#lab h2 { margin: 0 0 6px; font-size: 15px; letter-spacing: 0.06em; color: var(--cyan); }
+#lab .lab-sec { color: var(--dim); margin: 8px 0 4px; text-transform: uppercase; font-size: 10px; letter-spacing: 0.12em; }
+#lab .lab-row { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
+#lab button { font: inherit; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.05); color: var(--ink); cursor: pointer; }
+#lab button.on { background: rgba(143, 248, 255, 0.2); border-color: var(--cyan); }
+#lab .lab-sl { display: flex; align-items: center; gap: 6px; margin: 6px 0; color: var(--dim); }
+#lab .lab-sl input { flex: 1; }
+#lab .lab-hint { color: var(--dim); margin: 6px 0 0; }
+#lab-labels { position: absolute; inset: 0; }
+.lab-label { position: absolute; left: 0; top: 0; white-space: nowrap; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(8, 14, 30, 0.6); color: #e9f1ff; }
+@media (max-width: 700px) { #lab .lab-panel { width: calc(100vw - 24px); max-height: 45vh; } }

@@ -16,6 +16,8 @@ export class Controller {
   cruiseOn = false;
   seq = 0;
   footPitch = -0.1;
+  /** Mouse-look scale on foot (lower while aiming down the rifle). */
+  lookScale = 1;
   private yawAcc = 0;
 
   constructor(private input: Input) {}
@@ -34,8 +36,8 @@ export class Controller {
     } else if (mode === MODE.FOOT) {
       const m = i.consumeMouse();
       if (i.locked) {
-        this.yawAcc += m.dx * 0.0026 * i.sensitivity;
-        this.footPitch = Math.max(-1.2, Math.min(1.0, this.footPitch - m.dy * 0.0022 * i.sensitivity));
+        this.yawAcc += m.dx * 0.0026 * i.sensitivity * this.lookScale;
+        this.footPitch = Math.max(-1.2, Math.min(1.0, this.footPitch - m.dy * 0.0022 * i.sensitivity * this.lookScale));
       } else {
         // Without pointer lock, steer with the cursor offset like a stick.
         this.yawAcc += shape(i.vx) * 2.2 * dt;

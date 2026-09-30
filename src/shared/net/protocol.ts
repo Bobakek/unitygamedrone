@@ -51,7 +51,9 @@ export type GameEvent =
   /** The local pilot's suit took damage. */
   | { t: 'hurt'; dmg: number; by: number }
   /** A creature attacks (animation cue). */
-  | { t: 'bite'; id: number };
+  | { t: 'bite'; id: number }
+  /** A predator roars as it starts a hunt. */
+  | { t: 'roar'; id: number };
 
 export type Action =
   | { a: 'exit' } | { a: 'board' } | { a: 'dock' } | { a: 'undock' } | { a: 'jump' }

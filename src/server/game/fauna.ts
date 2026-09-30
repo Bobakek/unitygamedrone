@@ -1,5 +1,5 @@
 import { CARGO_KEYS, cargoCount, combatStats } from '../../shared/economy.ts';
-import { BLASTER, FAUNA, PILOT_HP, SAMPLE_RANGE, SPECIES, stepCreature, type CreatureState, type Species } from '../../shared/fauna.ts';
+import { BLASTER, FAUNA, moodByte, PILOT_HP, SAMPLE_RANGE, SPECIES, stepCreature, type CreatureState, type Mood, type Species } from '../../shared/fauna.ts';
 import { hashInts, Rng } from '../../shared/math/rng.ts';
 import { qlook, quat, v3, vcross, vdist, vnorm, vsub, type V3 } from '../../shared/math/vec.ts';
 import { BLASTER_LEVEL, EFLAG, KIND, MODE, MSG, type EntityState } from '../../shared/net/protocol.ts';
@@ -10,7 +10,7 @@ import { segmentSphere } from '../../shared/sim/weapons.ts';
 import type { Session } from './session.ts';
 import type { SystemInstance } from './system.ts';
 
-type Mood = 'wander' | 'graze' | 'flee' | 'hunt';
+const ALERT = 40;
 
 interface Creature {
   id: number;
@@ -154,9 +154,18 @@ export class Fauna {
       }
       vnorm(up, c.state.p);
       if (c.sp.predator) {
-        if (c.mood !== 'flee' && prey && pd < AGGRO) { c.mood = 'hunt'; c.target = prey.id; }
+        if (c.mood !== 'flee' && c.mood !== 'hunt' && prey && pd < AGGRO) {
+          c.mood = 'hunt';
+          c.target = prey.id;
+          this.sys.events.push({ t: 'roar', id: c.id });
+        }
         if (c.mood === 'hunt' && (!prey || pd > AGGRO * 1.6)) { c.mood = 'wander'; c.moodUntil = t; }
       } else if (c.mood !== 'flee' && prey && pd < SPOOK) this.scare(c, prey.char!.state.p);
+      else if (c.mood !== 'flee' && prey && pd < ALERT) {
+        // heads up: freeze and watch the pilot before bolting
+        if (c.mood !== 'alert') { c.mood = 'alert'; c.moodUntil = t + 2; }
+        this.face(c, this.tangent(vsub(tmp, prey.char!.state.p, c.state.p)), dt);
+      } else if (c.mood === 'alert') { c.mood = 'graze'; c.moodUntil = t + this.rng.range(1, 3); }
 
       if (c.mood === 'flee' && t > c.moodUntil) { c.mood = 'wander'; c.moodUntil = t; }
       let speed = 0;
@@ -165,7 +174,7 @@ export class Fauna {
         // close in, then hold at jaw's length instead of walking through the pilot
         const reach = 1.3 + c.sp.size * 1.1;
         speed = pd > 6 ? c.sp.run : pd > reach ? c.sp.walk : 0;
-        if (speed === 0) { const k = Math.min(1, dt * 6); c.state.f.x += (c.wish.x - c.state.f.x) * k; c.state.f.y += (c.wish.y - c.state.f.y) * k; c.state.f.z += (c.wish.z - c.state.f.z) * k; }
+        if (speed === 0) this.face(c, c.wish, dt * 1.5);
         if (pd < reach + 0.5 && c.biteCool <= 0) {
           c.biteCool = 1.3;
           this.sys.events.push({ t: 'bite', id: c.id });
@@ -173,10 +182,17 @@ export class Fauna {
         }
       } else if (c.mood === 'flee') {
         speed = c.sp.run;
+      } else if (c.mood === 'alert') {
+        speed = 0;
       } else {
         if (t > c.moodUntil) {
           // alternate between grazing in place and ambling around the herd's home
-          if (c.mood === 'graze') {
+          if (c.mood === 'graze' && !c.sp.predator && this.rng.chance(0.2)) {
+            // lie down for a while
+            c.mood = 'rest';
+            c.moodUntil = t + this.rng.range(8, 15);
+            c.wish = null;
+          } else if (c.mood === 'graze' || c.mood === 'rest') {
             c.mood = 'wander';
             c.moodUntil = t + this.rng.range(3, 7);
             const off = vdist(vnorm(dir, c.state.p), c.home) * pl.radius;
@@ -192,6 +208,12 @@ export class Fauna {
       }
       if (!stepCreature(c.state, pl, speed > 0 ? c.wish : null, speed, dt)) c.wish = { ...c.state.f };
     }
+  }
+
+  /** Turns a creature in place towards tangent direction `d`. */
+  private face(c: Creature, d: V3, dt: number) {
+    const k = Math.min(1, dt * 4);
+    c.state.f.x += (d.x - c.state.f.x) * k; c.state.f.y += (d.y - c.state.f.y) * k; c.state.f.z += (d.z - c.state.f.z) * k;
   }
 
   /** Projects a vector onto the local tangent plane (uses `up`). */
@@ -323,7 +345,7 @@ export class Fauna {
       out.push({
         id: c.id, kind: KIND.CREATURE, flags: (c.dead ? EFLAG.DEAD : 0) | (fast ? EFLAG.BOOST : 0) | (c.sp.predator ? EFLAG.NPC : 0), frame: c.planet + 1,
         px: st.p.x, py: st.p.y, pz: st.p.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, vx: st.v.x, vy: st.v.y, vz: st.v.z,
-        hull: c.hp / c.sp.hp, shield: 0, throttle: 0,
+        hull: c.hp / c.sp.hp, shield: 0, throttle: moodByte(c.mood),
       });
     }
   }

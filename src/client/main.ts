@@ -48,6 +48,15 @@ function start() {
   }, offline, settings);
 }
 
+/** Animation lab (login button or ?lab): a standalone scene, no server needed. */
+function openLab() {
+  started = true;
+  $('login').classList.add('hidden');
+  void import('./lab/lab.ts').then((m) => m.startLab($('view') as HTMLCanvasElement));
+}
+$('login-lab').addEventListener('click', openLab);
+if (params.has('lab')) openLab();
+
 $('login-go').addEventListener('click', start);
 nameInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') start();
