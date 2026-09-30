@@ -72,10 +72,22 @@ export function heightAt(p: PlanetDef, x: number, y: number, z: number): number 
   return h;
 }
 
-/** Ground for a pilot on foot: wade in shallows, float with the head above deep water. */
+/** What a planet's sea (at height 0) is made of. */
+export type Liquid = 'water' | 'lava' | 'ice';
+export function liquidOf(p: PlanetDef): Liquid | null {
+  if (!p.sea) return null;
+  return p.type === 'lava' ? 'lava' : p.type === 'ice' ? 'ice' : 'water';
+}
+
+/**
+ * Ground for a pilot on foot: wade in shallows, float with the head above deep liquid
+ * (deep water is swum in, see character.ts); a frozen sea is solid ice.
+ */
 export function footHeight(p: PlanetDef, x: number, y: number, z: number): number {
   const h = heightAt(p, x, y, z);
-  return p.sea && h < -1.3 ? -1.3 : h;
+  if (!p.sea || h >= 0) return h;
+  if (p.type === 'ice') return 0;
+  return h < -1.3 ? -1.3 : h;
 }
 
 /** Height of the walkable/collidable surface (liquid is flat at 0). */

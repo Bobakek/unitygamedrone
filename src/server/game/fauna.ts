@@ -4,13 +4,15 @@ import { hashInts, Rng } from '../../shared/math/rng.ts';
 import { qlook, quat, v3, vcross, vdist, vnorm, vsub, type V3 } from '../../shared/math/vec.ts';
 import { BLASTER_LEVEL, EFLAG, KIND, MODE, MSG, type EntityState } from '../../shared/net/protocol.ts';
 import { inSite } from '../../shared/planet/sites.ts';
-import { footHeight, heightAt } from '../../shared/planet/terrain.ts';
+import { footHeight, heightAt, liquidOf } from '../../shared/planet/terrain.ts';
 import { planetRot, toWorldDir, toWorldPoint } from '../../shared/sim/frames.ts';
 import { segmentSphere } from '../../shared/sim/weapons.ts';
 import type { Session } from './session.ts';
 import type { SystemInstance } from './system.ts';
 
 const ALERT = 40;
+/** Suit damage per second once the air has run out. */
+const DROWN_DMG = 8;
 
 interface Creature {
   id: number;
@@ -138,6 +140,11 @@ export class Fauna {
     // suit self-repair
     for (const ch of this.sys.chars.values()) {
       ch.cool -= dt;
+      // out of air: the suit floods a little every second
+      if (ch.state.air <= 0) {
+        ch.drown += dt;
+        if (ch.drown >= 1) { ch.drown -= 1; this.hurt(ch.session, DROWN_DMG, 0); }
+      } else ch.drown = 0;
       if (ch.hp < PILOT_HP && t - ch.hurtAt > 5) ch.hp = Math.min(PILOT_HP, ch.hp + 4 * dt);
     }
 
@@ -249,13 +256,14 @@ export class Fauna {
     dir.y = cs.f.y * Math.cos(pc) + up.y * Math.sin(pc);
     dir.z = cs.f.z * Math.cos(pc) + up.z * Math.sin(pc);
     const o = v3(cs.p.x + up.x * 1.45, cs.p.y + up.y * 1.45, cs.p.z + up.z * 1.45);
-    // terrain stops the bolt
+    // terrain stops the bolt (water does not)
+    const ground = liquidOf(pl) === 'water' ? heightAt : footHeight;
     let reach: number = BLASTER.range;
     for (let k = 1; k <= 14; k++) {
       const d = (BLASTER.range * k) / 14;
       const px = o.x + dir.x * d, py = o.y + dir.y * d, pz = o.z + dir.z * d;
       const l = Math.hypot(px, py, pz);
-      if (l < pl.radius + footHeight(pl, px / l, py / l, pz / l)) { reach = d; break; }
+      if (l < pl.radius + ground(pl, px / l, py / l, pz / l)) { reach = d; break; }
     }
     const end = v3(o.x + dir.x * reach, o.y + dir.y * reach, o.z + dir.z * reach);
     let hit: Creature | null = null, best = 2;

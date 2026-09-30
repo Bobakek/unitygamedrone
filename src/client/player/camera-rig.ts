@@ -69,6 +69,15 @@ export class CameraRig {
     this.lag.copy(this.quat);
   }
 
+  /** Keeps the camera's distance from `center` within [lo, hi]. */
+  clampRadius(center: V3, lo: number, hi: number) {
+    const dx = this.pos.x - center.x, dy = this.pos.y - center.y, dz = this.pos.z - center.z;
+    const d = Math.hypot(dx, dy, dz);
+    const k = d < lo ? lo / d : d > hi ? hi / d : 1;
+    if (k === 1) return;
+    this.pos.x = center.x + dx * k; this.pos.y = center.y + dy * k; this.pos.z = center.z + dz * k;
+  }
+
   /** Keeps the camera above terrain: `ground` is the surface radius under the camera. */
   clampAbove(center: V3, ground: number, margin: number) {
     const dx = this.pos.x - center.x, dy = this.pos.y - center.y, dz = this.pos.z - center.z;

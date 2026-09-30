@@ -1,5 +1,5 @@
 import type { PlanetDef } from '../galaxy/system-gen.ts';
-import { footHeight, heightAt } from '../planet/terrain.ts';
+import { footHeight, heightAt, liquidOf } from '../planet/terrain.ts';
 import { collidersNear } from '../planet/prop-rules.ts';
 import { qlook, v3, vcross, vdot, vlen, vnorm, type Quat, type V3 } from '../math/vec.ts';
 
@@ -20,9 +20,16 @@ export interface CharState {
   climbUp: number;
   /** 1 while scrambling up a steep slope (slower, hands down). */
   scramble: number;
+  /** Swimming in deep water: 0 no, 1 at the surface, 2 under water (head submerged). */
+  swim: number;
+  /** Suit air supply 0..1 (drains while the head is under water). */
+  air: number;
 }
-/** `pitch` is the aim elevation (radians) — it does not affect movement, only the blaster. */
-export interface CharInput { mx: number; mz: number; yawDelta: number; pitch: number; jump: boolean; sprint: boolean }
+/**
+ * `pitch` is the view elevation (radians): it aims the blaster and, under water, steers the
+ * swim direction. `dive` (C / Ctrl) swims down; `jump` swims up.
+ */
+export interface CharInput { mx: number; mz: number; yawDelta: number; pitch: number; jump: boolean; sprint: boolean; dive: boolean }
 
 export const WALK_SPEED = 5;
 export const SPRINT_SPEED = 9;
@@ -35,13 +42,23 @@ const STEP_MAX = 0.35;
 const RADIUS = 0.35;
 /** Grade (rise / run) above which the pilot scrambles on all fours. */
 export const SCRAMBLE_GRADE = 0.9;
+/** Water deeper than this (m) is swum in rather than waded through. */
+export const WADE_MAX = 1.3;
+/** Feet depth below the surface of a pilot floating at the surface (head and shoulders out). */
+export const FLOAT_DEPTH = 1.2;
+/** Feet depth at which the head goes under. */
+export const HEAD_UNDER = FLOAT_DEPTH + 0.35;
+export const SWIM_SPEED = 2.6;
+export const SWIM_SPRINT = 4.2;
+/** Seconds of air in the suit. */
+export const AIR_TIME = 75;
 
 /** Progress 0..1 of the current traversal. */
 export const climbProgress = (c: CharState) => (c.climbMode ? 1 - c.climb / (c.climbMode === 1 ? VAULT_TIME : CLIMB_TIME) : 0);
 
-export const emptyCharInput = (): CharInput => ({ mx: 0, mz: 0, yawDelta: 0, pitch: 0, jump: false, sprint: false });
+export const emptyCharInput = (): CharInput => ({ mx: 0, mz: 0, yawDelta: 0, pitch: 0, jump: false, sprint: false, dive: false });
 export function newChar(p: V3, f: V3): CharState {
-  return { p: { ...p }, v: v3(), f: { ...f }, ground: 1, fuel: 1, climbMode: 0, climb: 0, climbRise: 0, climbFwd: 0, climbUp: 0, scramble: 0 };
+  return { p: { ...p }, v: v3(), f: { ...f }, ground: 1, fuel: 1, climbMode: 0, climb: 0, climbRise: 0, climbFwd: 0, climbUp: 0, scramble: 0, swim: 0, air: 1 };
 }
 export function copyChar(dst: CharState, s: CharState): CharState {
   dst.p.x = s.p.x; dst.p.y = s.p.y; dst.p.z = s.p.z;
@@ -50,6 +67,7 @@ export function copyChar(dst: CharState, s: CharState): CharState {
   dst.ground = s.ground; dst.fuel = s.fuel;
   dst.climbMode = s.climbMode; dst.climb = s.climb; dst.climbRise = s.climbRise; dst.climbFwd = s.climbFwd; dst.climbUp = s.climbUp;
   dst.scramble = s.scramble;
+  dst.swim = s.swim; dst.air = s.air;
   return dst;
 }
 
@@ -62,8 +80,10 @@ export function charQuat(c: CharState, out: Quat): Quat {
   return qlook(out, c.f, charUp(c, tmp));
 }
 
-/** On-foot movement over a spherical planet with gravity and a small jetpack. */
+/** On-foot movement over a spherical planet with gravity, a small jetpack and swimming. */
 export function stepChar(c: CharState, inp: CharInput, pl: PlanetDef, dt: number): void {
+  // the suit's air drains while the head is under water and refills above it
+  c.air = c.swim === 2 ? Math.max(0, c.air - dt / AIR_TIME) : Math.min(1, c.air + 0.3 * dt);
   charUp(c, up);
   // Turn heading about local up (positive yawDelta turns right).
   const th = -inp.yawDelta, cs = Math.cos(th), sn = Math.sin(th);
@@ -96,6 +116,15 @@ export function stepChar(c: CharState, inp: CharInput, pl: PlanetDef, dt: number
   }
 
   const mx = Math.max(-1, Math.min(1, inp.mx)), mz = Math.max(-1, Math.min(1, inp.mz));
+  // --- deep water: swim at the surface or dive
+  if (liquidOf(pl) === 'water') {
+    const seabed = heightAt(pl, up.x, up.y, up.z);
+    if (seabed < -WADE_MAX && (c.swim || pl.radius - vlen(c.p) > FLOAT_DEPTH - 0.4)) {
+      stepSwim(c, inp, pl, dt, mx, mz);
+      return;
+    }
+  }
+  c.swim = 0;
   // --- walking into a low obstacle: vault it on the run (or with jump); higher ones need jump to
   // climb — also from a jump/jetpack hop when the ledge is within reach
   if ((c.ground || inp.jump) && mz > 0.3 && startTraversal(c, inp, pl)) return;
@@ -165,6 +194,49 @@ export function stepChar(c: CharState, inp: CharInput, pl: PlanetDef, dt: number
   } else {
     c.ground = 0;
   }
+}
+
+/**
+ * Swimming: at the surface the pilot floats with the head out and swims along it; looking
+ * down while swimming forward (or holding dive) goes under, where forward follows the view
+ * and jump / dive swim straight up / down. Water drags, a little buoyancy lifts an idle
+ * diver, and the sea bed and the surface bound the motion.
+ */
+function stepSwim(c: CharState, inp: CharInput, pl: PlanetDef, dt: number, mx: number, mz: number) {
+  c.scramble = 0;
+  c.ground = 0;
+  c.fuel = Math.min(1, c.fuel + 0.4 * dt);
+  const sub = pl.radius - vlen(c.p);
+  const under = sub > HEAD_UNDER - 0.1;
+  const pc = Math.max(-1.3, Math.min(1.3, inp.pitch));
+  const vert = (inp.jump ? 1 : 0) - (inp.dive ? 1 : 0);
+  const steer = under || inp.dive || (mz > 0 && pc < -0.35);
+  const cp = steer ? Math.cos(pc) : 1, sp = steer ? Math.sin(pc) : 0;
+  wish.x = (c.f.x * cp + up.x * sp) * mz + right.x * mx + up.x * vert;
+  wish.y = (c.f.y * cp + up.y * sp) * mz + right.y * mx + up.y * vert;
+  wish.z = (c.f.z * cp + up.z * sp) * mz + right.z * mx + up.z * vert;
+  const wl = vlen(wish);
+  const spd = (inp.sprint ? SWIM_SPRINT : SWIM_SPEED) / Math.max(1, wl);
+  wish.x *= spd; wish.y *= spd; wish.z *= spd;
+  let wu = vdot(wish, up);
+  // at the surface: bob on the float line; under water: drift slowly up when not steering up or down
+  const want = !steer && vert <= 0 ? Math.max(-1.5, Math.min(2.5, (sub - FLOAT_DEPTH) * 2.5))
+    : under && Math.abs(wu) < 0.05 ? 0.25 : wu;
+  wish.x += up.x * (want - wu); wish.y += up.y * (want - wu); wish.z += up.z * (want - wu);
+  const k = Math.min(1, 2.5 * dt);
+  c.v.x += (wish.x - c.v.x) * k; c.v.y += (wish.y - c.v.y) * k; c.v.z += (wish.z - c.v.z) * k;
+  c.p.x += c.v.x * dt; c.p.y += c.v.y * dt; c.p.z += c.v.z * dt;
+  charUp(c, up);
+  const l = vlen(c.p);
+  const floor = pl.radius + heightAt(pl, up.x, up.y, up.z) + 0.3;
+  const top = pl.radius - (FLOAT_DEPTH - 0.25);
+  const lim = l < floor ? floor : l > top ? top : l;
+  if (lim !== l) {
+    c.p.x = up.x * lim; c.p.y = up.y * lim; c.p.z = up.z * lim;
+    wu = vdot(c.v, up);
+    if ((lim === floor) === (wu < 0)) { c.v.x -= up.x * wu; c.v.y -= up.y * wu; c.v.z -= up.z * wu; }
+  }
+  c.swim = pl.radius - lim > HEAD_UNDER ? 2 : 1;
 }
 
 /**

@@ -77,14 +77,17 @@ export class Hud {
     if (!this.station.classList.contains('hidden')) this.renderStation(p);
   }
 
-  /** On-foot HUD: aim reticle and suit integrity (null hides both). */
-  suit(v: number | null) {
+  /** On-foot HUD: aim reticle, suit integrity and (in or after a dive) air, 0..1 (null hides all). */
+  suit(v: number | null, air = 1) {
     $('#foot-aim').style.display = v === null ? 'none' : 'block';
     const el = $('#suit');
     el.style.display = v === null ? 'none' : 'block';
     if (v === null) return;
     ($('.suit-bar i', el)).style.width = `${Math.max(0, Math.min(100, v))}%`;
     el.classList.toggle('low', v < 35);
+    el.classList.toggle('wet', air < 0.999);
+    el.classList.toggle('gasp', air < 0.25);
+    ($('.air-bar i', el)).style.width = `${Math.max(0, Math.min(1, air)) * 100}%`;
   }
 
   /** Red vignette pulse when the pilot is hurt. */

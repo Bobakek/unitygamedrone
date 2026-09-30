@@ -52,6 +52,8 @@ export interface CharEntity {
   pitch: number;
   aim: boolean;
   shotAt: number;
+  /** Seconds spent out of air (drowning damage ticks once a second). */
+  drown: number;
 }
 
 export interface Missile {

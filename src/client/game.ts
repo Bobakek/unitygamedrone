@@ -161,6 +161,7 @@ export class Game {
   private prevFwd = v3(0, 0, -1);
   /** Smoothed rifle aim (RMB on foot or recent shots) — drives camera and pose. */
   private aimK = 0;
+  private lastAir = 1;
   private lastShot = -99;
   private nearPlanet: PlanetDef | null = null;
   private nearAlt = 1e9;
@@ -810,18 +811,27 @@ export class Game {
       const fix = this.groundFix(charPl.index, this.charPosB);
       const piv = v3(this.charPos.x + up.x * fix, this.charPos.y + up.y * fix, this.charPos.z + up.z * fix);
       const R = this.rots[charPl.index], cd = v3();
+      // a swimmer's camera may dive with them: only the sea bed stops it
+      const swim = this.pred.char?.swim ?? 0;
+      const solid = swim ? heightAt : surfaceHeight;
       const clear = (x: number, y: number, z: number) => {
         cd.x = x - charPl.center.x; cd.y = y - charPl.center.y; cd.z = z - charPl.center.z;
         const l = vlen(cd);
         toBodyDir(R, vnorm(cd, cd), cd);
-        return l - charPl.radius - surfaceHeight(charPl, cd.x, cd.y, cd.z);
+        return l - charPl.radius - solid(charPl, cd.x, cd.y, cd.z);
       };
-      this.rig.foot(dt, piv, up, this.charFwd, this.ctrl.footPitch, this.ctrl.footDist, this.input.mouse(2) ? this.aimK : 0, 1.5, clear);
+      // pivot: shoulder when upright, above the water for a surface swimmer, the body for a diver
+      const pivotH = swim === 1 ? 1.8 : swim === 2 ? 1.0 : 1.5;
+      this.rig.foot(dt, piv, up, this.charFwd, this.ctrl.footPitch, this.ctrl.footDist, this.input.mouse(2) ? this.aimK : 0, pivotH, clear);
+      // never leave the lens cutting the water plane: stay on the swimmer's side of it
+      if (swim === 1) this.rig.clampRadius(charPl.center, charPl.radius + 0.3, Infinity);
+      else if (swim === 2) this.rig.clampRadius(charPl.center, 0, charPl.radius - 0.3);
     } else if (mode === MODE.DOCKED) this.rig.orbit(dt, sys.station.pos, 900);
     const np = this.nearPlanet;
     if (np && this.nearAlt < np.maxHeight * 3 + 400) {
       const d = toBodyDir(this.rots[np.index], vnorm(v3(), vsub(v3(), this.rig.pos, np.center)), v3());
-      this.rig.clampAbove(np.center, np.radius + surfaceHeight(np, d.x, d.y, d.z), onFoot ? 0.6 : 1.5);
+      const diving = onFoot && np === charPl && (this.pred.char?.swim ?? 0) > 0;
+      this.rig.clampAbove(np.center, np.radius + (diving ? heightAt : surfaceHeight)(np, d.x, d.y, d.z), onFoot ? (diving ? 0.4 : 0.6) : 1.5);
     }
     this.origin.x = this.rig.pos.x; this.origin.y = this.rig.pos.y; this.origin.z = this.rig.pos.z;
     const cam = this.r.camera;
@@ -1190,7 +1200,10 @@ export class Game {
     this.radar.draw(blips);
 
     this.hud.clock(this.localClock());
-    this.hud.suit(mode === MODE.FOOT ? self.suit : null);
+    const air = this.pred.char?.air ?? 1;
+    this.hud.suit(mode === MODE.FOOT ? self.suit : null, air);
+    if (mode === MODE.FOOT && air < 0.25 && this.lastAir >= 0.25) this.hud.toast('Кончается воздух — всплывайте!', 'warn');
+    this.lastAir = air;
 
     // context prompt
     let prompt: string | null = null;

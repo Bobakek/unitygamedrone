@@ -14,8 +14,8 @@ import {
 } from '../../shared/net/protocol.ts';
 import { nodesNear, resourceNode } from '../../shared/planet/resources.ts';
 import { planetSites, SITE_NODE_BASE, siteDir, sitesNear } from '../../shared/planet/sites.ts';
-import { footHeight, surfaceHeight } from '../../shared/planet/terrain.ts';
-import { charQuat, climbProgress, newChar, stepChar } from '../../shared/sim/character.ts';
+import { footHeight, heightAt, liquidOf, surfaceHeight } from '../../shared/planet/terrain.ts';
+import { charQuat, climbProgress, HEAD_UNDER, newChar, stepChar } from '../../shared/sim/character.ts';
 import type { SimEnv } from '../../shared/sim/env.ts';
 import { newPose, planetRot, toBodyDir, toWorldPoint, worldPose } from '../../shared/sim/frames.ts';
 import { emptyInput, isCruising, newShip, stepShip, type StepOut } from '../../shared/sim/ship.ts';
@@ -473,7 +473,8 @@ export class SystemInstance implements NpcWorld {
       if (c.session === s || vdistSq(this.charWorld(c, cw), focus) > r2) continue;
       charQuat(c.state, q);
       const cs = c.state;
-      const flags = (cs.ground ? 0 : CFLAG.AIR) | (cs.climbMode ? CFLAG.CLIMB : 0) | (cs.scramble ? CFLAG.SCRAMBLE : 0) | (c.aim || this.time - c.shotAt < 1.5 ? CFLAG.AIM : 0);
+      const flags = (cs.ground || cs.swim ? 0 : CFLAG.AIR) | (cs.climbMode ? CFLAG.CLIMB : 0) | (cs.scramble ? CFLAG.SCRAMBLE : 0)
+        | (cs.swim ? CFLAG.SWIM : 0) | (cs.swim === 2 ? CFLAG.UNDER : 0) | (c.aim || this.time - c.shotAt < 1.5 ? CFLAG.AIM : 0);
       const prog = climbProgress(cs);
       entities.push({
         id: c.id, kind: KIND.CHAR, flags, frame: c.planet + 1, px: cs.p.x, py: cs.p.y, pz: cs.p.z,
@@ -503,6 +504,17 @@ export class SystemInstance implements NpcWorld {
     };
   }
 
+  /** Puts the session's pilot on foot at body-frame `pos` facing tangent `f`. */
+  private putOnFoot(s: Session, planet: number, pos: V3, f: V3): CharEntity {
+    const c: CharEntity = { id: this.ctx.nextId(), name: s.pilot.name, state: newChar(pos, f), planet, session: s, hp: PILOT_HP, hurtAt: -99, cool: 0, pitch: 0, aim: false, shotAt: -99, drown: 0 };
+    s.char = c;
+    this.chars.set(c.id, c);
+    this.infos.push({ id: c.id, kind: KIND.CHAR, name: s.pilot.name, owner: s.id });
+    s.mode = MODE.FOOT;
+    s.resync();
+    return c;
+  }
+
   // ------------------------------------------------------------------ actions
   handleAction(s: Session, act: Action): string | null {
     const ship = s.ship;
@@ -521,12 +533,7 @@ export class SystemInstance implements NpcWorld {
         const g = pl.radius + footHeight(pl, d.x, d.y, d.z) + 0.05;
         const pos = vscale(v3(), d, g);
         const f = vnorm(v3(), v3(fwd.x - up.x * vdot(fwd, up), fwd.y - up.y * vdot(fwd, up), fwd.z - up.z * vdot(fwd, up)));
-        const c: CharEntity = { id: this.ctx.nextId(), name: p.name, state: newChar(pos, f), planet: pl.index, session: s, hp: PILOT_HP, hurtAt: -99, cool: 0, pitch: 0, aim: false, shotAt: -99 };
-        s.char = c;
-        this.chars.set(c.id, c);
-        this.infos.push({ id: c.id, kind: KIND.CHAR, name: p.name, owner: s.id });
-        s.mode = MODE.FOOT;
-        s.resync();
+        this.putOnFoot(s, pl.index, pos, f);
         return null;
       }
       case 'board': {
@@ -670,6 +677,7 @@ export class SystemInstance implements NpcWorld {
     ship.docked = false;
     ship.dead = false;
     s.mode = MODE.SHIP;
+    if (target === 'beach' || target === 'dive') return this.devShore(s, target === 'dive', when);
     if (target === 'station') {
       const sp = this.spawnPoint();
       ship.state = newShip(sp.p, sp.q);
@@ -741,5 +749,56 @@ export class SystemInstance implements NpcWorld {
     this.syncWorld(ship);
     s.resync();
     return 'Телепорт выполнен';
+  }
+
+  /**
+   * Dev: lands next to a sandy shore of a water world (planet `which`, or the first ocean /
+   * water world) and puts the pilot on foot on the beach facing the sea, or 8 m under water.
+   */
+  private devShore(s: Session, dive: boolean, which?: string): string {
+    const wet = this.def.planets.filter((p) => liquidOf(p) === 'water').sort((a, b) => Number(b.type === 'ocean') - Number(a.type === 'ocean'));
+    const pl = which !== undefined && which !== '' ? this.def.planets[Number(which)] : wet[0];
+    if (!pl || liquidOf(pl) !== 'water') return 'Нет планеты с водой';
+    const R = planetRot(pl, this.time, rot);
+    const aim = toBodyDir(R, vnorm(v3(), vsub(v3(), this.def.station.pos, pl.center)), v3());
+    const rng = new Rng(hashInts(pl.seed, 0xbea));
+    const h = (d: V3) => heightAt(pl, d.x, d.y, d.z);
+    const at = (d: V3, t: V3, m: number) => vnorm(v3(), v3(d.x * pl.radius + t.x * m, d.y * pl.radius + t.y * m, d.z * pl.radius + t.z * m));
+    for (let i = 0; i < 8000; i++) {
+      const spread = 0.02 + (i / 8000) * 1.2;
+      const d = vnorm(v3(), v3(aim.x + rng.range(-1, 1) * spread, aim.y + rng.range(-1, 1) * spread, aim.z + rng.range(-1, 1) * spread));
+      const hd = h(d);
+      if (hd < 0.3 || hd > 1.2) continue;
+      const t1 = vnorm(v3(), vcross(v3(), d, Math.abs(d.y) < 0.9 ? v3(0, 1, 0) : v3(1, 0, 0)));
+      const t2 = vcross(v3(), d, t1);
+      for (let k = 0; k < 12; k++) {
+        const a = (k / 12) * Math.PI * 2;
+        const t = v3(t1.x * Math.cos(a) + t2.x * Math.sin(a), t1.y * Math.cos(a) + t2.y * Math.sin(a), t1.z * Math.cos(a) + t2.z * Math.sin(a));
+        if (h(at(d, t, 25)) > -1.5 || h(at(d, t, 70)) > -5 || h(at(d, t, -45)) < 1.5) continue;
+        // ship on dry land behind the beach, pilot at the waterline (or out at sea, under water)
+        const ship = s.ship;
+        if (s.char) { this.chars.delete(s.char.id); this.gone.push(s.char.id); s.char = null; }
+        ship.docked = false;
+        ship.dead = false;
+        const L = at(d, t, -45);
+        const g = pl.radius + surfaceHeight(pl, L.x, L.y, L.z) + SHIP_LAND_HEIGHT;
+        const tl = vnorm(v3(), v3(t.x - L.x * vdot(t, L), t.y - L.y * vdot(t, L), t.z - L.z * vdot(t, L)));
+        ship.state = newShip(vscale(v3(), L, g), qlook(quat(), vscale(v3(), tl, -1), L));
+        ship.state.landed = ship.state.frame = pl.index + 1;
+        this.syncWorld(ship);
+        let pos = vscale(v3(), d, pl.radius + footHeight(pl, d.x, d.y, d.z) + 0.05), f = t;
+        if (dive) {
+          let m = 60;
+          while (m < 600 && h(at(d, t, m)) > -14) m += 10;
+          const P = at(d, t, m);
+          pos = vscale(v3(), P, pl.radius - 8);
+          f = vnorm(v3(), v3(t.x - P.x * vdot(t, P), t.y - P.y * vdot(t, P), t.z - P.z * vdot(t, P)));
+        } else f = vnorm(v3(), v3(t.x - d.x * vdot(t, d), t.y - d.y * vdot(t, d), t.z - d.z * vdot(t, d)));
+        const c = this.putOnFoot(s, pl.index, pos, f);
+        if (dive) c.state.swim = pl.radius - vlen(pos) > HEAD_UNDER ? 2 : 1;
+        return dive ? 'Под водой' : 'Пляж';
+      }
+    }
+    return 'Не нашёл берег';
   }
 }

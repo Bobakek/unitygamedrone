@@ -4,6 +4,7 @@ import {
   encodeSnapshot, flightStats, defaultUpgrades, generateSystem, getSystem, heightAt, leadPoint, MODE, newChar, newShip, nodesNear,
   noiseFor, qlook, quantizeInput, resourceNode, segmentSphere, SHIP_LAND_HEIGHT, stepChar, stepShip, surfaceHeight, v3, vdist, vlen, vnorm,
   type ShipInput, type SimEnv, Rng, DT, cloneShip, CRUISE_SPOOL, footHeight, copyChar, quat, newPose, planetRot, setFrame, toWorldPoint, worldPose,
+  liquidOf, FLOAT_DEPTH, HEAD_UNDER, AIR_TIME, vscale,
 } from './helpers.ts';
 
 const sys = getSystem(0);
@@ -383,6 +384,94 @@ describe('obstacle traversal', () => {
   });
 });
 
+describe('swimming', () => {
+  const wet = [0, 1, 2, 3, 4, 5].map(getSystem).flatMap((x) => x.planets).find((p) => liquidOf(p) === 'water')!;
+  const R = wet.radius;
+  const h = (d: ReturnType<typeof v3>) => heightAt(wet, d.x, d.y, d.z);
+  const at = (d: ReturnType<typeof v3>, t: ReturnType<typeof v3>, m: number) => vnorm(v3(), v3(d.x * R + t.x * m, d.y * R + t.y * m, d.z * R + t.z * m));
+  /** A sandy point with deep water straight ahead. */
+  const shore = () => {
+    const rng = new Rng(5);
+    for (let i = 0; i < 200000; i++) {
+      const d = vnorm(v3(), v3(rng.range(-1, 1), rng.range(-1, 1), rng.range(-1, 1)));
+      if (h(d) < 0.3 || h(d) > 1.2) continue;
+      const t = vnorm(v3(), v3(-d.z, 0, d.x));
+      for (const sg of [1, -1]) {
+        const tt = v3(t.x * sg, t.y * sg, t.z * sg);
+        if (h(at(d, tt, 20)) < -3 && h(at(d, tt, 40)) < -8 && h(at(d, tt, 80)) < -12) return { d, t: tt };
+      }
+    }
+    throw new Error('no shore');
+  };
+  const run = (c: ReturnType<typeof newChar>, ticks: number, inp: Partial<ReturnType<typeof emptyCharInput>>) => {
+    for (let k = 0; k < ticks; k++) stepChar(c, { ...emptyCharInput(), ...inp }, wet, DT);
+  };
+  const depth = (c: ReturnType<typeof newChar>) => R - vlen(c.p);
+
+  it('wades into deep water, floats, dives, runs out of air and surfaces', () => {
+    const { d, t } = shore();
+    const g = R + footHeight(wet, d.x, d.y, d.z);
+    const c = newChar(v3(d.x * g, d.y * g, d.z * g), t);
+    for (let k = 0; k < 1200 && !c.swim; k++) run(c, 1, { mz: 1 });
+    expect(c.swim).toBe(1);
+    // swim out over deep water, then drift
+    run(c, 600, { mz: 1 });
+    run(c, 180, {});
+    expect(depth(c)).toBeCloseTo(FLOAT_DEPTH, 1);
+    expect(c.air).toBe(1);
+    const start = cloneChar(c);
+    // C dives straight down, then forward follows the view pitch
+    run(c, 120, { dive: true });
+    expect(c.swim).toBe(2);
+    const d1 = depth(c);
+    expect(d1).toBeGreaterThan(HEAD_UNDER + 1);
+    run(c, 60, { mz: 1, pitch: -0.7 });
+    expect(depth(c)).toBeGreaterThan(d1 + 1);
+    expect(c.air).toBeLessThan(1);
+    expect(c.air).toBeCloseTo(1 - 3 / AIR_TIME, 1);
+    // the same inputs replay identically (prediction)
+    const again = cloneChar(start);
+    run(again, 120, { dive: true });
+    run(again, 60, { mz: 1, pitch: -0.7 });
+    expect(again).toEqual(c);
+    // out of air after a long dive, then swim up and breathe
+    run(c, Math.ceil(AIR_TIME / DT), { dive: true });
+    expect(c.air).toBe(0);
+    for (let k = 0; k < 1200 && c.swim === 2; k++) run(c, 1, { jump: true });
+    expect(c.swim).toBe(1);
+    run(c, 120, {});
+    expect(c.air).toBeGreaterThan(0.5);
+  });
+
+  it('the sea bed and the surface bound a diver', () => {
+    const { d, t } = shore();
+    const p0 = at(d, t, 60);
+    const c = newChar(vscale(v3(), p0, R - 5), t);
+    c.swim = 2;
+    for (let k = 0; k < 900; k++) {
+      run(c, 1, { dive: true, mz: 0.5 });
+      const u = vnorm(v3(), c.p);
+      expect(vlen(c.p)).toBeGreaterThanOrEqual(R + heightAt(wet, u.x, u.y, u.z) + 0.3 - 1e-6);
+    }
+    run(c, 1200, { jump: true });
+    expect(depth(c)).toBeGreaterThanOrEqual(FLOAT_DEPTH - 0.25 - 1e-6);
+    expect(c.swim).toBe(1);
+  });
+
+  it('frozen seas are solid ice', () => {
+    const ice = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(getSystem).flatMap((x) => x.planets).find((p) => liquidOf(p) === 'ice')!;
+    const rng = new Rng(9);
+    let n = 0;
+    for (let i = 0; i < 4000 && n < 20; i++) {
+      const d = vnorm(v3(), v3(rng.range(-1, 1), rng.range(-1, 1), rng.range(-1, 1)));
+      if (heightAt(ice, d.x, d.y, d.z) >= -2) continue;
+      expect(footHeight(ice, d.x, d.y, d.z)).toBe(0);
+      n++;
+    }
+    expect(n).toBeGreaterThan(0);
+  });
+});
+
 describe('protocol', () => {
   it('round-trips inputs with quantisation', () => {
     const m = { seq: 42, mode: MODE.SHIP, flags: 5, t: 1234.5678, ship: { ...emptyInput(), yaw: 0.5, throttle: -0.2, strafeY: 1 }, char: emptyCharInput() };
@@ -398,6 +487,7 @@ describe('protocol', () => {
     const ship = newShip(v3(123456.789, -9876.54321, 42.4242));
     ship.v = v3(1.5, 2.5, -3.25); ship.boost = 0.3333; ship.cruise = 1.234; ship.landed = 2; ship.frame = 2;
     const char = newChar(v3(1, 2, 3), v3(0, 0, -1));
+    char.swim = 2; char.air = 0.4321;
     const snap = {
       tick: 99, time: 12.5, ack: 77,
       self: { shipId: 5, mode: MODE.FOOT, teleport: 3, ship, hull: 90, maxHull: 100, shield: 12.5, maxShield: 80, energy: 55, missiles: 4, charId: 9, char, charPlanet: 1, suit: 88 },

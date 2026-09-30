@@ -151,6 +151,11 @@ button:disabled { opacity: 0.4; cursor: default; }
 #suit .suit-bar { margin-top: 4px; height: 7px; border-radius: 4px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
 #suit .suit-bar i { display: block; height: 100%; width: 100%; background: linear-gradient(90deg, #6dff9c, #8ff8ff); transition: width 0.2s; }
 #suit.low .suit-bar i { background: linear-gradient(90deg, #ff5a6a, #ffb060); }
+#suit .air { display: none; margin-top: 6px; }
+#suit.wet .air { display: block; }
+#suit .air-bar i { background: linear-gradient(90deg, #5ab8ff, #b8f0ff); }
+#suit.gasp .air-bar i { background: linear-gradient(90deg, #ff5a6a, #ffb060); animation: gasp 0.6s ease-in-out infinite alternate; }
+@keyframes gasp { from { opacity: 1; } to { opacity: 0.35; } }
 #hurt { position: absolute; inset: 0; pointer-events: none; opacity: 0; background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 45%, rgba(255, 30, 40, 0.55) 100%); transition: opacity 0.35s; }
 
 #login-lab { margin-top: 8px; width: 100%; }
