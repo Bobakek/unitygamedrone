@@ -76,6 +76,16 @@ export class Hud {
     if (!this.station.classList.contains('hidden')) this.renderStation(p);
   }
 
+  /** Local solar time on the planet below (null hides it). */
+  clock(c: { planet: string; hours: number } | null) {
+    $('.pp-clock').classList.toggle('hidden', !c);
+    if (!c) return;
+    const h = Math.floor(c.hours), m = Math.floor((c.hours - h) * 60);
+    const icon = c.hours >= 6 && c.hours < 18 ? '☀' : '☾';
+    $('.pp-where').textContent = c.planet;
+    $('.pp-time').textContent = `${icon} ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  }
+
   flight(f: FlightData) {
     $('.fp-speed b').textContent = String(Math.round(f.speed));
     $('.fp-mode').textContent = f.mode;

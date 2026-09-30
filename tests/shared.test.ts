@@ -3,11 +3,11 @@ import {
   buildChunkLike, cubeToSphere, decodeInput, decodeShots, decodeSnapshot, emptyCharInput, emptyInput, encodeInput, encodeShots,
   encodeSnapshot, flightStats, defaultUpgrades, generateSystem, getSystem, heightAt, leadPoint, MODE, newChar, newShip, nodesNear,
   noiseFor, qlook, quantizeInput, resourceNode, segmentSphere, SHIP_LAND_HEIGHT, stepChar, stepShip, surfaceHeight, v3, vdist, vlen, vnorm,
-  type ShipInput, type SimEnv, Rng, DT, cloneShip, CRUISE_SPOOL,
+  type ShipInput, type SimEnv, Rng, DT, cloneShip, CRUISE_SPOOL, quat, newPose, planetRot, setFrame, toWorldPoint, worldPose,
 } from './helpers.ts';
 
 const sys = getSystem(0);
-const env: SimEnv = { star: sys.star, planets: sys.planets, fields: sys.fields, station: sys.station };
+const env: SimEnv = { star: sys.star, planets: sys.planets, fields: sys.fields, station: sys.station, time: 0 };
 const stats = flightStats(defaultUpgrades());
 
 describe('noise & generation', () => {
@@ -85,7 +85,7 @@ describe('ship simulation', () => {
   const randomInputs = (seed: number, n: number): ShipInput[] => {
     const rng = new Rng(seed);
     return Array.from({ length: n }, () => quantizeInput({
-      seq: 0, mode: MODE.SHIP, flags: rng.chance(0.3) ? 2 : 0,
+      seq: 0, mode: MODE.SHIP, flags: rng.chance(0.3) ? 2 : 0, t: 0,
       ship: { yaw: rng.range(-1, 1), pitch: rng.range(-1, 1), roll: rng.range(-1, 1), throttle: rng.range(-0.3, 1), strafeX: rng.range(-1, 1), strafeY: rng.range(-1, 1), boost: rng.chance(0.3), cruise: false },
       char: emptyCharInput(),
     }).ship);
@@ -112,20 +112,21 @@ describe('ship simulation', () => {
     const start = v3(p.center.x + dir.x * (p.radius + p.maxHeight + 400), p.center.y + dir.y * (p.radius + p.maxHeight + 400), p.center.z + dir.z * (p.radius + p.maxHeight + 400));
     const s = newShip(start);
     qlook(s.q, v3(-dir.x, -dir.y, -dir.z), v3(0, 1, 0));
-    // dive at full throttle
+    // dive at full throttle (the ship switches into the planet's body frame on the first step)
     const dive = { ...emptyInput(), throttle: 1 };
     for (let k = 0; k < 200; k++) {
       stepShip(s, dive, stats, env, DT);
-      const d = vnorm(v3(), v3(s.p.x - p.center.x, s.p.y - p.center.y, s.p.z - p.center.z));
+      expect(s.frame).toBe(p.index + 1);
+      const d = vnorm(v3(), s.p);
       const ground = p.radius + surfaceHeight(p, d.x, d.y, d.z);
-      expect(vdist(s.p, p.center) - ground).toBeGreaterThan(stats.radius * 0.5 - 1e-6);
+      expect(vlen(s.p) - ground).toBeGreaterThan(stats.radius * 0.5 - 1e-6);
     }
     // cut throttle and descend gently -> should land
     const down = { ...emptyInput(), strafeY: -0.3 };
     for (let k = 0; k < 600 && !s.landed; k++) stepShip(s, down, stats, env, DT);
     expect(s.landed).toBe(p.index + 1);
-    const d = vnorm(v3(), v3(s.p.x - p.center.x, s.p.y - p.center.y, s.p.z - p.center.z));
-    expect(vdist(s.p, p.center) - (p.radius + surfaceHeight(p, d.x, d.y, d.z))).toBeCloseTo(SHIP_LAND_HEIGHT, 5);
+    const d = vnorm(v3(), s.p);
+    expect(vlen(s.p) - (p.radius + surfaceHeight(p, d.x, d.y, d.z))).toBeCloseTo(SHIP_LAND_HEIGHT, 5);
     // throttle up -> takes off
     stepShip(s, { ...emptyInput(), throttle: 0.5 }, stats, env, DT);
     expect(s.landed).toBe(0);
@@ -135,7 +136,8 @@ describe('ship simulation', () => {
     const p = sys.planets[1];
     const dir = vnorm(v3(), v3(-0.4, 0.7, 0.6));
     const g = p.radius + surfaceHeight(p, dir.x, dir.y, dir.z) + 60;
-    const s = newShip(v3(p.center.x + dir.x * g, p.center.y + dir.y * g, p.center.z + dir.z * g));
+    const s = newShip(v3(dir.x * g, dir.y * g, dir.z * g));
+    s.frame = p.index + 1;
     qlook(s.q, v3(dir.y, -dir.x, 0), dir);
     for (let k = 0; k < 30 * 40 && !s.landed; k++) stepShip(s, emptyInput(), stats, env, DT);
     expect(s.landed).toBe(p.index + 1);
@@ -152,12 +154,85 @@ describe('ship simulation', () => {
   });
 });
 
+describe('rotating planet frames', () => {
+  const p = sys.planets[2];
+
+  it('planets spin slowly about a tilted axis', () => {
+    for (const pl of sys.planets) {
+      expect(vlen(pl.spinAxis)).toBeCloseTo(1, 9);
+      expect(pl.spinAxis.y).toBeGreaterThan(0.9);
+      const period = (Math.PI * 2) / pl.spinRate;
+      expect(period).toBeGreaterThanOrEqual(720);
+      expect(period).toBeLessThanOrEqual(1200);
+    }
+  });
+
+  it('frame changes keep the world pose continuous', () => {
+    const t = 431.25;
+    const s = newShip(v3(p.center.x + p.radius * 1.5, p.center.y + 300, p.center.z - 200));
+    s.v = v3(40, -12, 90);
+    qlook(s.q, vnorm(v3(), v3(0.3, -0.2, -1)), v3(0, 1, 0));
+    const before = worldPose(s, sys.planets, t, newPose());
+    setFrame(s, p.index + 1, sys.planets, t);
+    expect(s.frame).toBe(p.index + 1);
+    const after = worldPose(s, sys.planets, t, newPose());
+    for (const k of ['x', 'y', 'z'] as const) {
+      expect(after.p[k]).toBeCloseTo(before.p[k], 6);
+      expect(after.v[k]).toBeCloseTo(before.v[k], 6);
+    }
+    expect(Math.abs(after.q.x * before.q.x + after.q.y * before.q.y + after.q.z * before.q.z + after.q.w * before.q.w)).toBeCloseTo(1, 9);
+    setFrame(s, 0, sys.planets, t);
+    expect(s.p.x).toBeCloseTo(before.p.x, 6);
+    expect(s.v.z).toBeCloseTo(before.v.z, 6);
+  });
+
+  it('a landed ship rides the rotating ground', () => {
+    const dir = vnorm(v3(), v3(0.5, 0.3, 0.8));
+    const g = p.radius + surfaceHeight(p, dir.x, dir.y, dir.z) + SHIP_LAND_HEIGHT;
+    const s = newShip(v3(dir.x * g, dir.y * g, dir.z * g));
+    s.frame = s.landed = p.index + 1;
+    const e = { ...env };
+    const w0 = worldPose(s, sys.planets, 0, newPose());
+    for (let k = 0; k < 300; k++) { e.time = k * DT; stepShip(s, emptyInput(), stats, e, DT); }
+    expect(s.landed).toBe(p.index + 1);
+    expect(vlen(s.p)).toBeCloseTo(g, 9);
+    const w1 = worldPose(s, sys.planets, 10, newPose());
+    // ~10 s of spin moves it in world space, but it stays at the same height above the ground
+    expect(vdist(w0.p, w1.p)).toBeGreaterThan(p.radius * p.spinRate * 10 * 0.2);
+    expect(vdist(w1.p, p.center)).toBeCloseTo(g, 6);
+    // the ground under it moves with the same velocity
+    expect(vlen(w1.v)).toBeGreaterThan(0);
+    const R = planetRot(p, 10, quat());
+    const surf = toWorldPoint(p, R, s.p, v3());
+    expect(vdist(surf, w1.p)).toBeCloseTo(0, 6);
+  });
+
+  it('prediction replays match across frame changes (time-stamped inputs)', () => {
+    const start = v3(p.center.x + p.radius * 2.3, p.center.y, p.center.z);
+    const inputs = Array.from({ length: 360 }, (_, k) => ({ t: 100 + k * DT + 0.013, inp: { ...emptyInput(), throttle: 1, boost: true, yaw: k < 60 ? 0.2 : 0 } }));
+    const run = (from = 0, base?: ReturnType<typeof newShip>) => {
+      const s = base ? cloneShip(base) : newShip(start, qlook(quat(), v3(-1, 0, 0), v3(0, 1, 0)));
+      const e = { ...env };
+      for (let k = from; k < inputs.length; k++) { e.time = inputs[k].t; stepShip(s, inputs[k].inp, stats, e, DT); }
+      return s;
+    };
+    const a = run(), b = run();
+    expect(a).toEqual(b);
+    expect(a.frame).toBe(p.index + 1);
+    // replaying the tail from a mid-point snapshot gives the same result
+    const mid = newShip(start, qlook(quat(), v3(-1, 0, 0), v3(0, 1, 0)));
+    const e = { ...env };
+    for (let k = 0; k < 150; k++) { e.time = inputs[k].t; stepShip(mid, inputs[k].inp, stats, e, DT); }
+    expect(run(150, mid)).toEqual(a);
+  });
+});
+
 describe('character simulation', () => {
   it('walks on the surface and lands after a jump', () => {
     const p = sys.planets[1];
     const d = vnorm(v3(), v3(0.2, 0.9, 0.3));
     const g = p.radius + surfaceHeight(p, d.x, d.y, d.z);
-    const c = newChar(v3(p.center.x + d.x * g, p.center.y + d.y * g, p.center.z + d.z * g), vnorm(v3(), v3(1, 0, 0)));
+    const c = newChar(v3(d.x * g, d.y * g, d.z * g), vnorm(v3(), v3(1, 0, 0)));
     const walk = { ...emptyCharInput(), mz: 1 };
     const start = { ...c.p };
     for (let k = 0; k < 90; k++) stepChar(c, walk, p, DT);
@@ -166,16 +241,17 @@ describe('character simulation', () => {
     expect(c.ground).toBe(0);
     for (let k = 0; k < 200; k++) stepChar(c, emptyCharInput(), p, DT);
     expect(c.ground).toBe(1);
-    const dd = vnorm(v3(), v3(c.p.x - p.center.x, c.p.y - p.center.y, c.p.z - p.center.z));
-    expect(vdist(c.p, p.center) - (p.radius + surfaceHeight(p, dd.x, dd.y, dd.z))).toBeCloseTo(0, 5);
+    const dd = vnorm(v3(), c.p);
+    expect(vlen(c.p) - (p.radius + surfaceHeight(p, dd.x, dd.y, dd.z))).toBeCloseTo(0, 5);
   });
 });
 
 describe('protocol', () => {
   it('round-trips inputs with quantisation', () => {
-    const m = { seq: 42, mode: MODE.SHIP, flags: 5, ship: { ...emptyInput(), yaw: 0.5, throttle: -0.2, strafeY: 1 }, char: emptyCharInput() };
+    const m = { seq: 42, mode: MODE.SHIP, flags: 5, t: 1234.5678, ship: { ...emptyInput(), yaw: 0.5, throttle: -0.2, strafeY: 1 }, char: emptyCharInput() };
     const d = decodeInput(encodeInput(m));
     expect(d.seq).toBe(42);
+    expect(d.t).toBe(1234.5678);
     expect(d.ship.yaw).toBeCloseTo(0.5, 2);
     expect(d.ship.cruise).toBe(true);
     expect(quantizeInput(d)).toEqual(d);
@@ -183,18 +259,19 @@ describe('protocol', () => {
 
   it('round-trips snapshots exactly for own state', () => {
     const ship = newShip(v3(123456.789, -9876.54321, 42.4242));
-    ship.v = v3(1.5, 2.5, -3.25); ship.boost = 0.3333; ship.cruise = 1.234; ship.landed = 2;
+    ship.v = v3(1.5, 2.5, -3.25); ship.boost = 0.3333; ship.cruise = 1.234; ship.landed = 2; ship.frame = 2;
     const char = newChar(v3(1, 2, 3), v3(0, 0, -1));
     const snap = {
       tick: 99, time: 12.5, ack: 77,
       self: { shipId: 5, mode: MODE.FOOT, teleport: 3, ship, hull: 90, maxHull: 100, shield: 12.5, maxShield: 80, energy: 55, missiles: 4, charId: 9, char, charPlanet: 1 },
-      entities: [{ id: 7, kind: 1, flags: 3, px: 1000.5, py: 2, pz: 3, qx: 0, qy: 0.7071, qz: 0, qw: 0.7071, vx: 10, vy: 0, vz: -5, hull: 0.5, shield: 1, throttle: 0.25 }],
+      entities: [{ id: 7, kind: 1, flags: 3, frame: 3, px: 1000.5, py: 2, pz: 3, qx: 0, qy: 0.7071, qz: 0, qw: 0.7071, vx: 10, vy: 0, vz: -5, hull: 0.5, shield: 1, throttle: 0.25 }],
     };
     const d = decodeSnapshot(encodeSnapshot(snap));
     expect(d.self.ship).toEqual(ship);
     expect(d.self.char).toEqual(char);
     expect(d.ack).toBe(77);
     expect(d.entities[0].px).toBeCloseTo(1000.5, 3);
+    expect(d.entities[0].frame).toBe(3);
     expect(d.entities[0].qy).toBeCloseTo(0.7071, 3);
     const shots = [{ shooter: 3, px: 1, py: 2, pz: 3, vx: 4, vy: 5, vz: 6, level: 2 }];
     expect(decodeShots(encodeShots(shots))).toEqual(shots);
@@ -231,10 +308,10 @@ describe('solid props', () => {
     const tangent = vnorm(v3(), v3(-cd.z, 0, cd.x));
     const startDir = vnorm(v3(), v3(cd.x + tangent.x * (3 / p.radius), cd.y, cd.z + tangent.z * (3 / p.radius)));
     const g = p.radius + surfaceHeight(p, startDir.x, startDir.y, startDir.z);
-    const c = newChar(v3(p.center.x + startDir.x * g, p.center.y + startDir.y * g, p.center.z + startDir.z * g), v3(-tangent.x, 0, -tangent.z));
+    const c = newChar(v3(startDir.x * g, startDir.y * g, startDir.z * g), v3(-tangent.x, 0, -tangent.z));
     for (let k = 0; k < 90; k++) stepChar(c, { ...emptyCharInput(), mz: 1 }, p, DT);
-    const base = v3(p.center.x + col.x, p.center.y + col.y, p.center.z + col.z);
-    const up = vnorm(v3(), v3(c.p.x - p.center.x, c.p.y - p.center.y, c.p.z - p.center.z));
+    const base = v3(col.x, col.y, col.z);
+    const up = vnorm(v3(), c.p);
     const dx = c.p.x - base.x, dy = c.p.y - base.y, dz = c.p.z - base.z;
     const du = dx * up.x + dy * up.y + dz * up.z;
     const horiz = Math.hypot(dx - up.x * du, dy - up.y * du, dz - up.z * du);

@@ -32,9 +32,9 @@ const tmp = v3(), aim = v3(), fwd = v3(), local = v3();
 
 /** Converts a world-space aim point into yaw/pitch stick input for `ship`. */
 function steer(ship: ShipEntity, point: V3, inp: ShipInput) {
-  vsub(tmp, point, ship.state.p);
+  vsub(tmp, point, ship.world.p);
   // world → local: rotate by inverse quaternion
-  const q = ship.state.q;
+  const q = ship.world.q;
   const inv = { x: -q.x, y: -q.y, z: -q.z, w: q.w };
   qrot(local, inv, tmp);
   const fz = -local.z;
@@ -51,14 +51,14 @@ export interface NpcWorld {
   ship(id: number): ShipEntity | undefined;
 }
 
-/** Simple pirate AI: patrol a field, attack nearby players with lead aiming, flee when hurt. */
+/** Simple pirate AI: patrol a field, attack nearby players with lead aiming, flee when hurt. Works on world poses. */
 export function npcThink(ship: ShipEntity, b: NpcBrain, w: NpcWorld, dt: number): { input: ShipInput; fire: boolean } {
   const inp = emptyInput();
   let fire = false;
   b.rethink -= dt;
-  const p = ship.state.p;
+  const p = ship.world.p;
   const tgt = b.target ? w.ship(b.target) : undefined;
-  const tgtValid = !!tgt && !tgt.dead && !tgt.docked && vdist(tgt.state.p, w.stationPos) > SAFE_ZONE_RADIUS && vdist(tgt.state.p, p) < 4500;
+  const tgtValid = !!tgt && !tgt.dead && !tgt.docked && vdist(tgt.world.p, w.stationPos) > SAFE_ZONE_RADIUS && vdist(tgt.world.p, p) < 4500;
 
   if (b.rethink <= 0) {
     b.rethink = 0.5;
@@ -79,12 +79,12 @@ export function npcThink(ship: ShipEntity, b: NpcBrain, w: NpcWorld, dt: number)
 
   const target = b.target ? w.ship(b.target) : undefined;
   if (b.state === 'attack' && target && !target.dead) {
-    leadPoint(p, ship.state.v, target.state.p, target.state.v, LASER.speed, aim);
-    const dist = vdist(target.state.p, p);
+    leadPoint(p, ship.world.v, target.world.p, target.world.v, LASER.speed, aim);
+    const dist = vdist(target.world.p, p);
     if (dist < 220) b.jink = 1.6;
     if (b.jink > 0) {
       b.jink -= dt;
-      vsub(tmp, p, target.state.p);
+      vsub(tmp, p, target.world.p);
       aim.x = p.x + tmp.x + 400; aim.y = p.y + tmp.y + 250; aim.z = p.z + tmp.z;
       inp.throttle = 1;
       inp.boost = true;
@@ -93,13 +93,13 @@ export function npcThink(ship: ShipEntity, b: NpcBrain, w: NpcWorld, dt: number)
       inp.boost = dist > 1800 && ship.state.boost > 0.5;
     }
     steer(ship, aim, inp);
-    qrot(fwd, ship.state.q, FWD);
+    qrot(fwd, ship.world.q, FWD);
     vnorm(tmp, vsub(tmp, aim, p));
     const cos = fwd.x * tmp.x + fwd.y * tmp.y + fwd.z * tmp.z;
     fire = b.jink <= 0 && dist < 1400 && cos > 0.992;
     inp.strafeX = Math.sin(w.time * 1.3 + ship.id) * 0.6;
   } else if (b.state === 'flee' && target) {
-    vsub(tmp, p, target.state.p);
+    vsub(tmp, p, target.world.p);
     aim.x = p.x + tmp.x; aim.y = p.y + tmp.y; aim.z = p.z + tmp.z;
     steer(ship, aim, inp);
     inp.throttle = 1;

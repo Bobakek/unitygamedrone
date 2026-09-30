@@ -2,11 +2,19 @@ import * as THREE from 'three';
 import type { PlanetDef } from '../../shared/galaxy/system-gen.ts';
 import { nodesNear, type ResourceNode, type ResourceType } from '../../shared/planet/resources.ts';
 import { PROP_STRIDE } from '../../shared/planet/prop-rules.ts';
-import { v3, type V3 } from '../../shared/math/vec.ts';
+import { qrot, v3, type Quat, type V3 } from '../../shared/math/vec.ts';
 import type { WorkerPool } from './worker-pool.ts';
 import { kitGeometries, type KindGeo } from './prop-kits.ts';
 
 const windU = { uTime: { value: 0 } };
+const tmpV = v3();
+
+/** Places a group whose contents are relative to a body-frame `anchor` of a rotating planet. */
+function placeBody(g: THREE.Object3D, pl: PlanetDef, rot: Quat, anchor: V3, origin: V3) {
+  qrot(tmpV, rot, anchor);
+  g.position.set(pl.center.x + tmpV.x - origin.x, pl.center.y + tmpV.y - origin.y, pl.center.z + tmpV.z - origin.z);
+  g.quaternion.set(rot.x, rot.y, rot.z, rot.w);
+}
 /** Wind sway driven by the per-vertex `aSway` weight and the instance position. */
 function withSway<T extends THREE.Material>(m: T, key: string): T {
   m.onBeforeCompile = (sh) => {
@@ -82,6 +90,7 @@ class PropTier {
     this.last = v3(1e12, 0, 0);
   }
 
+  /** `cam` = camera position in the planet's body frame (planet-relative). */
   update(planet: PlanetDef, cam: V3, pool: WorkerPool) {
     if (planet !== this.planet) {
       if (!this.planet || this.planet.type !== planet.type || !this.meshes.length) this.setKit(planet);
@@ -92,7 +101,7 @@ class PropTier {
     const moved = Math.hypot(cam.x - this.last.x, cam.y - this.last.y, cam.z - this.last.z);
     if (this.pending || moved < this.rebuildDist || pool.free <= 0) return;
     this.pending = true;
-    const rel = v3(cam.x - planet.center.x, cam.y - planet.center.y, cam.z - planet.center.z);
+    const rel = v3(cam.x, cam.y, cam.z);
     const l = Math.hypot(rel.x, rel.y, rel.z);
     const dir = v3(rel.x / l, rel.y / l, rel.z / l);
     this.last = { ...cam };
@@ -131,10 +140,10 @@ class PropTier {
     });
   }
 
-  sync(origin: V3) {
+  sync(origin: V3, rot: Quat) {
     const pl = this.planet;
     if (!pl) return;
-    this.group.position.set(pl.center.x + this.anchorRel.x - origin.x, pl.center.y + this.anchorRel.y - origin.y, pl.center.z + this.anchorRel.z - origin.z);
+    placeBody(this.group, pl, rot, this.anchorRel, origin);
   }
 }
 
@@ -153,6 +162,7 @@ export class SurfaceProps {
   private lastNodes = v3(1e12, 0, 0);
   private nodeAnchor = v3();
   private harvestVersion = -1;
+  /** Nodes near the camera; `pos` is in the planet's body frame. */
   visibleNodes: (ResourceNode & { pos: V3 })[] = [];
 
   constructor(private pool: WorkerPool) {
@@ -175,7 +185,7 @@ export class SurfaceProps {
     this.visibleNodes = [];
   }
 
-  /** `cam` = camera world position; `harvested` = "planet:node" keys; bump `version` after harvesting. */
+  /** `cam` = camera position in the planet's body frame; `harvested` = "planet:node" keys; bump `version` after harvesting. */
   update(planet: PlanetDef | null, cam: V3, harvested: Set<string>, version: number, time: number, quality: { props: boolean; small: boolean }) {
     windU.uTime.value = time;
     if (!planet) { if (this.planet) this.clear(); return; }
@@ -190,7 +200,7 @@ export class SurfaceProps {
     this.lastNodes = { ...cam };
     this.harvestVersion = version;
     this.nodeAnchor = { ...cam };
-    const d = v3(cam.x - planet.center.x, cam.y - planet.center.y, cam.z - planet.center.z);
+    const d = v3(cam.x, cam.y, cam.z);
     const len = Math.hypot(d.x, d.y, d.z);
     d.x /= len; d.y /= len; d.z /= len;
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), up = new THREE.Vector3(), c = new THREE.Color();
@@ -200,7 +210,7 @@ export class SurfaceProps {
     for (const node of nodesNear(planet, d, 500)) {
       if (harvested.has(`${planet.index}:${node.id}`) || nn >= 200) continue;
       const r = planet.radius + node.h;
-      const pos = v3(planet.center.x + node.dir.x * r, planet.center.y + node.dir.y * r, planet.center.z + node.dir.z * r);
+      const pos = v3(node.dir.x * r, node.dir.y * r, node.dir.z * r);
       this.visibleNodes.push({ ...node, pos });
       up.set(node.dir.x, node.dir.y, node.dir.z);
       q.setFromUnitVectors(Y, up);
@@ -222,11 +232,11 @@ export class SurfaceProps {
     if (this.beams.instanceColor) this.beams.instanceColor.needsUpdate = true;
   }
 
-  /** Place the groups relative to the floating origin. */
-  sync(origin: V3) {
-    this.big.sync(origin);
-    this.small.sync(origin);
-    this.nodeGroup.position.set(this.nodeAnchor.x - origin.x, this.nodeAnchor.y - origin.y, this.nodeAnchor.z - origin.z);
+  /** Place the groups relative to the floating origin; `rot` = the planet's current body→world rotation. */
+  sync(origin: V3, rot: Quat) {
+    this.big.sync(origin, rot);
+    this.small.sync(origin, rot);
+    if (this.planet) placeBody(this.nodeGroup, this.planet, rot, this.nodeAnchor, origin);
   }
 }
 

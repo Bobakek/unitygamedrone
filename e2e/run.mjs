@@ -62,6 +62,16 @@ try {
 
   await chat(a, '/land 1');
   await shot(a, '03-landed.png', 7000);
+  // the landed ship sits still in the planet's rotating frame while moving through world space
+  const ride = await a.evaluate(async () => {
+    const g = window.__game;
+    const b0 = { ...g.pred.ship.p }, w0 = { ...g.shipPos };
+    await new Promise((r) => setTimeout(r, 1500));
+    const b1 = g.pred.ship.p, w1 = g.shipPos;
+    return { frame: g.pred.ship.frame, body: Math.hypot(b1.x - b0.x, b1.y - b0.y, b1.z - b0.z), world: Math.hypot(w1.x - w0.x, w1.y - w0.y, w1.z - w0.z) };
+  });
+  console.log('landed ride:', JSON.stringify(ride));
+  if (!ride.frame || ride.body > 0.01 || ride.world < 1) errors.push(`landed ship does not ride the planet: ${JSON.stringify(ride)}`);
 
   await a.keyboard.press('KeyG');
   await a.waitForFunction(() => window.__game.pred.mode === 1, null, { timeout: 15000, polling: 250 });
@@ -75,8 +85,10 @@ try {
     const g = window.__game;
     const nodes = g.props.visibleNodes;
     if (!nodes.length) return 'no nodes';
-    const n = nodes.reduce((b, x) => (Math.hypot(x.pos.x - g.charPos.x, x.pos.y - g.charPos.y, x.pos.z - g.charPos.z) < Math.hypot(b.pos.x - g.charPos.x, b.pos.y - g.charPos.y, b.pos.z - g.charPos.z) ? x : b));
-    return `nearest node ${Math.round(Math.hypot(n.pos.x - g.charPos.x, n.pos.y - g.charPos.y, n.pos.z - g.charPos.z))} m (${nodes.length} visible)`;
+    const c = g.charPosB; // node positions are in the planet's body frame
+    const dist = (x) => Math.hypot(x.pos.x - c.x, x.pos.y - c.y, x.pos.z - c.z);
+    const n = nodes.reduce((b, x) => (dist(x) < dist(b) ? x : b));
+    return `nearest node ${Math.round(dist(n))} m (${nodes.length} visible)`;
   });
   console.log('resources:', harvested);
 

@@ -10,6 +10,7 @@ export * from './planet/cubesphere.ts';
 export * from './planet/resources.ts';
 export * from './sim/env.ts';
 export * from './sim/ship.ts';
+export * from './sim/frames.ts';
 export * from './sim/character.ts';
 export * from './sim/weapons.ts';
 export * from './ships/blueprint.ts';

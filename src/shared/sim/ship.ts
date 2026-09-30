@@ -1,10 +1,12 @@
 import { SHIP_LAND_HEIGHT } from '../constants.ts';
+import type { PlanetDef } from '../galaxy/system-gen.ts';
 import { surfaceHeight } from '../planet/terrain.ts';
 import {
   FWD, qaxisAngle, qlook, qmul, qnorm, qrot, quat, RIGHT, UP, v3, vaddScaled, vclampLen, vdot, vlen, vnorm, vscale, vsub,
   type Quat, type V3,
 } from '../math/vec.ts';
 import type { SimEnv } from './env.ts';
+import { updateFrame } from './frames.ts';
 
 export interface ShipState {
   p: V3;
@@ -18,6 +20,11 @@ export interface ShipState {
   cruiseBlock: number;
   /** Planet index + 1 while landed, 0 while flying. */
   landed: number;
+  /**
+   * Reference frame: 0 = static world, planet index + 1 = that planet's rotating
+   * body frame (p/v/q relative to its centre, see sim/frames.ts).
+   */
+  frame: number;
 }
 
 export interface ShipInput {
@@ -40,27 +47,32 @@ export const BASE_STATS: ShipStats = {
 export const emptyInput = (): ShipInput => ({ yaw: 0, pitch: 0, roll: 0, throttle: 0, strafeX: 0, strafeY: 0, boost: false, cruise: false });
 
 export function newShip(p: V3, q: Quat = quat()): ShipState {
-  return { p: { ...p }, v: v3(), q: { ...q }, boost: 1, cruise: 0, cruiseBlock: 0, landed: 0 };
+  return { p: { ...p }, v: v3(), q: { ...q }, boost: 1, cruise: 0, cruiseBlock: 0, landed: 0, frame: 0 };
 }
 
 export function copyShip(dst: ShipState, s: ShipState): ShipState {
   dst.p.x = s.p.x; dst.p.y = s.p.y; dst.p.z = s.p.z;
   dst.v.x = s.v.x; dst.v.y = s.v.y; dst.v.z = s.v.z;
   dst.q.x = s.q.x; dst.q.y = s.q.y; dst.q.z = s.q.z; dst.q.w = s.q.w;
-  dst.boost = s.boost; dst.cruise = s.cruise; dst.cruiseBlock = s.cruiseBlock; dst.landed = s.landed;
+  dst.boost = s.boost; dst.cruise = s.cruise; dst.cruiseBlock = s.cruiseBlock; dst.landed = s.landed; dst.frame = s.frame;
   return dst;
 }
 export const cloneShip = (s: ShipState): ShipState => copyShip(newShip(s.p), s);
 export const isCruising = (s: ShipState) => s.cruise >= CRUISE_SPOOL;
 
 /** True near large masses where the cruise drive cannot operate. */
-export function cruiseInhibited(p: V3, env: SimEnv): boolean {
+export function cruiseInhibited(s: ShipState, env: SimEnv): boolean {
+  const p = s.p;
+  if (s.frame) {
+    const pl = env.planets[s.frame - 1];
+    return p.x * p.x + p.y * p.y + p.z * p.z < (pl.radius * 1.7) ** 2;
+  }
   for (const pl of env.planets) {
     const dx = p.x - pl.center.x, dy = p.y - pl.center.y, dz = p.z - pl.center.z;
     if (dx * dx + dy * dy + dz * dz < (pl.radius * 1.7) ** 2) return true;
   }
-  const s = env.station.pos;
-  if ((p.x - s.x) ** 2 + (p.y - s.y) ** 2 + (p.z - s.z) ** 2 < 3500 ** 2) return true;
+  const sp = env.station.pos;
+  if ((p.x - sp.x) ** 2 + (p.y - sp.y) ** 2 + (p.z - sp.z) ** 2 < 3500 ** 2) return true;
   const st = env.star;
   if (p.x * p.x + p.y * p.y + p.z * p.z < (st.radius * 3) ** 2) return true;
   return false;
@@ -87,11 +99,13 @@ function collideSphere(s: ShipState, cx: number, cy: number, cz: number, rad: nu
 /** Advances a ship by dt. Shared verbatim by client prediction and the authoritative server. */
 export function stepShip(s: ShipState, inp: ShipInput, st: ShipStats, env: SimEnv, dt: number, out?: StepOut): void {
   if (out) out.impact = 0;
+  if (!s.landed) updateFrame(s, env.planets, env.time);
+  // Inside a planet frame positions are relative to the planet centre (origin).
+  const home = s.frame ? env.planets[s.frame - 1] : null;
   if (s.landed) {
-    const pl = env.planets[s.landed - 1];
     if (inp.throttle > 0.05 || inp.strafeY > 0.2) {
       s.landed = 0;
-      vnorm(d, vsub(d, s.p, pl.center));
+      vnorm(d, s.p);
       vscale(s.v, d, 14);
     } else {
       s.v.x = s.v.y = s.v.z = 0;
@@ -111,7 +125,7 @@ export function stepShip(s: ShipState, inp: ShipInput, st: ShipStats, env: SimEn
   qrot(f, s.q, FWD); qrot(r, s.q, RIGHT); qrot(u, s.q, UP);
 
   s.cruiseBlock = Math.max(0, s.cruiseBlock - dt);
-  if (inp.cruise && s.cruiseBlock <= 0 && !cruiseInhibited(s.p, env)) s.cruise = Math.min(CRUISE_SPOOL, s.cruise + dt);
+  if (inp.cruise && s.cruiseBlock <= 0 && !cruiseInhibited(s, env)) s.cruise = Math.min(CRUISE_SPOOL, s.cruise + dt);
   else s.cruise = 0;
   const cruiseNow = s.cruise >= CRUISE_SPOOL;
 
@@ -127,13 +141,11 @@ export function stepShip(s: ShipState, inp: ShipInput, st: ShipStats, env: SimEn
     vaddScaled(desired, desired, r, inp.strafeX * st.strafe);
     vaddScaled(desired, desired, u, inp.strafeY * st.strafe);
     // Landing assist: with the stick idle close to the ground the ship settles down gently.
-    if (Math.abs(inp.throttle) < 0.05 && inp.strafeY === 0) {
-      for (const pl of env.planets) {
-        vsub(d, s.p, pl.center);
-        const dist = vlen(d);
-        if (dist > pl.radius + pl.maxHeight + LAND_ASSIST_ALT) continue;
-        vscale(d, d, 1 / dist);
-        const alt = dist - pl.radius - surfaceHeight(pl, d.x, d.y, d.z);
+    if (home && Math.abs(inp.throttle) < 0.05 && inp.strafeY === 0) {
+      const dist = vlen(s.p);
+      if (dist < home.radius + home.maxHeight + LAND_ASSIST_ALT) {
+        vscale(d, s.p, 1 / dist);
+        const alt = dist - home.radius - surfaceHeight(home, d.x, d.y, d.z);
         if (alt < LAND_ASSIST_ALT) vaddScaled(desired, desired, d, -Math.min(8, 2 + alt * 0.05));
       }
     }
@@ -147,39 +159,11 @@ export function stepShip(s: ShipState, inp: ShipInput, st: ShipStats, env: SimEn
   s.v.x += dv.x; s.v.y += dv.y; s.v.z += dv.z;
   vaddScaled(s.p, s.p, s.v, dt);
 
-  // Planets: terrain collision and landing.
-  for (const pl of env.planets) {
-    vsub(d, s.p, pl.center);
-    const dist = vlen(d);
-    if (dist > pl.radius + pl.maxHeight * 1.5 + 60) continue;
-    vscale(d, d, 1 / dist);
-    const ground = pl.radius + surfaceHeight(pl, d.x, d.y, d.z);
-    const minAlt = st.radius * 0.5;
-    if (dist - ground < minAlt) {
-      s.p.x = pl.center.x + d.x * (ground + minAlt);
-      s.p.y = pl.center.y + d.y * (ground + minAlt);
-      s.p.z = pl.center.z + d.z * (ground + minAlt);
-      const vn = vdot(s.v, d);
-      if (vn < 0) {
-        vaddScaled(s.v, s.v, d, -vn);
-        if (out) out.impact = Math.max(out.impact, -vn);
-      }
-    }
-    const alt = vlen(vsub(dv, s.p, pl.center)) - ground;
-    if (alt < SHIP_LAND_HEIGHT + 3.5 && vlen(s.v) < 25 && vdot(s.v, d) < 2 && inp.throttle <= 0.05 && !cruiseNow) {
-      s.landed = pl.index + 1;
-      s.v.x = s.v.y = s.v.z = 0;
-      s.cruise = 0;
-      s.p.x = pl.center.x + d.x * (ground + SHIP_LAND_HEIGHT);
-      s.p.y = pl.center.y + d.y * (ground + SHIP_LAND_HEIGHT);
-      s.p.z = pl.center.z + d.z * (ground + SHIP_LAND_HEIGHT);
-      vaddScaled(f, f, d, -vdot(f, d));
-      if (vlen(f) < 1e-3) vaddScaled(f, r, d, -vdot(r, d));
-      vnorm(f, f);
-      qlook(s.q, f, d);
-    }
+  // Planet frame: terrain collision and landing. World frame: stations, rocks, the star.
+  if (home) {
+    collideTerrain(s, home, st, inp, cruiseNow, out);
+    return;
   }
-
   for (const fl of env.fields) {
     const dx = s.p.x - fl.center.x, dy = s.p.y - fl.center.y, dz = s.p.z - fl.center.z;
     if (dx * dx + dy * dy + dz * dz > (fl.radius + 300) ** 2) continue;
@@ -187,4 +171,32 @@ export function stepShip(s: ShipState, inp: ShipInput, st: ShipStats, env: SimEn
   }
   collideSphere(s, env.station.pos.x, env.station.pos.y, env.station.pos.z, 70 + st.radius, out);
   collideSphere(s, env.star.pos.x, env.star.pos.y, env.star.pos.z, env.star.radius * 1.02, out);
+}
+
+function collideTerrain(s: ShipState, pl: PlanetDef, st: ShipStats, inp: ShipInput, cruiseNow: boolean, out?: StepOut) {
+  const dist = vlen(s.p);
+  if (dist > pl.radius + pl.maxHeight * 1.5 + 60) return;
+  vscale(d, s.p, 1 / dist);
+  const ground = pl.radius + surfaceHeight(pl, d.x, d.y, d.z);
+  const minAlt = st.radius * 0.5;
+  if (dist - ground < minAlt) {
+    vscale(s.p, d, ground + minAlt);
+    const vn = vdot(s.v, d);
+    if (vn < 0) {
+      vaddScaled(s.v, s.v, d, -vn);
+      if (out) out.impact = Math.max(out.impact, -vn);
+    }
+  }
+  const alt = vlen(s.p) - ground;
+  if (alt < SHIP_LAND_HEIGHT + 3.5 && vlen(s.v) < 25 && vdot(s.v, d) < 2 && inp.throttle <= 0.05 && !cruiseNow) {
+    s.landed = pl.index + 1;
+    s.v.x = s.v.y = s.v.z = 0;
+    s.cruise = 0;
+    vscale(s.p, d, ground + SHIP_LAND_HEIGHT);
+    qrot(f, s.q, FWD); qrot(r, s.q, RIGHT);
+    vaddScaled(f, f, d, -vdot(f, d));
+    if (vlen(f) < 1e-3) vaddScaled(f, r, d, -vdot(r, d));
+    vnorm(f, f);
+    qlook(s.q, f, d);
+  }
 }

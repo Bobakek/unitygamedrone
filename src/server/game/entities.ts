@@ -5,12 +5,15 @@ import type { CombatStats } from '../../shared/economy.ts';
 import type { V3 } from '../../shared/math/vec.ts';
 import type { Session } from './session.ts';
 import type { NpcBrain } from './npc.ts';
+import type { Pose } from '../../shared/sim/frames.ts';
 
 export interface ShipEntity {
   id: number;
   name: string;
   bp: Blueprint;
   state: ShipState;
+  /** World-space pose derived from `state` at the current server time (state may be in a planet frame). */
+  world: Pose;
   flight: ShipStats;
   combat: CombatStats;
   hull: number;
@@ -33,6 +36,7 @@ export interface ShipEntity {
 export interface CharEntity {
   id: number;
   name: string;
+  /** Body-frame state of planet `planet`. */
   state: CharState;
   planet: number;
   session: Session;

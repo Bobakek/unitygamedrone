@@ -46,8 +46,8 @@ export class Controller {
     }
   }
 
-  /** Builds the quantised input for one fixed simulation tick. */
-  build(mode: number): InputMsg {
+  /** Builds the quantised input for one fixed simulation tick; `t` = estimated server time. */
+  build(mode: number, t: number): InputMsg {
     const i = this.input;
     const k = (c: string) => (!i.typing && i.down(c) ? 1 : 0);
     const ship = emptyInput();
@@ -72,6 +72,6 @@ export class Controller {
       if (k('Space')) flags |= IFLAG.JUMP;
       if (k('ShiftLeft') || k('ShiftRight')) flags |= IFLAG.SPRINT;
     }
-    return quantizeInput({ seq: ++this.seq, mode: m, flags, ship, char });
+    return quantizeInput({ seq: ++this.seq, mode: m, flags, t, ship, char });
   }
 }

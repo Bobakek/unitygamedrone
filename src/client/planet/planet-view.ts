@@ -7,8 +7,11 @@ import type { WorkerPool } from './worker-pool.ts';
 
 const terrainMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.93, metalness: 0 });
 
+interface LiquidUniforms { uTime: { value: number }; uPlanet: { value: THREE.Vector3 }; uRotInv: { value: THREE.Matrix3 } }
+const m4 = new THREE.Matrix4(), qi = new THREE.Quaternion();
+
 /** Liquid material per planet type: animated faceted waves, glowing lava or a still ice sheet. */
-function liquidMaterial(def: PlanetDef, u: { uTime: { value: number }; uPlanet: { value: THREE.Vector3 } }): THREE.Material {
+function liquidMaterial(def: PlanetDef, u: LiquidUniforms): THREE.Material {
   let m: THREE.Material;
   let amp = 0.35, speed = 1;
   if (def.type === 'lava') {
@@ -24,8 +27,10 @@ function liquidMaterial(def: PlanetDef, u: { uTime: { value: number }; uPlanet: 
     m.onBeforeCompile = (sh) => {
       sh.uniforms.uTime = u.uTime;
       sh.uniforms.uPlanet = u.uPlanet;
-      sh.vertexShader = `uniform float uTime; uniform vec3 uPlanet;\n` + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
-        vec3 wp = (modelMatrix * vec4(position, 1.0)).xyz - uPlanet;
+      sh.uniforms.uRotInv = u.uRotInv;
+      sh.vertexShader = `uniform float uTime; uniform vec3 uPlanet; uniform mat3 uRotInv;\n` + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+        // waves are anchored to the (rotating) planet body
+        vec3 wp = uRotInv * ((modelMatrix * vec4(position, 1.0)).xyz - uPlanet);
         float t = uTime * ${speed.toFixed(2)};
         float w = sin(dot(wp, vec3(0.31, 0.12, 0.27)) + t * 1.3) * 0.5
                 + sin(dot(wp, vec3(-0.18, 0.41, 0.09)) * 1.3 - t * 1.7) * 0.3
@@ -70,7 +75,7 @@ export class PlanetView {
   private horizon = 0;
   private mountain: number;
   chunks = 0;
-  private liquidU = { uTime: { value: 0 }, uPlanet: { value: new THREE.Vector3() } };
+  private liquidU: LiquidUniforms = { uTime: { value: 0 }, uPlanet: { value: new THREE.Vector3() }, uRotInv: { value: new THREE.Matrix3() } };
   private liquid: THREE.Material | null;
 
   constructor(public def: PlanetDef, private pool: WorkerPool, public splitK = 2.4) {
@@ -96,11 +101,15 @@ export class PlanetView {
     return ang > this.horizon + this.mountain + (n.size / this.def.radius) * 1.2;
   }
 
-  /** `camRel` = camera position relative to the planet centre (metres). */
+  /**
+   * `camRel` = camera position relative to the planet centre in the planet's body
+   * frame (metres). Place and orient `group` before calling.
+   */
   update(camRel: THREE.Vector3, time = 0) {
     this.frame++;
     this.liquidU.uTime.value = time;
     this.liquidU.uPlanet.value.copy(this.group.position);
+    this.liquidU.uRotInv.value.setFromMatrix4(m4.makeRotationFromQuaternion(qi.copy(this.group.quaternion).invert()));
     this.camRel.copy(camRel);
     const dist = camRel.length();
     this.camDir.copy(camRel).divideScalar(dist || 1);

@@ -7,7 +7,7 @@ import { getSystem, type SystemDef } from '../../shared/galaxy/system-gen.ts';
 import { makeName } from '../../shared/galaxy/names.ts';
 import { hashInts, Rng } from '../../shared/math/rng.ts';
 import {
-  FWD, qlook, qrot, quat, v3, vdist, vdistSq, vdot, vlen, vnorm, vscale, vsub, type Quat, type V3,
+  FWD, qlook, qrot, quat, v3, vcross, vdist, vdistSq, vdot, vlen, vnorm, vscale, vsub, type Quat, type V3,
 } from '../../shared/math/vec.ts';
 import {
   EFLAG, KIND, MODE, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
@@ -16,6 +16,7 @@ import { nodesNear, resourceNode } from '../../shared/planet/resources.ts';
 import { footHeight, surfaceHeight } from '../../shared/planet/terrain.ts';
 import { charQuat, newChar, stepChar } from '../../shared/sim/character.ts';
 import type { SimEnv } from '../../shared/sim/env.ts';
+import { newPose, planetRot, toBodyDir, toWorldPoint, worldPose } from '../../shared/sim/frames.ts';
 import { emptyInput, isCruising, newShip, stepShip, type StepOut } from '../../shared/sim/ship.ts';
 import { ENERGY_REGEN, GUN_OFFSETS, LASER, leadPoint, MISSILE, segmentSphere, SHIELD_DELAY } from '../../shared/sim/weapons.ts';
 import { pirateBlueprint, playerBlueprint } from '../../shared/ships/blueprint.ts';
@@ -31,7 +32,7 @@ export interface GameContext {
   nextId(): number;
 }
 
-const tmp = v3(), tmp2 = v3(), aim = v3();
+const tmp = v3(), tmp2 = v3(), aim = v3(), rot = quat();
 const stepOut: StepOut = { impact: 0 };
 
 export class SystemInstance implements NpcWorld {
@@ -53,7 +54,7 @@ export class SystemInstance implements NpcWorld {
 
   constructor(private ctx: GameContext, id: number) {
     this.def = getSystem(id);
-    this.env = { star: this.def.star, planets: this.def.planets, fields: this.def.fields, station: this.def.station };
+    this.env = { star: this.def.star, planets: this.def.planets, fields: this.def.fields, station: this.def.station, time: 0 };
     this.rng = new Rng(hashInts(this.def.seed, 0xabc));
     for (let i = 0; i < this.def.pirates; i++) this.spawnPirate();
   }
@@ -62,6 +63,22 @@ export class SystemInstance implements NpcWorld {
   get stationPos() { return this.def.station.pos; }
   ship(id: number) { return this.ships.get(id); }
   inSafeZone(p: V3) { return vdistSq(p, this.def.station.pos) < SAFE_ZONE_RADIUS * SAFE_ZONE_RADIUS; }
+
+  /** Refreshes a ship's cached world pose (its state may live in a rotating planet frame). */
+  syncWorld(ship: ShipEntity) {
+    worldPose(ship.state, this.def.planets, this.time, ship.world);
+  }
+
+  /** World position of a pilot on foot. */
+  charWorld(c: CharEntity, out: V3 = v3()): V3 {
+    const pl = this.def.planets[c.planet];
+    return toWorldPoint(pl, planetRot(pl, this.time, rot), c.state.p, out);
+  }
+
+  /** World position a session is viewed from (pilot on foot or ship). */
+  focusOf(s: Session): V3 {
+    return s.char ? this.charWorld(s.char) : s.ship.world.p;
+  }
 
   // ------------------------------------------------------------------ entities
   spawnPirate(near?: V3): ShipEntity {
@@ -72,11 +89,12 @@ export class SystemInstance implements NpcWorld {
     const q = qlook(quat(), vnorm(v3(), v3(this.rng.range(-1, 1), 0, this.rng.range(-1, 1))), v3(0, 1, 0));
     const ship: ShipEntity = {
       id, name: `Пират ${makeName(this.rng)}`, bp: pirateBlueprint(this.rng.int(0, 1e9)),
-      state: newShip(pos, q), flight: PIRATE_FLIGHT, combat: PIRATE_COMBAT,
+      state: newShip(pos, q), world: newPose(), flight: PIRATE_FLIGHT, combat: PIRATE_COMBAT,
       hull: PIRATE_COMBAT.maxHull, shield: PIRATE_COMBAT.maxShield, energy: 100, lastHit: -99, fireCooldown: 0, gun: 0,
       throttle: 0, boosting: false, dead: false, respawnAt: 0, docked: false, god: false, session: null,
       npc: new NpcBrain(field.center, field.radius, new Rng(this.rng.int(0, 1e9))), lastInput: emptyInput(),
     };
+    this.syncWorld(ship);
     this.ships.set(id, ship);
     this.infos.push(this.shipInfo(ship));
     return ship;
@@ -86,7 +104,7 @@ export class SystemInstance implements NpcWorld {
     const c = combatStats(pilot.upgrades);
     const ship: ShipEntity = {
       id: this.ctx.nextId(), name: pilot.name, bp: playerBlueprint(pilot.name),
-      state: newShip(pos, q), flight: flightStats(pilot.upgrades), combat: c,
+      state: newShip(pos, q), world: newPose(), flight: flightStats(pilot.upgrades), combat: c,
       hull: c.maxHull, shield: c.maxShield, energy: 100, lastHit: -99, fireCooldown: 0, gun: 0,
       throttle: 0, boosting: false, dead: false, respawnAt: 0, docked: false, god: false, session: null, npc: null, lastInput: emptyInput(),
     };
@@ -119,6 +137,7 @@ export class SystemInstance implements NpcWorld {
     s.ship.session = s;
     s.ship.dead = false;
     s.ship.docked = false;
+    this.syncWorld(s.ship);
     this.sessions.add(s);
     this.ships.set(s.ship.id, s.ship);
     this.infos.push(this.shipInfo(s.ship));
@@ -150,15 +169,16 @@ export class SystemInstance implements NpcWorld {
   // ------------------------------------------------------------------ combat
   tryFire(ship: ShipEntity) {
     if (ship.fireCooldown > 0 || ship.energy < LASER.cost || ship.state.landed || isCruising(ship.state)) return;
-    if (this.inSafeZone(ship.state.p)) return;
+    const w = ship.world;
+    if (this.inSafeZone(w.p)) return;
     ship.fireCooldown = LASER.cooldown;
     ship.energy -= LASER.cost;
     const guns = GUN_OFFSETS[ship.bp.cls];
     const g = guns[ship.gun++ % guns.length];
-    qrot(tmp, ship.state.q, g);
-    const p = v3(ship.state.p.x + tmp.x, ship.state.p.y + tmp.y, ship.state.p.z + tmp.z);
-    qrot(tmp2, ship.state.q, FWD);
-    const v = v3(ship.state.v.x + tmp2.x * LASER.speed, ship.state.v.y + tmp2.y * LASER.speed, ship.state.v.z + tmp2.z * LASER.speed);
+    qrot(tmp, w.q, g);
+    const p = v3(w.p.x + tmp.x, w.p.y + tmp.y, w.p.z + tmp.z);
+    qrot(tmp2, w.q, FWD);
+    const v = v3(w.v.x + tmp2.x * LASER.speed, w.v.y + tmp2.y * LASER.speed, w.v.z + tmp2.z * LASER.speed);
     this.lasers.push({ owner: ship.id, p, v, life: LASER.life, dmg: ship.combat.laserDamage });
     this.shots.push({ shooter: ship.id, px: p.x, py: p.y, pz: p.z, vx: v.x, vy: v.y, vz: v.z, level: ship.session ? ship.session.pilot.upgrades.weapons : 0 });
   }
@@ -166,18 +186,19 @@ export class SystemInstance implements NpcWorld {
   fireMissile(ship: ShipEntity, targetId: number): string | null {
     const s = ship.session;
     if (!s || s.pilot.missiles <= 0) return 'Нет ракет';
-    if (this.inSafeZone(ship.state.p)) return 'Оружие заблокировано в зоне станции';
+    const w = ship.world;
+    if (this.inSafeZone(w.p)) return 'Оружие заблокировано в зоне станции';
     const t = this.ships.get(targetId);
     if (!t || t === ship || t.dead || t.docked) return 'Нет цели';
-    vsub(tmp, t.state.p, ship.state.p);
+    vsub(tmp, t.world.p, w.p);
     const d = vlen(tmp);
     if (d > MISSILE.range * 1.1) return 'Цель слишком далеко';
-    qrot(tmp2, ship.state.q, FWD);
+    qrot(tmp2, w.q, FWD);
     if (vdot(tmp, tmp2) / d < MISSILE.coneCos * 0.97) return 'Цель вне конуса захвата';
     s.pilot.missiles--;
     const id = this.ctx.nextId();
-    const p = v3(ship.state.p.x + tmp2.x * 8, ship.state.p.y + tmp2.y * 8 - 1.5, ship.state.p.z + tmp2.z * 8);
-    const v = v3(ship.state.v.x + tmp2.x * 60, ship.state.v.y + tmp2.y * 60, ship.state.v.z + tmp2.z * 60);
+    const p = v3(w.p.x + tmp2.x * 8, w.p.y + tmp2.y * 8 - 1.5, w.p.z + tmp2.z * 8);
+    const v = v3(w.v.x + tmp2.x * 60, w.v.y + tmp2.y * 60, w.v.z + tmp2.z * 60);
     this.missiles.set(id, { id, owner: ship.id, target: targetId, p, v, life: MISSILE.life });
     this.infos.push({ id, kind: KIND.MISSILE, name: '', owner: ship.id });
     this.events.push({ t: 'missile', id, target: targetId });
@@ -188,13 +209,13 @@ export class SystemInstance implements NpcWorld {
   damage(target: ShipEntity, dmg: number, attacker: number, pos?: V3) {
     if (target.dead || target.docked || target.god) return;
     if (target.session && target.session.mode === MODE.FOOT) return;
-    if (this.inSafeZone(target.state.p)) return;
+    if (this.inSafeZone(target.world.p)) return;
     target.lastHit = this.time;
     target.state.cruiseBlock = Math.max(target.state.cruiseBlock, 4);
     const absorbed = Math.min(target.shield, dmg);
     target.shield -= absorbed;
     target.hull -= dmg - absorbed;
-    const hp = pos ?? target.state.p;
+    const hp = pos ?? target.world.p;
     this.events.push({ t: 'hit', target: target.id, pos: [hp.x, hp.y, hp.z], shield: absorbed >= dmg - 1e-9, dmg: Math.round(dmg), by: attacker });
     if (target.npc && attacker && target.npc.state !== 'flee') {
       const a = this.ships.get(attacker);
@@ -206,7 +227,7 @@ export class SystemInstance implements NpcWorld {
   kill(target: ShipEntity, attacker: number) {
     target.dead = true;
     target.hull = 0;
-    const p = target.state.p;
+    const p = target.world.p;
     this.events.push({ t: 'boom', id: target.id, pos: [p.x, p.y, p.z], big: true });
     const killer = this.ships.get(attacker);
     this.events.push({ t: 'kill', killer: killer?.name ?? 'Столкновение', victim: target.name });
@@ -238,6 +259,7 @@ export class SystemInstance implements NpcWorld {
     const ship = s.ship;
     const sp = this.spawnPoint();
     ship.state = newShip(sp.p, sp.q);
+    this.syncWorld(ship);
     ship.dead = false;
     ship.hull = ship.combat.maxHull;
     ship.shield = ship.combat.maxShield;
@@ -251,8 +273,8 @@ export class SystemInstance implements NpcWorld {
     let best: ShipEntity | null = null, bd = range * range;
     for (const s of this.ships.values()) {
       if (s.npc || s.dead || s.docked || s.state.landed || !s.session || s.session.mode !== MODE.SHIP) continue;
-      if (this.inSafeZone(s.state.p)) continue;
-      const d = vdistSq(s.state.p, from);
+      if (this.inSafeZone(s.world.p)) continue;
+      const d = vdistSq(s.world.p, from);
       if (d < bd) { bd = d; best = s; }
     }
     return best;
@@ -261,12 +283,16 @@ export class SystemInstance implements NpcWorld {
   // ------------------------------------------------------------------ tick
   step() {
     const t = this.time;
+    // Ships parked in a planet frame move with its rotation even without input.
+    for (const ship of this.ships.values()) this.syncWorld(ship);
     for (const s of this.sessions) this.processInputs(s);
 
+    this.env.time = t;
     for (const ship of this.ships.values()) {
       if (!ship.npc || ship.dead) continue;
       const { input, fire } = npcThink(ship, ship.npc, this, DT);
       stepShip(ship.state, input, ship.flight, this.env, DT, stepOut);
+      this.syncWorld(ship);
       ship.throttle = input.throttle;
       ship.boosting = input.boost;
       ship.fireCooldown -= DT;
@@ -304,7 +330,11 @@ export class SystemInstance implements NpcWorld {
       s.lastSeq = m.seq;
       const ship = s.ship;
       if (s.mode === MODE.SHIP && m.mode === MODE.SHIP && !ship.dead && !ship.docked) {
+        // The client stamps inputs with its server-time estimate; prediction replays with the
+        // same value, so frame changes match exactly. Clamped so it cannot be abused.
+        this.env.time = Math.max(this.time - 2, Math.min(this.time + 1, m.t));
         stepShip(ship.state, m.ship, ship.flight, this.env, DT, stepOut);
+        this.syncWorld(ship);
         ship.throttle = m.ship.throttle;
         ship.boosting = m.ship.boost;
         ship.lastInput = m.ship;
@@ -326,8 +356,8 @@ export class SystemInstance implements NpcWorld {
       let hit: ShipEntity | null = null, bestT = 2;
       for (const sh of this.ships.values()) {
         if (sh.id === L.owner || sh.dead || sh.docked) continue;
-        if (vdistSq(sh.state.p, L.p) > reach * reach) continue;
-        const tt = segmentSphere(L.p, p1, sh.state.p, sh.flight.radius + 1.5);
+        if (vdistSq(sh.world.p, L.p) > reach * reach) continue;
+        const tt = segmentSphere(L.p, p1, sh.world.p, sh.flight.radius + 1.5);
         if (tt >= 0 && tt < bestT) { bestT = tt; hit = sh; }
       }
       if (hit) {
@@ -348,7 +378,7 @@ export class SystemInstance implements NpcWorld {
       const tg = this.ships.get(m.target);
       const alive = tg && !tg.dead && !tg.docked;
       if (alive) {
-        leadPoint(m.p, v3(), tg.state.p, tg.state.v, MISSILE.speed, aim);
+        leadPoint(m.p, v3(), tg.world.p, tg.world.v, MISSILE.speed, aim);
         vnorm(tmp, vsub(tmp, aim, m.p));
         vnorm(tmp2, m.v);
         const cos = Math.max(-1, Math.min(1, vdot(tmp, tmp2)));
@@ -362,7 +392,7 @@ export class SystemInstance implements NpcWorld {
       m.p.x += m.v.x * dt; m.p.y += m.v.y * dt; m.p.z += m.v.z * dt;
       m.life -= dt;
       let done = m.life <= 0;
-      if (alive && vdist(m.p, tg.state.p) < tg.flight.radius + 6) {
+      if (alive && vdist(m.p, tg.world.p) < tg.flight.radius + 6) {
         this.damage(tg, MISSILE.damage, m.owner, m.p);
         done = true;
       }
@@ -376,39 +406,41 @@ export class SystemInstance implements NpcWorld {
 
   // ------------------------------------------------------------------ snapshots
   buildSnapshot(s: Session): Snapshot {
-    const focus = s.char ? s.char.state.p : s.ship.state.p;
+    const focus = this.focusOf(s);
     const r2 = INTEREST_RADIUS * INTEREST_RADIUS;
+    const cw = v3();
     const radarTick = this.ctx.tick % 15 === 0;
     const entities: EntityState[] = [];
     for (const sh of this.ships.values()) {
       if (sh === s.ship || sh.dead || sh.docked) continue;
-      if (!radarTick && vdistSq(sh.state.p, focus) > r2) continue;
+      if (!radarTick && vdistSq(sh.world.p, focus) > r2) continue;
       let flags = 0;
       if (sh.state.landed) flags |= EFLAG.LANDED;
       if (isCruising(sh.state)) flags |= EFLAG.CRUISE;
       if (sh.boosting) flags |= EFLAG.BOOST;
       if (sh.npc) flags |= EFLAG.NPC;
-      if (this.inSafeZone(sh.state.p)) flags |= EFLAG.SAFE;
+      if (this.inSafeZone(sh.world.p)) flags |= EFLAG.SAFE;
+      // Ships inside a planet frame are sent in body coordinates so they stay glued to the ground.
       const st = sh.state;
       entities.push({
-        id: sh.id, kind: KIND.SHIP, flags, px: st.p.x, py: st.p.y, pz: st.p.z, qx: st.q.x, qy: st.q.y, qz: st.q.z, qw: st.q.w,
+        id: sh.id, kind: KIND.SHIP, flags, frame: st.frame, px: st.p.x, py: st.p.y, pz: st.p.z, qx: st.q.x, qy: st.q.y, qz: st.q.z, qw: st.q.w,
         vx: st.v.x, vy: st.v.y, vz: st.v.z, hull: Math.max(0, sh.hull / sh.combat.maxHull), shield: sh.shield / sh.combat.maxShield,
         throttle: st.landed ? 0 : isCruising(st) ? 1 : Math.abs(sh.throttle),
       });
     }
     const q = quat();
     for (const c of this.chars.values()) {
-      if (c.session === s || vdistSq(c.state.p, focus) > r2) continue;
-      charQuat(c.state, this.def.planets[c.planet], q);
+      if (c.session === s || vdistSq(this.charWorld(c, cw), focus) > r2) continue;
+      charQuat(c.state, q);
       entities.push({
-        id: c.id, kind: KIND.CHAR, flags: c.state.ground ? 0 : EFLAG.BOOST, px: c.state.p.x, py: c.state.p.y, pz: c.state.p.z,
+        id: c.id, kind: KIND.CHAR, flags: c.state.ground ? 0 : EFLAG.BOOST, frame: c.planet + 1, px: c.state.p.x, py: c.state.p.y, pz: c.state.p.z,
         qx: q.x, qy: q.y, qz: q.z, qw: q.w, vx: c.state.v.x, vy: c.state.v.y, vz: c.state.v.z, hull: 1, shield: 0, throttle: 0,
       });
     }
     for (const m of this.missiles.values()) {
       if (vdistSq(m.p, focus) > r2) continue;
       qlook(q, m.v, Math.abs(m.v.y) > Math.abs(m.v.x) ? v3(1, 0, 0) : v3(0, 1, 0));
-      entities.push({ id: m.id, kind: KIND.MISSILE, flags: 0, px: m.p.x, py: m.p.y, pz: m.p.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, vx: m.v.x, vy: m.v.y, vz: m.v.z, hull: 1, shield: 0, throttle: 1 });
+      entities.push({ id: m.id, kind: KIND.MISSILE, flags: 0, frame: 0, px: m.p.x, py: m.p.y, pz: m.p.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, vx: m.v.x, vy: m.v.y, vz: m.v.z, hull: 1, shield: 0, throttle: 1 });
     }
     const ship = s.ship;
     return {
@@ -426,16 +458,19 @@ export class SystemInstance implements NpcWorld {
   handleAction(s: Session, act: Action): string | null {
     const ship = s.ship;
     const p = s.pilot;
+    this.syncWorld(ship);
     switch (act.a) {
       case 'exit': {
         if (s.mode !== MODE.SHIP || !ship.state.landed) return 'Сначала приземлитесь';
+        // Landed ships live in the planet's body frame: everything below is planet-relative.
         const pl = this.def.planets[ship.state.landed - 1];
-        const up = vnorm(v3(), vsub(v3(), ship.state.p, pl.center));
-        const right = qrot(v3(), ship.state.q, v3(1, 0, 0));
-        const fwd = qrot(v3(), ship.state.q, FWD);
-        const d = vnorm(v3(), v3(ship.state.p.x - 6 * right.x - pl.center.x, ship.state.p.y - 6 * right.y - pl.center.y, ship.state.p.z - 6 * right.z - pl.center.z));
+        const st = ship.state;
+        const up = vnorm(v3(), st.p);
+        const right = qrot(v3(), st.q, v3(1, 0, 0));
+        const fwd = qrot(v3(), st.q, FWD);
+        const d = vnorm(v3(), v3(st.p.x - 6 * right.x, st.p.y - 6 * right.y, st.p.z - 6 * right.z));
         const g = pl.radius + footHeight(pl, d.x, d.y, d.z) + 0.05;
-        const pos = v3(pl.center.x + d.x * g, pl.center.y + d.y * g, pl.center.z + d.z * g);
+        const pos = vscale(v3(), d, g);
         const f = vnorm(v3(), v3(fwd.x - up.x * vdot(fwd, up), fwd.y - up.y * vdot(fwd, up), fwd.z - up.z * vdot(fwd, up)));
         const c: CharEntity = { id: this.ctx.nextId(), name: p.name, state: newChar(pos, f), planet: pl.index, session: s };
         s.char = c;
@@ -447,7 +482,8 @@ export class SystemInstance implements NpcWorld {
       }
       case 'board': {
         if (s.mode !== MODE.FOOT || !s.char) return null;
-        if (vdist(s.char.state.p, ship.state.p) > EXIT_RANGE + 6) return 'Подойдите ближе к кораблю';
+        const near = ship.state.frame === s.char.planet + 1 && vdist(s.char.state.p, ship.state.p) <= EXIT_RANGE + 6;
+        if (!near) return 'Подойдите ближе к кораблю';
         this.chars.delete(s.char.id);
         this.gone.push(s.char.id);
         s.char = null;
@@ -457,7 +493,7 @@ export class SystemInstance implements NpcWorld {
       }
       case 'dock': {
         if (s.mode !== MODE.SHIP) return null;
-        if (vdist(ship.state.p, this.def.station.pos) > DOCK_RANGE) return 'Слишком далеко от станции';
+        if (vdist(ship.world.p, this.def.station.pos) > DOCK_RANGE) return 'Слишком далеко от станции';
         ship.docked = true;
         ship.state.v = v3();
         s.mode = MODE.DOCKED;
@@ -470,6 +506,7 @@ export class SystemInstance implements NpcWorld {
         const st = this.def.station.pos;
         const away = vnorm(v3(), vsub(v3(), this.def.spawn, st));
         ship.state = newShip(v3(st.x + away.x * 320, st.y + away.y * 320, st.z + away.z * 320), qlook(quat(), away, v3(0, 1, 0)));
+        this.syncWorld(ship);
         ship.docked = false;
         s.mode = MODE.SHIP;
         s.resync();
@@ -528,8 +565,7 @@ export class SystemInstance implements NpcWorld {
         if (!node) return null;
         const key = `${pl.index}:${node.id}`;
         if ((this.harvested.get(key) ?? 0) > this.time) return 'Ресурс уже собран';
-        const r = pl.radius + node.h;
-        const np = v3(pl.center.x + node.dir.x * r, pl.center.y + node.dir.y * r, pl.center.z + node.dir.z * r);
+        const np = vscale(v3(), node.dir, pl.radius + node.h);
         if (vdist(np, s.char.state.p) > HARVEST_RANGE + 1.5) return 'Слишком далеко';
         if (cargoCount(p.cargo) >= combatStats(p.upgrades).cargoCap) return 'Трюм полон';
         p.cargo[node.type]++;
@@ -562,7 +598,8 @@ export class SystemInstance implements NpcWorld {
   }
 
   // ------------------------------------------------------------------ dev helpers
-  devTeleport(s: Session, target: string): string {
+  /** Dev teleports; planet targets accept `when` = day (default, station side) | dusk | night. */
+  devTeleport(s: Session, target: string, when?: string): string {
     const ship = s.ship;
     if (s.char) {
       this.chars.delete(s.char.id);
@@ -593,29 +630,42 @@ export class SystemInstance implements NpcWorld {
       const pl = this.def.planets[idx];
       if (!pl) return 'Нет такой планеты';
       const land = target.startsWith('land');
-      const toSt = vnorm(v3(), vsub(v3(), this.def.station.pos, pl.center));
-      let d = toSt;
+      // Planet targets are built in the body frame, on the side currently facing the station
+      // (or at local dusk / midnight).
+      const R = planetRot(pl, this.time, rot);
+      const toSun = toBodyDir(R, vnorm(v3(), vsub(v3(), this.def.star.pos, pl.center)), v3());
+      let aim = toBodyDir(R, vnorm(v3(), vsub(v3(), this.def.station.pos, pl.center)), v3());
+      if (when === 'night') aim = vscale(v3(), toSun, -1);
+      else if (when === 'dusk') {
+        // on the evening terminator: the ground there is turning away from the sun
+        const eve = vnorm(v3(), vcross(v3(), pl.spinAxis, toSun));
+        aim = vnorm(v3(), v3(eve.x + toSun.x * 0.1, eve.y + toSun.y * 0.1, eve.z + toSun.z * 0.1));
+      }
+      let d = aim;
       if (land) {
-        // pick a resource node on dry land facing the station
-        const nodes = nodesNear(pl, toSt, pl.radius * 0.6).filter((n) => n.h > 2 && n.h < pl.maxHeight * 0.4);
+        // pick the resource node on dry land closest to the aim point
+        const nodes = nodesNear(pl, aim, pl.radius * 0.6).filter((n) => n.h > 2 && n.h < pl.maxHeight * 0.4);
+        nodes.sort((x, y) => vdot(y.dir, aim) - vdot(x.dir, aim));
         if (nodes.length) d = nodes[0].dir;
       }
       const tangent = vnorm(v3(), qrot(v3(), qlook(quat(), d, v3(0, 1, 0)), v3(0, 1, 0)));
+      const frame = pl.index + 1;
       if (land) {
         const off = vnorm(v3(), v3(d.x + tangent.x * (14 / pl.radius), d.y + tangent.y * (14 / pl.radius), d.z + tangent.z * (14 / pl.radius)));
         const g = pl.radius + surfaceHeight(pl, off.x, off.y, off.z) + SHIP_LAND_HEIGHT;
-        ship.state = newShip(v3(pl.center.x + off.x * g, pl.center.y + off.y * g, pl.center.z + off.z * g), qlook(quat(), vscale(v3(), tangent, -1), off));
-        ship.state.landed = pl.index + 1;
+        ship.state = newShip(vscale(v3(), off, g), qlook(quat(), vscale(v3(), tangent, -1), off));
+        ship.state.landed = frame;
       } else if (target.startsWith('low')) {
         // level flight ~180 m above the terrain, heading along the surface
         const g = pl.radius + Math.max(0, surfaceHeight(pl, d.x, d.y, d.z)) + 180;
-        ship.state = newShip(v3(pl.center.x + d.x * g, pl.center.y + d.y * g, pl.center.z + d.z * g), qlook(quat(), tangent, d));
+        ship.state = newShip(vscale(v3(), d, g), qlook(quat(), tangent, d));
       } else {
         const g = pl.radius + pl.maxHeight + 900;
-        const pos = v3(pl.center.x + d.x * g, pl.center.y + d.y * g, pl.center.z + d.z * g);
-        ship.state = newShip(pos, qlook(quat(), vscale(v3(), d, -1), tangent));
+        ship.state = newShip(vscale(v3(), d, g), qlook(quat(), vscale(v3(), d, -1), tangent));
       }
+      ship.state.frame = frame;
     }
+    this.syncWorld(ship);
     s.resync();
     return 'Телепорт выполнен';
   }

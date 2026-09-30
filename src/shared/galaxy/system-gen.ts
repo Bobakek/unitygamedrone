@@ -29,6 +29,10 @@ export interface PlanetDef {
   flora: boolean;
   /** Probability that a resource cell holds a node. */
   resources: number;
+  /** Unit rotation axis (world space), angular speed (rad/s) and phase at t = 0. */
+  spinAxis: V3;
+  spinRate: number;
+  spinPhase: number;
 }
 
 export interface StationDef { name: string; pos: V3; radius: number; planet: number }
@@ -86,6 +90,9 @@ export function generateSystem(id: number, galaxySeed = GALAXY_SEED): SystemDef 
     const radius = Math.round(rng.range(3200, 7200));
     const ang = rng.range(0, Math.PI * 2);
     const center = v3(Math.cos(ang) * dist, rng.range(-4000, 4000), Math.sin(ang) * dist);
+    // Spin comes from its own stream so the rest of the layout stays stable.
+    const sr = new Rng(hashInts(seed, i, 0x5b));
+    const tilt = sr.range(0.05, 0.42), az = sr.range(0, Math.PI * 2);
     planets.push({
       index: i,
       name: `${name} ${ROMAN[i]}`,
@@ -99,6 +106,9 @@ export function generateSystem(id: number, galaxySeed = GALAXY_SEED): SystemDef 
       atmo: ATMOS[type],
       flora: FLORA[type],
       resources: type === 'barren' || type === 'lava' ? 0.55 : 0.4,
+      spinAxis: v3(Math.sin(tilt) * Math.cos(az), Math.cos(tilt), Math.sin(tilt) * Math.sin(az)),
+      spinRate: (Math.PI * 2) / sr.range(720, 1200),
+      spinPhase: sr.range(0, Math.PI * 2),
     });
     dist += rng.range(30000, 42000);
   }

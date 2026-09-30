@@ -31,14 +31,29 @@ function puffGeometry(): THREE.BufferGeometry {
   return puff;
 }
 
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
+
 /** Instanced low-poly cloud layer that slowly drifts around the planet. */
 export class CloudLayer {
   readonly group = new THREE.Group();
   private mat: THREE.MeshStandardMaterial;
+  private drift = 0;
+  private qd = new THREE.Quaternion();
+  /** World direction from the planet to its star. */
+  private sunU = { value: new THREE.Vector3(0, 1, 0) };
 
   constructor(def: PlanetDef, density = 1) {
     const cfg = COVER[def.type];
     this.mat = new THREE.MeshStandardMaterial({ color: cfg?.color ?? '#ffffff', flatShading: true, roughness: 1, transparent: true, opacity: 0.94, emissive: cfg?.color ?? '#ffffff', emissiveIntensity: 0.32 });
+    // The soft self-glow only applies on the day side, so night-side clouds go dark.
+    this.mat.onBeforeCompile = (sh) => {
+      sh.uniforms.uSun = this.sunU;
+      sh.vertexShader = 'uniform vec3 uSun;\nvarying float vDay;\n' + sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
+        vec4 cwp = modelMatrix * instanceMatrix * vec4(transformed, 1.0);
+        vDay = smoothstep(-0.12, 0.3, dot(normalize(cwp.xyz - modelMatrix[3].xyz), uSun));`);
+      sh.fragmentShader = 'varying float vDay;\n' + sh.fragmentShader.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance *= vDay;');
+    };
+    this.mat.customProgramCacheKey = () => 'cloud-daylit';
     if (!cfg || !def.atmo) return;
     const count = Math.round(cfg.count * density);
     const im = new THREE.InstancedMesh(puffGeometry(), this.mat, count);
@@ -65,8 +80,11 @@ export class CloudLayer {
     this.group.add(im);
   }
 
-  update(dt: number, fade: number) {
-    this.group.rotation.y += dt * 0.0025;
+  /** `spin` = the planet's body→world rotation; clouds ride it and drift slowly on top. */
+  update(dt: number, fade: number, spin: THREE.Quaternion, toSun: { x: number; y: number; z: number }) {
+    this.sunU.value.set(toSun.x, toSun.y, toSun.z);
+    this.drift += dt * 0.0025;
+    this.group.quaternion.copy(spin).multiply(this.qd.setFromAxisAngle(Y_AXIS, this.drift));
     this.mat.opacity = 0.94 * fade;
     this.group.visible = fade > 0.02;
   }

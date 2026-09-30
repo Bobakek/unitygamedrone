@@ -1,8 +1,9 @@
 import type { PlanetDef } from '../galaxy/system-gen.ts';
 import { footHeight, heightAt } from '../planet/terrain.ts';
 import { collidersNear } from '../planet/prop-rules.ts';
-import { qlook, v3, vcross, vdot, vlen, vnorm, vsub, type Quat, type V3 } from '../math/vec.ts';
+import { qlook, v3, vcross, vdot, vlen, vnorm, type Quat, type V3 } from '../math/vec.ts';
 
+/** Pilot on foot. Always expressed in its planet's rotating body frame (planet centre = origin). */
 export interface CharState {
   p: V3;
   v: V3;
@@ -30,16 +31,16 @@ export function copyChar(dst: CharState, s: CharState): CharState {
 
 const up = v3(), right = v3(), tmp = v3(), wish = v3();
 
-export function charUp(c: CharState, pl: PlanetDef, out: V3): V3 {
-  return vnorm(out, vsub(out, c.p, pl.center));
+export function charUp(c: CharState, out: V3): V3 {
+  return vnorm(out, c.p);
 }
-export function charQuat(c: CharState, pl: PlanetDef, out: Quat): Quat {
-  return qlook(out, c.f, charUp(c, pl, tmp));
+export function charQuat(c: CharState, out: Quat): Quat {
+  return qlook(out, c.f, charUp(c, tmp));
 }
 
 /** On-foot movement over a spherical planet with gravity and a small jetpack. */
 export function stepChar(c: CharState, inp: CharInput, pl: PlanetDef, dt: number): void {
-  charUp(c, pl, up);
+  charUp(c, up);
   // Turn heading about local up (positive yawDelta turns right).
   const th = -inp.yawDelta, cs = Math.cos(th), sn = Math.sin(th);
   vcross(tmp, up, c.f);
@@ -83,9 +84,9 @@ export function stepChar(c: CharState, inp: CharInput, pl: PlanetDef, dt: number
   c.p.x += c.v.x * dt; c.p.y += c.v.y * dt; c.p.z += c.v.z * dt;
 
   // Trunks and boulders are solid: push out horizontally (in the local tangent plane).
-  charUp(c, pl, up);
+  charUp(c, up);
   for (const col of collidersNear(pl, up)) {
-    const dx = c.p.x - pl.center.x - col.x, dy = c.p.y - pl.center.y - col.y, dz = c.p.z - pl.center.z - col.z;
+    const dx = c.p.x - col.x, dy = c.p.y - col.y, dz = c.p.z - col.z;
     const du = dx * up.x + dy * up.y + dz * up.z;
     if (du < -1 || du > 6 * col.r + 3) continue;
     const hx = dx - up.x * du, hy = dy - up.y * du, hz = dz - up.z * du;
@@ -98,13 +99,13 @@ export function stepChar(c: CharState, inp: CharInput, pl: PlanetDef, dt: number
     if (vn < 0) { c.v.x -= (hx / hd) * vn; c.v.y -= (hy / hd) * vn; c.v.z -= (hz / hd) * vn; }
   }
 
-  charUp(c, pl, up);
-  const dist = vlen(vsub(tmp, c.p, pl.center));
+  charUp(c, up);
+  const dist = vlen(c.p);
   const ground = pl.radius + footHeight(pl, up.x, up.y, up.z);
   const alt = dist - ground;
   const falling = vdot(c.v, up) <= 0.01;
   if (alt <= 0 || (c.ground && alt < 0.7 && falling)) {
-    c.p.x = pl.center.x + up.x * ground; c.p.y = pl.center.y + up.y * ground; c.p.z = pl.center.z + up.z * ground;
+    c.p.x = up.x * ground; c.p.y = up.y * ground; c.p.z = up.z * ground;
     const vn = vdot(c.v, up);
     if (vn < 0) { c.v.x -= up.x * vn; c.v.y -= up.y * vn; c.v.z -= up.z * vn; }
     c.ground = 1;

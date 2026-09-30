@@ -6,4 +6,6 @@ export interface SimEnv {
   planets: PlanetDef[];
   fields: AsteroidField[];
   station: StationDef;
+  /** Simulation time (s): orients rotating planet frames when a ship changes frame. */
+  time: number;
 }

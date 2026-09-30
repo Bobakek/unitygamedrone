@@ -55,6 +55,8 @@ export function decodeJson<T>(data: Uint8Array): T {
 // ---------------------------------------------------------------- input
 export interface InputMsg {
   seq: number; mode: number; flags: number;
+  /** Client's estimate of server time when the input was made (orients planet frames). */
+  t: number;
   ship: ShipInput; char: CharInput;
 }
 const q8 = (v: number) => Math.max(-127, Math.min(127, Math.round(v * 127)));
@@ -62,7 +64,7 @@ const d8 = (v: number) => v / 127;
 
 export function encodeInput(m: InputMsg): Uint8Array {
   const w = new Writer(32);
-  w.u8(MSG.INPUT).u32(m.seq).u8(m.mode).u16(m.flags);
+  w.u8(MSG.INPUT).u32(m.seq).u8(m.mode).u16(m.flags).f64(m.t);
   if (m.mode === MODE.FOOT) {
     w.i8(q8(m.char.mx)).i8(q8(m.char.mz)).f32(m.char.yawDelta);
   } else {
@@ -76,6 +78,7 @@ export function decodeInput(data: Uint8Array): InputMsg {
   const r = new Reader(data);
   r.u8();
   const seq = r.u32(), mode = r.u8(), flags = r.u16();
+  const tt = r.f64(), t = Number.isFinite(tt) ? tt : 0;
   const ship: ShipInput = { yaw: 0, pitch: 0, roll: 0, throttle: 0, strafeX: 0, strafeY: 0, boost: !!(flags & IFLAG.BOOST), cruise: !!(flags & IFLAG.CRUISE) };
   const char: CharInput = { mx: 0, mz: 0, yawDelta: 0, jump: !!(flags & IFLAG.JUMP), sprint: !!(flags & IFLAG.SPRINT) };
   if (mode === MODE.FOOT) {
@@ -86,7 +89,7 @@ export function decodeInput(data: Uint8Array): InputMsg {
     ship.yaw = d8(r.i8()); ship.pitch = d8(r.i8()); ship.roll = d8(r.i8());
     ship.throttle = Math.max(-0.3, d8(r.i8())); ship.strafeX = d8(r.i8()); ship.strafeY = d8(r.i8());
   }
-  return { seq, mode, flags, ship, char };
+  return { seq, mode, flags, t, ship, char };
 }
 
 /** Round-trips an input through the wire format so client prediction matches the server bit-for-bit. */
@@ -103,6 +106,8 @@ export interface SelfState {
 }
 export interface EntityState {
   id: number; kind: number; flags: number;
+  /** 0 = world coordinates, planet index + 1 = that planet's body frame. */
+  frame: number;
   px: number; py: number; pz: number;
   qx: number; qy: number; qz: number; qw: number;
   vx: number; vy: number; vz: number;
@@ -120,7 +125,7 @@ export function encodeSnapshot(s: Snapshot): Uint8Array {
   const sh = me.ship;
   w.f64(sh.p.x).f64(sh.p.y).f64(sh.p.z).f64(sh.v.x).f64(sh.v.y).f64(sh.v.z);
   w.f64(sh.q.x).f64(sh.q.y).f64(sh.q.z).f64(sh.q.w);
-  w.f64(sh.boost).f64(sh.cruise).f64(sh.cruiseBlock).u8(sh.landed);
+  w.f64(sh.boost).f64(sh.cruise).f64(sh.cruiseBlock).u8(sh.landed).u8(sh.frame);
   w.f32(me.hull).f32(me.maxHull).f32(me.shield).f32(me.maxShield).u8(Math.round(me.energy)).u8(me.missiles);
   if (me.char) {
     const c = me.char;
@@ -130,7 +135,7 @@ export function encodeSnapshot(s: Snapshot): Uint8Array {
   } else w.u8(0);
   w.u16(s.entities.length);
   for (const e of s.entities) {
-    w.u32(e.id).u8(e.kind).u8(e.flags);
+    w.u32(e.id).u8(e.kind).u8(e.flags).u8(e.frame);
     w.f32(e.px).f32(e.py).f32(e.pz);
     w.i16(qi16(e.qx)).i16(qi16(e.qy)).i16(qi16(e.qz)).i16(qi16(e.qw));
     w.f32(e.vx).f32(e.vy).f32(e.vz);
@@ -147,7 +152,7 @@ export function decodeSnapshot(data: Uint8Array): Snapshot {
   const ship: ShipState = {
     p: { x: r.f64(), y: r.f64(), z: r.f64() }, v: { x: r.f64(), y: r.f64(), z: r.f64() },
     q: { x: r.f64(), y: r.f64(), z: r.f64(), w: r.f64() },
-    boost: r.f64(), cruise: r.f64(), cruiseBlock: r.f64(), landed: r.u8(),
+    boost: r.f64(), cruise: r.f64(), cruiseBlock: r.f64(), landed: r.u8(), frame: r.u8(),
   };
   const hull = r.f32(), maxHull = r.f32(), shield = r.f32(), maxShield = r.f32(), energy = r.u8(), missiles = r.u8();
   let char: CharState | null = null, charId = 0, charPlanet = -1;
@@ -162,7 +167,7 @@ export function decodeSnapshot(data: Uint8Array): Snapshot {
   const entities: EntityState[] = [];
   for (let i = 0; i < n; i++) {
     entities.push({
-      id: r.u32(), kind: r.u8(), flags: r.u8(),
+      id: r.u32(), kind: r.u8(), flags: r.u8(), frame: r.u8(),
       px: r.f32(), py: r.f32(), pz: r.f32(),
       qx: r.i16() / 32767, qy: r.i16() / 32767, qz: r.i16() / 32767, qw: r.i16() / 32767,
       vx: r.f32(), vy: r.f32(), vz: r.f32(),

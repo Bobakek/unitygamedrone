@@ -6,7 +6,7 @@ import { Game } from '../src/server/game/game.ts';
 import { wsTransport } from '../src/server/game/session.ts';
 import {
   decodeJson, decodeSnapshot, emptyCharInput, emptyInput, encodeInput, encodeJson, IFLAG, MODE, MSG, PROTOCOL_VERSION,
-  FWD, nodesNear, qlook, qrot, quat, v3, vnorm, vsub, vdist, type Snapshot, type Welcome,
+  FWD, nodesNear, qlook, qrot, quat, v3, vnorm, vdist, type Snapshot, type Welcome,
 } from '../src/shared/index.ts';
 
 class Bot {
@@ -32,10 +32,10 @@ class Bot {
     await waitFor(() => !!this.welcome && !!this.snap);
   }
   input(flags = 0, ship = emptyInput()) {
-    this.ws.send(encodeInput({ seq: ++this.seq, mode: MODE.SHIP, flags, ship, char: emptyCharInput() }));
+    this.ws.send(encodeInput({ seq: ++this.seq, mode: MODE.SHIP, flags, t: this.snap?.time ?? 0, ship, char: emptyCharInput() }));
   }
   footInput(char = emptyCharInput()) {
-    this.ws.send(encodeInput({ seq: ++this.seq, mode: MODE.FOOT, flags: 0, ship: emptyInput(), char }));
+    this.ws.send(encodeInput({ seq: ++this.seq, mode: MODE.FOOT, flags: 0, t: this.snap?.time ?? 0, ship: emptyInput(), char }));
   }
   action(a: object) { this.ws.send(encodeJson(MSG.ACTION, a)); }
   close() { this.ws.close(); }
@@ -128,12 +128,15 @@ describe('game server', () => {
     await waitFor(() => s.mode === MODE.FOOT && !!s.char);
     await waitFor(() => c.snap?.self.mode === MODE.FOOT && !!c.snap.self.char);
     const pl = sys.def.planets[1];
+    // landed ship and pilot live in the planet's rotating body frame
+    expect(s.ship.state.frame).toBe(2);
+    expect(c.snap!.self.ship.frame).toBe(2);
     // teleport the character onto the nearest node and harvest it
-    const up = vnorm(v3(), vsub(v3(), s.char!.state.p, pl.center));
+    const up = vnorm(v3(), s.char!.state.p);
     const node = nodesNear(pl, up, 200).sort((x, y) => (y.dir.x * up.x + y.dir.y * up.y + y.dir.z * up.z) - (x.dir.x * up.x + x.dir.y * up.y + x.dir.z * up.z))[0];
     expect(node).toBeTruthy();
     const r = pl.radius + node.h;
-    s.char!.state.p = v3(pl.center.x + node.dir.x * r, pl.center.y + node.dir.y * r, pl.center.z + node.dir.z * r);
+    s.char!.state.p = v3(node.dir.x * r, node.dir.y * r, node.dir.z * r);
     c.footInput();
     c.action({ a: 'harvest', node: node.id });
     await waitFor(() => s.pilot.cargo[node.type] === 1);
@@ -150,6 +153,7 @@ describe('game server', () => {
     c.action({ a: 'board' });
     await waitFor(() => s.mode === MODE.SHIP);
     s.ship.state.landed = 0;
+    s.ship.state.frame = 0;
     s.ship.state.p = v3(sys.def.station.pos.x + 250, sys.def.station.pos.y, sys.def.station.pos.z);
     s.resync();
     c.action({ a: 'dock' });

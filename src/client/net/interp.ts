@@ -4,6 +4,8 @@ import type { EntityState } from '../../shared/net/protocol.ts';
 
 interface Sample { t: number; p: V3; q: Quat; v: V3; e: EntityState }
 
+/** Interpolated remote pose in the frame of the returned state (`e.frame`). */
+
 /** Estimates server time and interpolates remote entities ~100 ms in the past. */
 export class Timeline {
   private offset: number | null = null;
@@ -52,7 +54,14 @@ export class InterpBuffer {
     for (let i = s.length - 1; i >= 0; i--) {
       if (s[i].t <= t) {
         const a = s[i];
-        const b = s[i + 1];
+        const b: Sample | undefined = s[i + 1];
+        // Never blend across a frame change: hold the nearer sample instead.
+        if (b && b.e.frame !== a.e.frame) {
+          const nb = (t - a.t) / (b.t - a.t) >= 0.5 ? b : a;
+          Object.assign(p, nb.p);
+          Object.assign(q, nb.q);
+          return nb.e;
+        }
         if (!b) {
           const dt = Math.min(0.25, t - a.t);
           p.x = a.p.x + a.v.x * dt; p.y = a.p.y + a.v.y * dt; p.z = a.p.z + a.v.z * dt;

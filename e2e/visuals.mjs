@@ -53,6 +53,19 @@ try {
     await sleep(1500);
     console.log('done', name);
   }
+  // day/night: the same terran planet at dusk and at night
+  if (!only || only === 'daynight') {
+    if ((await page.evaluate(() => window.__game.sys.id)) !== 0) {
+      await chat('/system 0');
+      await page.waitForFunction(() => window.__game.sys.id === 0 && window.__game.pred.ready, null, { timeout: 30000, polling: 250 });
+    }
+    for (const when of ['dusk', 'night']) {
+      await chat(`/land 2 ${when}`);
+      await sleep(9000);
+      await page.screenshot({ path: `${OUT}/terran-${when}-landed.png` });
+      console.log('done', when, await page.evaluate(() => document.querySelector('.pp-time')?.textContent));
+    }
+  }
 } catch (e) {
   errors.push(String(e.stack || e));
 } finally {

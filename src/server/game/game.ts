@@ -177,13 +177,14 @@ export class Game implements GameContext {
     }
     if (!this.dev) { s.msg('Неизвестная команда', 'warn'); return; }
     switch (cmd) {
-      case 'tp': s.msg(sys.devTeleport(s, args[0] ?? 'station')); break;
-      case 'land': s.msg(sys.devTeleport(s, `land${args[0] ?? '0'}`)); break;
+      case 'tp': s.msg(sys.devTeleport(s, args[0] ?? 'station', args[1])); break;
+      case 'land': s.msg(sys.devTeleport(s, `land${args[0] ?? '0'}`, args[1])); break;
       case 'credits': s.pilot.credits += Number(args[0]) || 1000; s.sendPilot(); break;
       case 'god': s.ship.god = !s.ship.god; s.msg(`Бессмертие: ${s.ship.god ? 'вкл' : 'выкл'}`); break;
       case 'pirate': {
-        const d = qrot(v3(), s.ship.state.q, v3(0, 0, -900));
-        sys.spawnPirate({ x: s.ship.state.p.x + d.x, y: s.ship.state.p.y + d.y, z: s.ship.state.p.z + d.z });
+        const w = s.ship.world;
+        const d = qrot(v3(), w.q, v3(0, 0, -900));
+        sys.spawnPirate({ x: w.p.x + d.x, y: w.p.y + d.y, z: w.p.z + d.z });
         break;
       }
       case 'system': this.transfer(s, Number(args[0]) || 0); break;
@@ -193,7 +194,7 @@ export class Game implements GameContext {
 
   private jump(s: Session) {
     if (s.mode !== MODE.SHIP) return;
-    const gate = s.system.gateInRange(s.ship.state.p);
+    const gate = s.system.gateInRange(s.ship.world.p);
     if (!gate) { s.msg('Подлетите ближе к вратам', 'warn'); return; }
     this.transfer(s, gate.target);
   }
@@ -233,7 +234,7 @@ export class Game implements GameContext {
       if (gone) s.send(gone);
       if (events) s.send(events);
       if (sys.shots.length) {
-        const focus = s.char ? s.char.state.p : s.ship.state.p;
+        const focus = sys.focusOf(s);
         const near = sys.shots.filter((sh) => sh.shooter !== s.ship.id && vdist({ x: sh.px, y: sh.py, z: sh.pz }, focus) < 8000);
         if (near.length) s.send(encodeShots(near));
       }

@@ -8,8 +8,8 @@ import {
 } from '../shared/net/protocol.ts';
 import { surfaceHeight } from '../shared/planet/terrain.ts';
 import { resourceNode } from '../shared/planet/resources.ts';
-import { charUp } from '../shared/sim/character.ts';
 import type { SimEnv } from '../shared/sim/env.ts';
+import { newPose, planetRot, toBodyDir, toBodyPoint, toWorldDir, toWorldPoint, toWorldQuat, toWorldVel, worldPose, type Pose } from '../shared/sim/frames.ts';
 import { CRUISE_SPOOL, cruiseInhibited, isCruising } from '../shared/sim/ship.ts';
 import { ENERGY_REGEN, GUN_OFFSETS, LASER, leadPoint, MISSILE } from '../shared/sim/weapons.ts';
 import { playerBlueprint } from '../shared/ships/blueprint.ts';
@@ -40,12 +40,17 @@ interface Remote {
   info: EntityInfo | null;
   buf: InterpBuffer;
   view: ShipView | AstronautView | MissileView | null;
+  /** World pose at the current render time. */
   p: V3;
   q: Quat;
+  v: V3;
+  /** Raw interpolated pose in the entity's own frame (`state.frame`). */
+  bp: V3;
+  bq: Quat;
   state: EntityState | null;
   visible: boolean;
   smokeT: number;
-  /** World position of the node this remote pilot is mining (for the beam). */
+  /** Body-frame position of the node this remote pilot is mining (for the beam). */
   harvestPos: V3 | null;
 }
 
@@ -112,10 +117,21 @@ export class Game {
   private last = performance.now();
   private time = 0;
   private origin = v3();
+  /** Render pose of the own ship / pilot in world space ... */
   private shipPos = v3();
   private shipQ = quat();
   private charPos = v3();
   private charFwd = v3(0, 0, -1);
+  /** ... and in their own frame (ship frame / planet body frame). */
+  private shipPosF = v3();
+  private shipQF = quat();
+  private charPosB = v3();
+  private charFwdB = v3(0, 0, -1);
+  /** World pose of the latest predicted ship state (for firing, docking, HUD). */
+  private shipW: Pose = newPose();
+  /** Planet body→world rotations at the current render time. */
+  private rots: Quat[] = [];
+  private rotsT = new THREE.Quaternion();
   private stats = flightStats(defaultUpgrades());
   private harvestPos: V3 | null = null;
   private prevFwd = v3(0, 0, -1);
@@ -244,7 +260,8 @@ export class Game {
 
     const sys = getSystem(id);
     this.sys = sys;
-    this.env = { star: sys.star, planets: sys.planets, fields: sys.fields, station: sys.station };
+    this.env = { star: sys.star, planets: sys.planets, fields: sys.fields, station: sys.station, time: 0 };
+    this.rots = sys.planets.map(() => quat());
     this.backdrop = new SpaceBackdrop(this.r.gl, sys.seed, this.r.low ? 512 : 1024);
     this.r.scene.background = this.backdrop.texture;
     this.envLight.space(this.backdrop.texture);
@@ -315,7 +332,10 @@ export class Game {
   }
 
   private addRemote(id: number): Remote {
-    const r: Remote = { info: this.infos.get(id) ?? null, buf: new InterpBuffer(), view: null, p: v3(), q: quat(), state: null, visible: false, smokeT: 0, harvestPos: null };
+    const r: Remote = {
+      info: this.infos.get(id) ?? null, buf: new InterpBuffer(), view: null, p: v3(), q: quat(), v: v3(), bp: v3(), bq: quat(),
+      state: null, visible: false, smokeT: 0, harvestPos: null,
+    };
     this.remotes.set(id, r);
     return r;
   }
@@ -419,12 +439,11 @@ export class Game {
           const pl = this.sys?.planets[e.planet];
           const node = pl ? resourceNode(pl, e.node) : null;
           if (node && pl && e.by !== this.welcome?.playerId) {
-            const r = pl.radius + node.h;
-            const pos = v3(pl.center.x + node.dir.x * r, pl.center.y + node.dir.y * r, pl.center.z + node.dir.z * r);
+            const pos = v3(node.dir.x * (pl.radius + node.h), node.dir.y * (pl.radius + node.h), node.dir.z * (pl.radius + node.h));
             for (const rm of this.remotes.values()) {
               if (rm.info?.kind === KIND.CHAR && rm.info.owner === e.by && rm.view instanceof AstronautView) {
                 rm.harvestPos = pos;
-                rm.view.harvest(new THREE.Vector3(pos.x - this.origin.x, pos.y - this.origin.y, pos.z - this.origin.z));
+                rm.view.harvest(this.rel(this.toWorld(pl.index + 1, pos, v3())));
               }
             }
           }
@@ -464,20 +483,21 @@ export class Game {
     if (!this.pred.ready || !this.conn.open) return;
     const mode = this.pred.mode;
     if (mode !== MODE.SHIP && mode !== MODE.FOOT) return;
-    const m = this.ctrl.build(mode);
+    const m = this.ctrl.build(mode, this.timeline.serverNow);
     this.conn.input(m);
     this.pred.step(m);
     this.energy = Math.min(100, this.energy + ENERGY_REGEN * DT);
     if (mode !== MODE.SHIP) return;
     this.fireCd -= DT;
     const s = this.pred.ship;
-    if (m.flags & 1 && this.fireCd <= 0 && this.energy >= LASER.cost && !s.landed && !isCruising(s) && vdist(s.p, this.sys!.station.pos) > SAFE_ZONE_RADIUS) {
+    const w = worldPose(s, this.sys!.planets, m.t, this.shipW);
+    if (m.flags & 1 && this.fireCd <= 0 && this.energy >= LASER.cost && !s.landed && !isCruising(s) && vdist(w.p, this.sys!.station.pos) > SAFE_ZONE_RADIUS) {
       this.fireCd = LASER.cooldown;
       this.energy -= LASER.cost;
       const g = GUN_OFFSETS.fighter[this.gun++ % 2];
-      const off = qrot(v3(), s.q, g), f = qrot(v3(), s.q, FWD);
-      const p = v3(s.p.x + off.x, s.p.y + off.y, s.p.z + off.z);
-      this.effects.bolt(p, v3(s.v.x + f.x * LASER.speed, s.v.y + f.y * LASER.speed, s.v.z + f.z * LASER.speed), this.shotColor(this.self!.shipId, this.pilot?.upgrades.weapons ?? 1), this.self!.shipId);
+      const off = qrot(v3(), w.q, g), f = qrot(v3(), w.q, FWD);
+      const p = v3(w.p.x + off.x, w.p.y + off.y, w.p.z + off.z);
+      this.effects.bolt(p, v3(w.v.x + f.x * LASER.speed, w.v.y + f.y * LASER.speed, w.v.z + f.z * LASER.speed), this.shotColor(this.self!.shipId, this.pilot?.upgrades.weapons ?? 1), this.self!.shipId);
       this.sfx.laser(0.8);
     }
   }
@@ -501,11 +521,11 @@ export class Game {
         if (n) {
           this.conn.action({ a: 'harvest', node: n.id });
           this.harvestPos = n.pos;
-          this.myAstro?.harvest(new THREE.Vector3(n.pos.x - this.origin.x, n.pos.y - this.origin.y, n.pos.z - this.origin.z));
+          this.myAstro?.harvest(this.rel(this.toWorld(this.pred.charPlanet + 1, n.pos, v3())));
           this.sfx.mining();
         } else this.hud.toast('Рядом нет ресурсов', 'warn');
       } else if (mode === MODE.SHIP) {
-        const p = this.pred.ship.p;
+        const p = this.shipW.p;
         if (vdist(p, this.sys!.station.pos) < DOCK_RANGE) this.conn.action({ a: 'dock' });
         else if (this.sys!.gates.some((g) => vdist(g.pos, p) < GATE_RANGE)) this.conn.action({ a: 'jump' });
       }
@@ -513,7 +533,7 @@ export class Game {
     // Missile lock: hold RMB on a target inside the cone.
     const t = this.targetId ? this.remotes.get(this.targetId) : undefined;
     if (mode === MODE.SHIP && i.mouse(2) && t?.visible) {
-      const s = this.pred.ship;
+      const s = this.shipW;
       const to = vsub(v3(), t.p, s.p);
       const d = vlen(to);
       const f = qrot(v3(), s.q, FWD);
@@ -556,7 +576,7 @@ export class Game {
   private nearestNode() {
     let best = null, bd = HARVEST_RANGE + 0.5;
     for (const n of this.props.visibleNodes) {
-      const d = vdist(n.pos, this.charPos);
+      const d = vdist(n.pos, this.charPosB);
       if (d < bd) { bd = d; best = n; }
     }
     return best;
@@ -567,11 +587,35 @@ export class Game {
     obj.position.set(p.x - this.origin.x, p.y - this.origin.y, p.z - this.origin.z);
   }
 
+  /** Render-space vector (relative to the floating origin) of a world point. */
+  private rel(p: V3): THREE.Vector3 {
+    return new THREE.Vector3(p.x - this.origin.x, p.y - this.origin.y, p.z - this.origin.z);
+  }
+
+  /** Converts a point from `frame` (0 = world, planet + 1 = body) to world at the render time. */
+  private toWorld(frame: number, p: V3, out: V3): V3 {
+    if (!frame) { out.x = p.x; out.y = p.y; out.z = p.z; return out; }
+    return toWorldPoint(this.sys!.planets[frame - 1], this.rots[frame - 1], p, out);
+  }
+
   private render(dt: number, alpha: number) {
     const sys = this.sys!, self = this.self!, mode = this.pred.mode;
-    this.pred.shipPose(alpha, this.shipPos, this.shipQ);
-    const onFoot = mode === MODE.FOOT && this.pred.charPose(alpha, this.charPos, this.charFwd);
+    // Planets spin: everything in a body frame is converted with the same rotation the planet is drawn with.
+    const now = this.timeline.serverNow;
+    sys.planets.forEach((p, i) => planetRot(p, now, this.rots[i]));
     const ship = this.pred.ship;
+    this.pred.shipPose(alpha, this.shipPosF, this.shipQF);
+    this.toWorld(ship.frame, this.shipPosF, this.shipPos);
+    if (ship.frame) toWorldQuat(this.rots[ship.frame - 1], this.shipQF, this.shipQ);
+    else Object.assign(this.shipQ, this.shipQF);
+    worldPose(ship, sys.planets, now, this.shipW);
+    const onFoot = mode === MODE.FOOT && this.pred.charPose(alpha, this.charPosB, this.charFwdB);
+    const charPl = onFoot ? sys.planets[this.pred.charPlanet] : null;
+    if (charPl) {
+      const R = this.rots[charPl.index];
+      toWorldPoint(charPl, R, this.charPosB, this.charPos);
+      toWorldDir(R, this.charFwdB, this.charFwd);
+    }
     const speed = vlen(ship.v);
 
     // nearest planet to the player
@@ -585,13 +629,13 @@ export class Game {
 
     // camera
     if (mode === MODE.SHIP) this.rig.ship(dt, this.shipPos, this.shipQ, speed, isCruising(ship), !!ship.landed);
-    else if (onFoot) {
-      const pl = sys.planets[this.pred.charPlanet];
-      this.rig.foot(this.charPos, charUp(this.pred.char!, pl, v3()), this.charFwd, this.ctrl.footPitch);
+    else if (onFoot && charPl) {
+      const up = vnorm(v3(), vsub(v3(), this.charPos, charPl.center));
+      this.rig.foot(this.charPos, up, this.charFwd, this.ctrl.footPitch);
     } else if (mode === MODE.DOCKED) this.rig.orbit(dt, sys.station.pos, 900);
     const np = this.nearPlanet;
     if (np && this.nearAlt < np.maxHeight * 3 + 400) {
-      const d = vnorm(v3(), vsub(v3(), this.rig.pos, np.center));
+      const d = toBodyDir(this.rots[np.index], vnorm(v3(), vsub(v3(), this.rig.pos, np.center)), v3());
       this.rig.clampAbove(np.center, np.radius + surfaceHeight(np, d.x, d.y, d.z), onFoot ? 0.6 : 1.5);
     }
     this.origin.x = this.rig.pos.x; this.origin.y = this.rig.pos.y; this.origin.z = this.rig.pos.z;
@@ -604,28 +648,34 @@ export class Game {
     this.place(this.sun!.group, sys.star.pos);
     const toSun = vnorm(v3(), vsub(v3(), sys.star.pos, this.origin));
     // props first: they only need a couple of worker jobs and must not starve behind terrain chunks
-    this.props.update(np && this.nearAlt < 2500 ? np : null, this.origin, this.harvestedSet(), this.harvestVersion, this.time, { props: true, small: this.r.q.smallProps });
+    const propsPlanet = np && this.nearAlt < 2500 ? np : null;
+    const camB = propsPlanet ? toBodyPoint(propsPlanet, this.rots[propsPlanet.index], this.origin, v3()) : this.origin;
+    this.props.update(propsPlanet, camB, this.harvestedSet(), this.harvestVersion, this.time, { props: true, small: this.r.q.smallProps });
     this.planets.forEach((pv, i) => {
       const p = pv.def;
+      const R = this.rots[i];
+      this.rotsT.set(R.x, R.y, R.z, R.w);
       this.place(pv.group, p.center);
-      pv.update(tv.set(this.origin.x - p.center.x, this.origin.y - p.center.y, this.origin.z - p.center.z), this.time);
+      pv.group.quaternion.copy(this.rotsT);
+      const cb = toBodyPoint(p, R, this.origin, v3());
+      pv.update(tv.set(cb.x, cb.y, cb.z), this.time);
       const a = this.atmos[i];
+      const sd = vnorm(v3(), vsub(v3(), sys.star.pos, p.center));
       if (a) {
         this.place(a.group, p.center);
-        const sd = vnorm(v3(), vsub(v3(), sys.star.pos, p.center));
         a.uniforms.sun.value.set(sd.x, sd.y, sd.z);
         const alt = vdist(this.origin, p.center) - p.radius;
         a.uniforms.k.value = THREE.MathUtils.smoothstep(alt, p.radius * 0.08, p.radius * 0.4);
       }
       const cl = this.clouds[i];
       this.place(cl.group, p.center);
-      cl.update(dt, 1);
+      cl.update(dt, 1, this.rotsT, sd);
     });
     this.place(this.station!.group, sys.station.pos);
     this.station!.update(dt);
     this.gates.forEach((g) => { this.place(g.group, g.def.pos); g.update(dt); });
     this.fields.forEach((f) => this.place(f.group, f.def.center));
-    this.props.sync(this.origin);
+    if (propsPlanet) this.props.sync(this.origin, this.rots[propsPlanet.index]);
 
     // own ship / astronaut
     const ms = this.myShip!;
@@ -637,18 +687,20 @@ export class Game {
     ms.cruise = isCruising(ship);
     ms.landed = !!ship.landed || mode === MODE.FOOT;
     ms.update(dt, this.time);
-    if (this.myAstro && onFoot) {
-      const up = charUp(this.pred.char!, sys.planets[this.pred.charPlanet], v3());
+    if (this.myAstro && onFoot && charPl) {
+      const up = vnorm(v3(), vsub(v3(), this.charPos, charPl.center));
       this.place(this.myAstro.group, this.charPos);
       const q = qlook(quat(), this.charFwd, up);
       this.myAstro.group.quaternion.set(q.x, q.y, q.z, q.w);
+      // animation inputs in the body frame (independent of the planet's spin)
       const c = this.pred.char!;
-      const vUp = c.v.x * up.x + c.v.y * up.y + c.v.z * up.z;
-      const hs = Math.hypot(c.v.x - up.x * vUp, c.v.y - up.y * vUp, c.v.z - up.z * vUp);
-      const cr = vcross(v3(), this.prevFwd, this.charFwd);
-      const turn = dt > 0 ? -Math.asin(Math.max(-1, Math.min(1, cr.x * up.x + cr.y * up.y + cr.z * up.z))) / dt : 0;
-      this.prevFwd = { ...this.charFwd };
-      if (this.harvestPos) this.myAstro.setHarvestTarget(new THREE.Vector3(this.harvestPos.x - this.origin.x, this.harvestPos.y - this.origin.y, this.harvestPos.z - this.origin.z));
+      const upB = vnorm(v3(), this.charPosB);
+      const vUp = c.v.x * upB.x + c.v.y * upB.y + c.v.z * upB.z;
+      const hs = Math.hypot(c.v.x - upB.x * vUp, c.v.y - upB.y * vUp, c.v.z - upB.z * vUp);
+      const cr = vcross(v3(), this.prevFwd, this.charFwdB);
+      const turn = dt > 0 ? -Math.asin(Math.max(-1, Math.min(1, cr.x * upB.x + cr.y * upB.y + cr.z * upB.z))) / dt : 0;
+      this.prevFwd = { ...this.charFwdB };
+      if (this.harvestPos) this.myAstro.setHarvestTarget(this.rel(this.toWorld(charPl.index + 1, this.harvestPos, v3())));
       this.myAstro.update(dt, { speed: hs, vUp, ground: !!c.ground, jet: !c.ground && this.input.down('Space') && c.fuel > 0.01, look: this.ctrl.footPitch, turn });
     }
     if (mode === MODE.SHIP) this.sfx.engineLevel(this.ctrl.throttle, this.input.down('ShiftLeft'), isCruising(ship));
@@ -658,9 +710,23 @@ export class Game {
     const rt = this.timeline.renderTime;
     for (const r of this.remotes.values()) {
       this.ensureView(r);
-      const st = r.buf.sample(rt, r.p, r.q);
+      const st = r.buf.sample(rt, r.bp, r.bq);
       r.state = st;
       r.visible = !!st && r.buf.lastSeen > this.timeline.serverNow - 1.2;
+      if (st) {
+        const pl = st.frame ? sys.planets[st.frame - 1] : null;
+        const bv = v3(st.vx, st.vy, st.vz);
+        if (pl) {
+          const R = this.rots[pl.index];
+          toWorldPoint(pl, R, r.bp, r.p);
+          toWorldQuat(R, r.bq, r.q);
+          toWorldVel(pl, R, r.bp, bv, r.v);
+        } else {
+          Object.assign(r.p, r.bp);
+          Object.assign(r.q, r.bq);
+          Object.assign(r.v, bv);
+        }
+      }
       if (!r.view) continue;
       r.view.group.visible = r.visible;
       if (!r.visible || !st) continue;
@@ -673,12 +739,11 @@ export class Game {
         r.view.landed = !!(st.flags & EFLAG.LANDED);
         r.view.update(dt, this.time);
       } else if (r.view instanceof AstronautView) {
-        const pl = this.planetNear(r.p);
-        const up = vnorm(v3(), vsub(v3(), r.p, pl.center));
+        const up = vnorm(v3(), r.bp);
         const vUp = st.vx * up.x + st.vy * up.y + st.vz * up.z;
         const hs = Math.hypot(st.vx - up.x * vUp, st.vy - up.y * vUp, st.vz - up.z * vUp);
         const ground = !(st.flags & EFLAG.BOOST);
-        if (r.harvestPos) r.view.setHarvestTarget(new THREE.Vector3(r.harvestPos.x - this.origin.x, r.harvestPos.y - this.origin.y, r.harvestPos.z - this.origin.z));
+        if (r.harvestPos) r.view.setHarvestTarget(this.rel(this.toWorld(st.frame, r.harvestPos, v3())));
         r.view.update(dt, { speed: hs, vUp, ground, jet: !ground && vUp > 2.5, look: 0, turn: 0 });
       } else {
         r.smokeT -= dt;
@@ -780,6 +845,20 @@ export class Game {
     return { x: (tv.x * 0.5 + 0.5) * window.innerWidth, y: (-tv.y * 0.5 + 0.5) * window.innerHeight, behind: vz > 0 };
   }
 
+  /** Local solar time (hours) under the player when close to a planet. */
+  private localClock(): { planet: string; hours: number } | null {
+    const np = this.nearPlanet;
+    if (!np || this.nearAlt > np.radius * 0.8) return null;
+    const a = np.spinAxis;
+    const flat = (v: V3) => { const k = v.x * a.x + v.y * a.y + v.z * a.z; return v3(v.x - a.x * k, v.y - a.y * k, v.z - a.z * k); };
+    const s = flat(vsub(v3(), this.sys!.star.pos, np.center));
+    const u = flat(vsub(v3(), this.origin, np.center));
+    const c = vcross(v3(), s, u);
+    // hour angle: 0 at local noon, growing as the ground turns away from the sun
+    const h = Math.atan2(c.x * a.x + c.y * a.y + c.z * a.z, s.x * u.x + s.y * u.y + s.z * u.z);
+    return { planet: np.name, hours: (((12 + (h / (Math.PI * 2)) * 24) % 24) + 24) % 24 };
+  }
+
   private fmtDist(d: number) {
     return d >= 1000 ? `${(d / 1000).toFixed(d >= 10000 ? 0 : 1)} км` : `${Math.round(d)} м`;
   }
@@ -797,11 +876,11 @@ export class Game {
       const R = 0.28 * Math.min(W, H);
       this.hud.cursorAt(W / 2 + this.input.vx * R, H / 2 + this.input.vy * R);
       let modeText = '';
-      const inh = this.env ? cruiseInhibited(ship.p, this.env) : false;
+      const inh = this.env ? cruiseInhibited(ship, this.env) : false;
       if (ship.landed) modeText = 'ПОСАДКА';
       else if (isCruising(ship)) modeText = 'КРУИЗ';
       else if (this.ctrl.cruiseOn) modeText = ship.cruiseBlock > 0 ? 'КРУИЗ: помехи' : inh ? 'КРУИЗ: масса рядом' : `КРУИЗ: ${(CRUISE_SPOOL - ship.cruise).toFixed(1)} с`;
-      else if (vdist(ship.p, sys.station.pos) < SAFE_ZONE_RADIUS) modeText = 'ЗОНА СТАНЦИИ';
+      else if (vdist(this.shipW.p, sys.station.pos) < SAFE_ZONE_RADIUS) modeText = 'ЗОНА СТАНЦИИ';
       this.hud.flight({ speed, throttle: this.ctrl.throttle, boost: ship.boost, energy: this.energy / 100, shield: self.shield / self.maxShield, hull: self.hull / self.maxHull, mode: modeText });
     }
 
@@ -813,8 +892,8 @@ export class Game {
       if (!sp.behind) {
         const r = t.view instanceof ShipView ? t.view.built.radius : 6;
         const size = (r / Math.max(1, d)) * (H / (2 * Math.tan((this.r.camera.fov * Math.PI) / 360))) * 2.4;
-        this.hud.target({ x: sp.x, y: sp.y, size, name: t.info?.name ?? '?', info: `${this.fmtDist(vdist(t.p, ship.p))} · ${Math.round(Math.hypot(t.state.vx, t.state.vy, t.state.vz))} м/с`, shield: t.state.shield, hull: t.state.hull, lock: this.locked ? 2 : this.lockT > 0 ? 1 : 0 });
-        const lp = leadPoint(ship.p, ship.v, t.p, v3(t.state.vx, t.state.vy, t.state.vz), LASER.speed, v3());
+        this.hud.target({ x: sp.x, y: sp.y, size, name: t.info?.name ?? '?', info: `${this.fmtDist(vdist(t.p, this.shipW.p))} · ${Math.round(Math.hypot(t.state.vx, t.state.vy, t.state.vz))} м/с`, shield: t.state.shield, hull: t.state.hull, lock: this.locked ? 2 : this.lockT > 0 ? 1 : 0 });
+        const lp = leadPoint(this.shipW.p, this.shipW.v, t.p, t.v, LASER.speed, v3());
         const lps = this.project(lp);
         this.hud.leadAt(lps.behind ? null : lps);
       } else { this.hud.target(null); this.hud.leadAt(null); }
@@ -855,21 +934,28 @@ export class Game {
     const sc = rel(sys.station.pos);
     blips.push({ x: sc.x, y: sc.y, z: sc.z, kind: 'station' });
     for (const g of sys.gates) { const gc = rel(g.pos); blips.push({ x: gc.x, y: gc.y, z: gc.z, kind: 'gate' }); }
-    if (mode === MODE.FOOT) for (const n of this.props.visibleNodes) { const nc = rel(n.pos); blips.push({ x: nc.x * 20, y: 0, z: nc.z * 20, kind: 'node' }); }
+    if (mode === MODE.FOOT) {
+      for (const n of this.props.visibleNodes) {
+        const nc = rel(this.toWorld(this.pred.charPlanet + 1, n.pos, v3()));
+        blips.push({ x: nc.x * 20, y: 0, z: nc.z * 20, kind: 'node' });
+      }
+    }
     this.hud.setLabels(labels);
     this.radar.draw(blips);
+
+    this.hud.clock(this.localClock());
 
     // context prompt
     let prompt: string | null = null;
     if (mode === MODE.SHIP) {
       if (ship.landed) prompt = '<kbd>G</kbd> выйти из корабля · <kbd>W</kbd> взлёт';
-      else if (vdist(ship.p, sys.station.pos) < DOCK_RANGE) prompt = '<kbd>F</kbd> стыковка со станцией';
-      else if (sys.gates.some((g) => vdist(g.pos, ship.p) < GATE_RANGE)) prompt = '<kbd>F</kbd> прыжок через врата';
+      else if (vdist(this.shipW.p, sys.station.pos) < DOCK_RANGE) prompt = '<kbd>F</kbd> стыковка со станцией';
+      else if (sys.gates.some((g) => vdist(g.pos, this.shipW.p) < GATE_RANGE)) prompt = '<kbd>F</kbd> прыжок через врата';
       else if (this.nearPlanet && this.nearAlt < 250 && speed < 80 && Math.abs(this.ctrl.throttle) >= 0.05) prompt = '<kbd>X</kbd> сброс тяги — корабль сам опустится и сядет';
     } else if (mode === MODE.FOOT) {
       const n = this.nearestNode();
       if (n) prompt = `<kbd>F</kbd> собрать: ${RESOURCE_NAMES[n.type]}`;
-      else if (vdist(this.charPos, ship.p) < EXIT_RANGE + 6) prompt = '<kbd>G</kbd> сесть в корабль';
+      else if (ship.frame === this.pred.charPlanet + 1 && vdist(this.charPosB, ship.p) < EXIT_RANGE + 6) prompt = '<kbd>G</kbd> сесть в корабль';
     }
     this.hud.prompt(prompt);
   }
