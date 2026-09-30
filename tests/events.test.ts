@@ -3,8 +3,11 @@ import { PilotStore } from '../src/server/db.ts';
 import { Game } from '../src/server/game/game.ts';
 import type { Transport } from '../src/server/game/session.ts';
 import {
-  ANOMALY_SCAN_TIME, cargoCount, decodeJson, encodeJson, FWD, MSG, PROTOCOL_VERSION, qrot, TICK_RATE, v3, vdist, type GameEvent, type Poi,
+  ANOMALY_SCAN_TIME, BASE_BOUNTY, cargoCount, decodeJson, encodeJson, FWD, MSG, nodesNear, PROTOCOL_VERSION, qrot, resourceNode, TICK_RATE, v3, vdist,
+  type GameEvent, type Poi, getSystem,
 } from '../src/shared/index.ts';
+import { collidersNear } from '../src/shared/planet/prop-rules.ts';
+import { inSite, planetSites, SITE_NODE_BASE } from '../src/shared/planet/sites.ts';
 
 /** In-process pilot: a fake transport that records what the server sends. */
 function pilot(game: Game, name: string) {
@@ -21,6 +24,7 @@ function pilot(game: Game, name: string) {
   return { s, sent, events, world };
 }
 
+const getSys = () => getSystem(0);
 const run = (game: Game, seconds: number) => { for (let i = 0; i < seconds * TICK_RATE; i++) game.step(); };
 
 describe('world events', () => {
@@ -109,5 +113,53 @@ describe('world events', () => {
     expect(cargoCount(me.s.pilot.cargo) + me.s.pilot.credits).toBeGreaterThan(bounty);
     expect(me.events().some((e) => e.t === 'loot')).toBe(true);
     expect(sys.world.pois.get(poi.id)!.ship).toBe(0);
+  });
+
+  it('outpost towers shoot nearby ships and pay a bounty when silenced', () => {
+    const pl = sys.def.planets.find((p) => planetSites(p).some((x) => x.kind === 'base'))!;
+    const base = planetSites(pl).find((x) => x.kind === 'base')!;
+    const towers = sys.outposts.towersOf(base);
+    expect(towers.length).toBe(3);
+    // hover 350 m above the base in the planet's frame
+    const st = me.s.ship.state;
+    const r = pl.radius + base.h + 350;
+    st.frame = pl.index + 1; st.landed = 0; st.v = v3();
+    st.p = v3(base.dir.x * r, base.dir.y * r, base.dir.z * r);
+    me.s.ship.hull = me.s.ship.combat.maxHull; me.s.ship.shield = me.s.ship.combat.maxShield;
+    sys.syncWorld(me.s.ship);
+    const hp = me.s.ship.hull + me.s.ship.shield;
+    run(game, 4);
+    expect(me.s.ship.hull + me.s.ship.shield).toBeLessThan(hp);
+    const credits = me.s.pilot.credits;
+    for (const t of towers) sys.damage(t, 1e6, me.s.ship.id);
+    expect(sys.outposts.silenced(base)).toBe(true);
+    expect(me.s.pilot.credits).toBeGreaterThanOrEqual(credits + BASE_BOUNTY + 300);
+    game.step();
+    expect(me.events().some((e) => e.t === 'announce' && /база/i.test(e.text))).toBe(true);
+  });
+});
+
+describe('surface sites', () => {
+  const pl = getSys().planets[1];
+  const sites = planetSites(pl);
+
+  it('are deterministic, on dry flat land and far apart', () => {
+    expect(sites.length).toBeGreaterThanOrEqual(4);
+    expect(JSON.stringify(planetSites({ ...pl }))).toBe(JSON.stringify(sites));
+    for (const s of sites) {
+      expect(s.h).toBeGreaterThan(3);
+      for (const o of sites) if (o !== s) expect(vdist(s.dir, o.dir) * pl.radius).toBeGreaterThan(2500);
+    }
+    expect(sites.some((s) => s.kind === 'ruin')).toBe(true);
+  });
+
+  it('keep trees out, expose caches as harvestable nodes and make pillars solid', () => {
+    const ruin = sites.find((s) => s.kind === 'ruin')!;
+    expect(inSite(pl, ruin.dir)).toBe(true);
+    const nodes = nodesNear(pl, ruin.dir, 200).filter((n) => n.id >= SITE_NODE_BASE);
+    expect(nodes.length).toBe(ruin.caches.length);
+    for (const n of nodes) expect(resourceNode(pl, n.id)).toEqual(n);
+    const cols = collidersNear(pl, ruin.pillars[0].dir);
+    expect(cols.some((c) => Math.abs(c.r - ruin.pillars[0].r) < 1e-9)).toBe(true);
   });
 });

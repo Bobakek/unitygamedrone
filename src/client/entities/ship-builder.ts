@@ -154,6 +154,18 @@ function freighter(bp: Blueprint, parts: Parts) {
   }
 }
 
+/** Armoured gun ball with twin barrels (sits on an outpost tower). */
+function turret(bp: Blueprint, parts: Parts) {
+  add(parts, new THREE.IcosahedronGeometry(2.2, 1), bp.hull, false);
+  add(parts, new THREE.CylinderGeometry(2.35, 2.35, 0.7, 10), bp.accent, false, [0, 0, 0], [0.25, 0, 0]);
+  add(parts, new THREE.SphereGeometry(0.55, 6, 4), bp.glass, 'glass', [0, 0.55, 1.9]);
+  for (const s of [-1, 1]) {
+    add(parts, cyl(0.24, 0.3, 3.4, 6), bp.engine, 'metal', [s * 0.7, 0.1, 3.2]);
+    add(parts, cyl(0.34, 0.34, 0.5, 6), bp.hull2, 'metal', [s * 0.7, 0.1, 4.8]);
+    add(parts, cyl(0.16, 0.16, 0.05, 6), bp.glow, true, [s * 0.7, 0.1, 5.08]);
+  }
+}
+
 const cache = new Map<string, BuiltShip>();
 
 export function buildShip(bp: Blueprint): BuiltShip {
@@ -163,6 +175,7 @@ export function buildShip(bp: Blueprint): BuiltShip {
   const parts: Parts = newParts();
   if (bp.cls === 'pirate') pirate(bp, parts);
   else if (bp.cls === 'freighter') freighter(bp, parts);
+  else if (bp.cls === 'turret') turret(bp, parts);
   else fighter(bp, parts);
   const [hull, metal, glass, glow] = [parts.hull, parts.metal, parts.glass, parts.glow].map((l) => {
     const g = mergeGeometries(l)!;

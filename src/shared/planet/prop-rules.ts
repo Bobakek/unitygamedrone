@@ -2,6 +2,7 @@ import type { PlanetDef, PlanetType } from '../galaxy/system-gen.ts';
 import type { V3 } from '../math/vec.ts';
 import { scatter, type Scattered } from './resources.ts';
 import { heightAt } from './terrain.ts';
+import { inSite, sitesNear } from './sites.ts';
 
 /**
  * Placement rules for decorative props. Kind order must match the geometry
@@ -84,6 +85,7 @@ function placeOne(p: PlanetDef, rule: TierRule, total: number, pt: Scattered): P
   const k = rule.kinds[ki];
   const hf = pt.h / p.maxHeight;
   if (hf < k.hMin || hf > k.hMax) return null;
+  if (inSite(p, pt.dir)) return null;
   if (k.slopeMax < 1 && slopeAt(p, pt.dir, pt.h) > k.slopeMax) return null;
   const scale = k.scale[0] + (k.scale[1] - k.scale[0]) * pt.r[2];
   return { kind: ki, scale, r: p.radius + pt.h - k.sink * scale };
@@ -138,6 +140,13 @@ export function collidersNear(p: PlanetDef, d: V3, radiusM = 4): Collider[] {
     const solid = rule.kinds[pl.kind].solid * pl.scale;
     if (solid <= 0) continue;
     out.push({ x: pt.dir.x * pl.r, y: pt.dir.y * pl.r, z: pt.dir.z * pl.r, r: solid });
+  }
+  // pillars, obelisks and turret towers of surface sites
+  for (const s of sitesNear(p, d, radiusM + cell * 2)) {
+    for (const c of s.pillars) {
+      const r = p.radius + c.h - 1;
+      out.push({ x: c.dir.x * r, y: c.dir.y * r, z: c.dir.z * r, r: c.r });
+    }
   }
   if (colliderCache.size > 4096) colliderCache.clear();
   colliderCache.set(key, out);

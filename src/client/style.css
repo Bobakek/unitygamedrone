@@ -141,3 +141,7 @@ button:disabled { opacity: 0.4; cursor: default; }
 .help-hint { color: var(--dim) !important; margin-top: 14px !important; }
 .dead-card { text-align: center; }
 .loading-text { font-size: 18px; color: var(--dim); }
+
+.label.site .lb-bar { display: none; }
+.label.site .lb-t { color: #ffe066; }
+.label.site.npc .lb-t { color: #ff9aa6; }

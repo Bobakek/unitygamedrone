@@ -6,8 +6,8 @@ import type { Rng } from '../../shared/math/rng.ts';
 import type { ShipEntity } from './entities.ts';
 
 type NpcState = 'patrol' | 'attack' | 'flee';
-/** raider: roams its home field; escort: guards a convoy ship; hauler: follows a route, never fights. */
-export type NpcRole = 'raider' | 'escort' | 'hauler';
+/** raider: roams its home field; escort: guards a convoy ship; hauler: follows a route, never fights; turret: static (see outposts.ts). */
+export type NpcRole = 'raider' | 'escort' | 'hauler' | 'turret';
 
 export class NpcBrain {
   state: NpcState = 'patrol';

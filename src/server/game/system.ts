@@ -13,6 +13,7 @@ import {
   EFLAG, KIND, MODE, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
 } from '../../shared/net/protocol.ts';
 import { nodesNear, resourceNode } from '../../shared/planet/resources.ts';
+import { planetSites, SITE_NODE_BASE, siteDir, sitesNear } from '../../shared/planet/sites.ts';
 import { footHeight, surfaceHeight } from '../../shared/planet/terrain.ts';
 import { charQuat, newChar, stepChar } from '../../shared/sim/character.ts';
 import type { SimEnv } from '../../shared/sim/env.ts';
@@ -24,6 +25,7 @@ import type { PilotRecord } from '../storage.ts';
 import type { CharEntity, Laser, Missile, ShipEntity } from './entities.ts';
 import { NpcBrain, npcThink, type NpcWorld } from './npc.ts';
 import { WorldEvents } from './world-events.ts';
+import { Outposts } from './outposts.ts';
 import type { Session } from './session.ts';
 
 export interface GameContext {
@@ -53,6 +55,7 @@ export class SystemInstance implements NpcWorld {
   private npcRespawn: number[] = [];
   private rng: Rng;
   readonly world: WorldEvents;
+  readonly outposts: Outposts;
 
   constructor(private ctx: GameContext, id: number) {
     this.def = getSystem(id);
@@ -60,6 +63,7 @@ export class SystemInstance implements NpcWorld {
     this.rng = new Rng(hashInts(this.def.seed, 0xabc));
     for (let i = 0; i < this.def.pirates; i++) this.spawnPirate();
     this.world = new WorldEvents(this);
+    this.outposts = new Outposts(this);
   }
 
   nextId() { return this.ctx.nextId(); }
@@ -187,7 +191,7 @@ export class SystemInstance implements NpcWorld {
 
   // ------------------------------------------------------------------ combat
   tryFire(ship: ShipEntity) {
-    if (ship.fireCooldown > 0 || ship.energy < LASER.cost || ship.state.landed || isCruising(ship.state)) return;
+    if (ship.fireCooldown > 0 || ship.energy < LASER.cost || (ship.state.landed && ship.bp.cls !== 'turret') || isCruising(ship.state)) return;
     const w = ship.world;
     if (this.inSafeZone(w.p)) return;
     ship.fireCooldown = LASER.cooldown;
@@ -266,6 +270,7 @@ export class SystemInstance implements NpcWorld {
       this.gone.push(target.id);
       if (!target.transient) this.npcRespawn.push(this.time + 40);
       this.world.onKill(target);
+      this.outposts.onKill(target, killer);
     }
     if (killer?.session && killer !== target) {
       const bounty = target.bounty ?? (target.npc ? BOUNTY.npc : BOUNTY.player);
@@ -310,7 +315,7 @@ export class SystemInstance implements NpcWorld {
 
     this.env.time = t;
     for (const ship of this.ships.values()) {
-      if (!ship.npc || ship.dead) continue;
+      if (!ship.npc || ship.dead || ship.npc.role === 'turret') continue;
       const { input, fire } = npcThink(ship, ship.npc, this, DT);
       stepShip(ship.state, input, ship.flight, this.env, DT, stepOut);
       this.syncWorld(ship);
@@ -323,6 +328,7 @@ export class SystemInstance implements NpcWorld {
     this.stepLasers();
     this.stepMissiles();
     this.world.step(DT);
+    this.outposts.step(DT);
 
     for (const ship of this.ships.values()) {
       if (ship.dead) {
@@ -435,7 +441,10 @@ export class SystemInstance implements NpcWorld {
     const entities: EntityState[] = [];
     for (const sh of this.ships.values()) {
       if (sh === s.ship || sh.dead || sh.docked) continue;
-      if (!radarTick && vdistSq(sh.world.p, focus) > r2) continue;
+      const d2 = vdistSq(sh.world.p, focus);
+      if (!radarTick && d2 > r2) continue;
+      // static towers only matter up close
+      if (sh.bp.cls === 'turret' && d2 > 8000 * 8000) continue;
       let flags = 0;
       if (sh.state.landed) flags |= EFLAG.LANDED;
       if (isCruising(sh.state)) flags |= EFLAG.CRUISE;
@@ -676,15 +685,22 @@ export class SystemInstance implements NpcWorld {
         aim = vnorm(v3(), v3(eve.x + toSun.x * 0.1, eve.y + toSun.y * 0.1, eve.z + toSun.z * 0.1));
       }
       let d = aim;
-      if (land) {
-        // pick the resource node on dry land closest to the aim point
-        const nodes = nodesNear(pl, aim, pl.radius * 0.6).filter((n) => n.h > 2 && n.h < pl.maxHeight * 0.4);
+      const site = /^(ruin|base)/.test(target) ? planetSites(pl).find((x) => target.startsWith(x.kind)) : undefined;
+      if (/^(ruin|base)/.test(target) && !site) return 'На планете нет такого объекта';
+      if (site) {
+        // land just outside the site, facing its centre
+        d = siteDir(pl, site, 0, -(site.radius + 30));
+      } else if (land) {
+        // pick the resource node on dry land closest to the aim point, away from pirate outposts
+        const nodes = nodesNear(pl, aim, pl.radius * 0.6).filter((n) => n.h > 2 && n.h < pl.maxHeight * 0.4 && n.id < SITE_NODE_BASE
+          && !sitesNear(pl, n.dir, 2000).some((x) => x.kind === 'base'));
         nodes.sort((x, y) => vdot(y.dir, aim) - vdot(x.dir, aim));
         if (nodes.length) d = nodes[0].dir;
       }
-      const tangent = vnorm(v3(), qrot(v3(), qlook(quat(), d, v3(0, 1, 0)), v3(0, 1, 0)));
+      let tangent = vnorm(v3(), qrot(v3(), qlook(quat(), d, v3(0, 1, 0)), v3(0, 1, 0)));
+      if (site) tangent = vscale(v3(), site.north, -1);
       const frame = pl.index + 1;
-      if (land) {
+      if (land || site) {
         const off = vnorm(v3(), v3(d.x + tangent.x * (14 / pl.radius), d.y + tangent.y * (14 / pl.radius), d.z + tangent.z * (14 / pl.radius)));
         const g = pl.radius + surfaceHeight(pl, off.x, off.y, off.z) + SHIP_LAND_HEIGHT;
         ship.state = newShip(vscale(v3(), off, g), qlook(quat(), vscale(v3(), tangent, -1), off));

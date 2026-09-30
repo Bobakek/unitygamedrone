@@ -36,6 +36,8 @@ import { Effects } from './world/effects.ts';
 import { SpaceBackdrop, Sun } from './world/space.ts';
 import { FieldView, GateView, StationView } from './world/structures.ts';
 import { AnomalyView, LootView, WreckView, type PoiView } from './world/poi-views.ts';
+import { SiteView } from './planet/sites-view.ts';
+import { planetSites } from '../shared/planet/sites.ts';
 import { POI_LABEL, SALVAGE_MAX_SPEED, SALVAGE_RANGE, type Poi } from '../shared/events.ts';
 
 interface Remote {
@@ -117,6 +119,8 @@ export class Game {
   private pois: Poi[] = [];
   private poiViews = new Map<number, PoiView>();
   private scan: { id: number; k: number } | null = null;
+  /** Surface site buildings per planet (built when the player first comes close). */
+  private siteViews: (SiteView[] | null)[] = [];
   private fireCd = 0;
   private energy = 100;
   private gun = 0;
@@ -277,6 +281,7 @@ export class Game {
     this.sunLight.color.copy(this.sun.color);
     this.world.add(this.sun.group);
     this.planets = sys.planets.map((p) => new PlanetView(p, this.pool, this.r.q.splitK));
+    this.siteViews = sys.planets.map(() => null);
     this.atmos = sys.planets.map((p) => (p.atmo ? new AtmosphereView(p.radius, p.atmo) : null));
     this.planets.forEach((p) => this.world.add(p.group));
     this.atmos.forEach((a) => a && this.world.add(a.group));
@@ -732,6 +737,10 @@ export class Game {
       const cl = this.clouds[i];
       this.place(cl.group, p.center);
       cl.update(dt, 1, this.rotsT, sd);
+      // ruins and outposts ride the planet group; built lazily on approach
+      const near = vdist(this.origin, p.center) < p.radius * 3;
+      if (near && !this.siteViews[i]) this.siteViews[i] = planetSites(p).map((s) => { const v = new SiteView(p, s); pv.group.add(v.group); return v; });
+      if (near) for (const v of this.siteViews[i]!) v.update(this.time);
     });
     this.place(this.station!.group, sys.station.pos);
     this.station!.update(dt);
@@ -1015,6 +1024,17 @@ export class Game {
         const nc = rel(this.toWorld(this.pred.charPlanet + 1, n.pos, v3()));
         blips.push({ x: nc.x * 20, y: 0, z: nc.z * 20, kind: 'node' });
       }
+    }
+    const np = this.nearPlanet;
+    if (np && mode !== MODE.DOCKED && this.nearAlt < np.radius) {
+      planetSites(np).forEach((s, k) => {
+        const w = this.toWorld(np.index + 1, v3(s.dir.x * (np.radius + s.h + 12), s.dir.y * (np.radius + s.h + 12), s.dir.z * (np.radius + s.h + 12)), v3());
+        const d = vdist(w, me);
+        if (d > 6000 || d < 25) return;
+        const sp = this.project(w);
+        if (sp.behind) return;
+        labels.push({ id: -1000 - np.index * 32 - k, x: sp.x, y: sp.y, text: s.name, sub: this.fmtDist(d), npc: s.kind === 'base', hull: 1, site: true });
+      });
     }
     this.hud.setLabels(labels);
     this.radar.draw(blips);

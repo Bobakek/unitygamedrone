@@ -3,7 +3,7 @@ import type { Action, PilotInfo } from '../../shared/net/protocol.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
 
-export interface LabelData { id: number; x: number; y: number; text: string; sub: string; npc: boolean; hull: number }
+export interface LabelData { id: number; x: number; y: number; text: string; sub: string; npc: boolean; hull: number; site?: boolean }
 export interface TargetBox { x: number; y: number; size: number; name: string; info: string; shield: number; hull: number; lock: 0 | 1 | 2 }
 export interface FlightData { speed: number; throttle: number; boost: number; energy: number; shield: number; hull: number; mode: string }
 
@@ -167,6 +167,7 @@ export class Hud {
         this.labels.set(l.id, el);
       }
       el.classList.toggle('npc', l.npc);
+      el.classList.toggle('site', !!l.site);
       el.style.left = `${l.x}px`;
       el.style.top = `${l.y}px`;
       (el.querySelector('.lb-t') as HTMLElement).textContent = l.text;

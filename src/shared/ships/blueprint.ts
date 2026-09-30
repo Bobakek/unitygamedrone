@@ -1,7 +1,7 @@
 import { hueToHex } from '../color.ts';
 import { hashString, Rng } from '../math/rng.ts';
 
-export type ShipClass = 'fighter' | 'pirate' | 'freighter';
+export type ShipClass = 'fighter' | 'pirate' | 'freighter' | 'turret';
 
 export interface Blueprint {
   cls: ShipClass;
@@ -41,5 +41,15 @@ export function freighterBlueprint(seed: number): Blueprint {
     hull: rng.pick(['#8a7a62', '#6f6a60', '#7c6450']),
     hull2: '#3c3a40', accent: rng.pick(['#e8a23a', '#d0482e', '#c8c030']),
     glass: '#ffd27a', engine: '#2f2c30', glow: '#ffae4a',
+  };
+}
+
+/** Flak turret ball on pirate outposts. */
+export function turretBlueprint(seed: number): Blueprint {
+  const rng = new Rng(seed);
+  return {
+    cls: 'turret', seed,
+    hull: rng.pick(['#5a4a5e', '#4e4650']), hull2: '#2a2430', accent: '#e8485a',
+    glass: '#ff6a4a', engine: '#2d2733', glow: '#ff5a3a',
   };
 }

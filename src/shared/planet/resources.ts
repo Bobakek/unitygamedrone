@@ -3,6 +3,7 @@ import { hashFloat, hashInts } from '../math/rng.ts';
 import { v3, type V3 } from '../math/vec.ts';
 import { gnomonic, invGnomonic } from './cubesphere.ts';
 import { heightAt } from './terrain.ts';
+import { inSite, SITE_CACHES, SITE_NODE_BASE, siteCache, sitesNear } from './sites.ts';
 
 export type ResourceType = 'ore' | 'crystal' | 'relic';
 export const RESOURCE_TYPES: readonly ResourceType[] = ['ore', 'crystal', 'relic'];
@@ -13,6 +14,10 @@ export interface ResourceNode { id: number; type: ResourceType; dir: V3; h: numb
 export const RES_GRID = 40;
 
 export function resourceNode(p: PlanetDef, id: number): ResourceNode | null {
+  if (id >= SITE_NODE_BASE) {
+    const sc = siteCache(p, id);
+    return sc ? { id, type: sc.cache.type, dir: sc.cache.dir, h: sc.cache.h } : null;
+  }
   const per = RES_GRID * RES_GRID;
   if (id < 0 || id >= per * 6 || !Number.isInteger(id)) return null;
   const face = Math.floor(id / per);
@@ -26,6 +31,7 @@ export function resourceNode(p: PlanetDef, id: number): ResourceNode | null {
   const dir = gnomonic(face, u, v, v3());
   const h = heightAt(p, dir.x, dir.y, dir.z);
   if (p.sea && h < 1) return null;
+  if (inSite(p, dir, 4)) return null;
   const r = hashFloat(h0, 3);
   const type: ResourceType = r < 0.08 ? 'relic' : r < 0.36 ? 'crystal' : 'ore';
   return { id, type, dir, h };
@@ -60,6 +66,12 @@ export function nodesNear(p: PlanetDef, d: V3, radiusM: number): ResourceNode[] 
     const n = resourceNode(p, id);
     if (n && n.dir.x * d.x + n.dir.y * d.y + n.dir.z * d.z >= cosMax) out.push(n);
   });
+  // caches inside ruins and pirate outposts
+  for (const s of sitesNear(p, d, radiusM)) {
+    s.caches.forEach((c, k) => {
+      if (c.dir.x * d.x + c.dir.y * d.y + c.dir.z * d.z >= cosMax) out.push({ id: SITE_NODE_BASE + s.id * SITE_CACHES + k, type: c.type, dir: c.dir, h: c.h });
+    });
+  }
   return out;
 }
 

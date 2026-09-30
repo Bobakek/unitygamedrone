@@ -53,6 +53,29 @@ try {
     await sleep(1500);
     console.log('done', name);
   }
+  // surface sites: ruins and a pirate outpost
+  if (!only || only === 'sites') {
+    if ((await page.evaluate(() => window.__game.sys.id)) !== 0) {
+      await chat('/system 0');
+      await page.waitForFunction(() => window.__game.sys.id === 0 && window.__game.pred.ready, null, { timeout: 30000, polling: 250 });
+    }
+    await chat('/god');
+    for (const [where, name] of [['ruin1', 'ruin-alien'], ['base1', 'base-alien'], ['ruin3', 'ruin-ice']]) {
+      await chat(`/tp ${where}`);
+      await sleep(9000);
+      await page.screenshot({ path: `${OUT}/site-${name}.png` });
+      console.log('done site', name);
+    }
+    await page.keyboard.press('KeyG');
+    await mode(1);
+    await page.keyboard.down('KeyW');
+    await sleep(2500);
+    await page.keyboard.up('KeyW');
+    await page.screenshot({ path: `${OUT}/site-ruin-ice-foot.png` });
+    await page.keyboard.press('KeyG');
+    await sleep(1000);
+    await chat('/god');
+  }
   // world events spawned right in front of the ship
   if (!only || only === 'events') {
     await chat('/god');
