@@ -3,7 +3,7 @@ import { PilotStore } from '../src/server/db.ts';
 import { Game } from '../src/server/game/game.ts';
 import type { Transport } from '../src/server/game/session.ts';
 import {
-  ANOMALY_SCAN_TIME, BASE_BOUNTY, cargoCount, decodeJson, encodeJson, FWD, MSG, nodesNear, PROTOCOL_VERSION, qrot, resourceNode, TICK_RATE, v3, vdist,
+  ANOMALY_SCAN_TIME, BASE_BOUNTY, PILOT_HP, vnorm, vsub, cargoCount, decodeJson, encodeJson, FWD, MSG, nodesNear, PROTOCOL_VERSION, qrot, resourceNode, TICK_RATE, v3, vdist,
   type GameEvent, type Poi, getSystem,
 } from '../src/shared/index.ts';
 import { collidersNear } from '../src/shared/planet/prop-rules.ts';
@@ -80,7 +80,7 @@ describe('world events', () => {
 
   it('convoys travel, fight back and spill cargo when the freighter dies', () => {
     park(0);
-    me.s.pilot.cargo = { ore: 0, crystal: 0, relic: 0 };
+    me.s.pilot.cargo = { ore: 0, crystal: 0, relic: 0, bio: 0 };
     const f0 = qrot(v3(), me.s.ship.world.q, FWD);
     const at = v3(me.s.ship.world.p.x + f0.x * 3000, me.s.ship.world.p.y + f0.y * 3000, me.s.ship.world.p.z + f0.z * 3000);
     const poi = sys.world.spawn('convoy', { p: at, dir: v3(1, 0, 0) })!;
@@ -161,5 +161,59 @@ describe('surface sites', () => {
     for (const n of nodes) expect(resourceNode(pl, n.id)).toEqual(n);
     const cols = collidersNear(pl, ruin.pillars[0].dir);
     expect(cols.some((c) => Math.abs(c.r - ruin.pillars[0].r) < 1e-9)).toBe(true);
+  });
+});
+
+describe('fauna and on-foot combat', () => {
+  const game = new Game({ store: new PilotStore(':memory:'), dev: true });
+  const me = pilot(game, 'Ranger');
+  const sys = me.s.system;
+  const pl = sys.def.planets.find((p) => p.type === 'terran')!;
+  sys.devTeleport(me.s, `land${pl.index}`);
+  expect(sys.handleAction(me.s, { a: 'exit' })).toBeNull();
+  const ch = me.s.char!;
+
+  it('grazers bolt when a pilot comes close', () => {
+    const herd = sys.fauna.devSpawn(pl.index, ch.state.p, 0, 12);
+    expect(herd.length).toBeGreaterThan(0);
+    const d0 = vdist(herd[0].state.p, ch.state.p);
+    run(game, 2);
+    expect(herd.some((c) => c.mood === 'flee')).toBe(true);
+    expect(vdist(herd[0].state.p, ch.state.p)).toBeGreaterThan(d0);
+  });
+
+  it('predators hunt and bite, the blaster kills them and carcasses yield samples', () => {
+    ch.hp = PILOT_HP;
+    const [hunter] = sys.fauna.devSpawn(pl.index, ch.state.p, 1, 25);
+    expect(hunter.sp.predator).toBe(true);
+    run(game, 6);
+    expect(ch.hp).toBeLessThan(PILOT_HP);
+    expect(me.events().some((e) => e.t === 'hurt')).toBe(true);
+    // face the hunter and shoot until it drops
+    ch.hp = PILOT_HP;
+    for (let i = 0; i < 60 && !hunter.dead; i++) {
+      const up = vnorm(v3(), ch.state.p);
+      const to = vsub(v3(), hunter.state.p, ch.state.p);
+      const k = to.x * up.x + to.y * up.y + to.z * up.z;
+      ch.state.f = vnorm(v3(), v3(to.x - up.x * k, to.y - up.y * k, to.z - up.z * k));
+      const dist = Math.hypot(to.x, to.y, to.z);
+      sys.fauna.shoot(me.s, Math.atan2(k - 1.45 + hunter.sp.size * 0.8, Math.sqrt(Math.max(0, dist * dist - k * k))));
+      run(game, 0.3);
+    }
+    expect(hunter.dead).toBe(true);
+    expect(sys.shots.length + me.events().filter((e) => e.t === 'hit').length).toBeGreaterThan(0);
+    ch.state.p = { ...hunter.state.p };
+    const bio = me.s.pilot.cargo.bio;
+    expect(sys.handleAction(me.s, { a: 'sample', id: hunter.id })).toBeNull();
+    expect(me.s.pilot.cargo.bio).toBe(bio + hunter.sp.samples);
+    expect(sys.fauna.creatures.has(hunter.id)).toBe(false);
+  });
+
+  it('a pilot whose suit fails is recalled to the ship and loses half the cargo', () => {
+    me.s.pilot.cargo = { ore: 4, crystal: 2, relic: 1, bio: 3 };
+    sys.fauna.hurt(me.s, 500, 0);
+    expect(me.s.char).toBeNull();
+    expect(me.s.mode).toBe(0);
+    expect(me.s.pilot.cargo).toEqual({ ore: 2, crystal: 1, relic: 1, bio: 2 });
   });
 });

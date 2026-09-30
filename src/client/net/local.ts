@@ -23,7 +23,8 @@ class LocalPilotStore implements PilotStorage {
   }
   find(name: string) {
     const p = this.pilots[name.toLowerCase()];
-    return p ? structuredClone(p) : null;
+    // older saves predate some cargo kinds
+    return p ? { ...structuredClone(p), cargo: { ...emptyCargo(), ...p.cargo } } : null;
   }
   create(name: string): PilotRecord {
     const bytes = crypto.getRandomValues(new Uint8Array(12));

@@ -53,6 +53,29 @@ try {
     await sleep(1500);
     console.log('done', name);
   }
+  // wildlife on four biomes (peaceful herd + predator), shot from the pilot's view
+  if (!only || only === 'fauna') {
+    await chat('/god');
+    for (const [sys, idx, name, a, b] of [[0, 2, 'terran', 0, 1], [0, 1, 'alien', 2, 3], [0, 3, 'ice', 6, 7], [1, 2, 'desert', 4, 5]]) {
+      if ((await page.evaluate(() => window.__game.sys.id)) !== sys) {
+        await chat(`/system ${sys}`);
+        await page.waitForFunction((s) => window.__game.sys.id === s && window.__game.pred.ready, sys, { timeout: 30000, polling: 250 });
+        await chat('/god');
+      }
+      await chat(`/land ${idx}`);
+      await sleep(6000);
+      await page.keyboard.press('KeyG');
+      await mode(1);
+      await chat(`/fauna ${a} 16`);
+      await chat(`/fauna ${b} 26`);
+      await sleep(3500);
+      await page.screenshot({ path: `${OUT}/fauna-${name}.png` });
+      console.log('done fauna', name, await page.evaluate(() => [...window.__game.remotes.values()].filter((r) => r.info?.kind === 5).length));
+      await page.keyboard.press('KeyG');
+      await sleep(1500);
+    }
+    await chat('/god');
+  }
   // surface sites: ruins and a pirate outpost
   if (!only || only === 'sites') {
     if ((await page.evaluate(() => window.__game.sys.id)) !== 0) {

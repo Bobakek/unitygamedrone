@@ -1,4 +1,6 @@
-import { UPGRADE_COST, MAX_LEVEL, PRICES, REPAIR_COST_PER_HP, MISSILE_COST, UPGRADE_KEYS, type UpgradeKey } from '../../shared/economy.ts';
+import {
+  CARGO_KEYS, CARGO_NAMES, cargoCount, cargoValue, UPGRADE_COST, MAX_LEVEL, PRICES, REPAIR_COST_PER_HP, MISSILE_COST, UPGRADE_KEYS, type UpgradeKey,
+} from '../../shared/economy.ts';
 import type { Action, PilotInfo } from '../../shared/net/protocol.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
@@ -68,12 +70,31 @@ export class Hud {
     this.lastPilot = p;
     $('.pp-name').textContent = p.name;
     $('.pp-credits').textContent = `${p.credits.toLocaleString('ru-RU')} кр`;
-    const n = p.cargo.ore + p.cargo.crystal + p.cargo.relic;
-    $('.pp-cargo').textContent = `${n}/${p.cargoCap}`;
-    $('.pp-cargo').title = `Руда ${p.cargo.ore}, кристаллы ${p.cargo.crystal}, реликты ${p.cargo.relic}`;
+    $('.pp-cargo').textContent = `${cargoCount(p.cargo)}/${p.cargoCap}`;
+    $('.pp-cargo').title = CARGO_KEYS.map((k) => `${CARGO_NAMES[k]} ${p.cargo[k]}`).join(', ');
     $('.pp-missiles').textContent = String(p.missiles);
     $('.pp-system').textContent = system;
     if (!this.station.classList.contains('hidden')) this.renderStation(p);
+  }
+
+  /** On-foot HUD: aim reticle and suit integrity (null hides both). */
+  suit(v: number | null) {
+    $('#foot-aim').style.display = v === null ? 'none' : 'block';
+    const el = $('#suit');
+    el.style.display = v === null ? 'none' : 'block';
+    if (v === null) return;
+    ($('.suit-bar i', el)).style.width = `${Math.max(0, Math.min(100, v))}%`;
+    el.classList.toggle('low', v < 35);
+  }
+
+  /** Red vignette pulse when the pilot is hurt. */
+  hurt(k: number) {
+    const el = $('#hurt');
+    el.style.transition = 'none';
+    el.style.opacity = String(Math.min(1, 0.35 + k));
+    void el.offsetWidth;
+    el.style.transition = 'opacity 0.6s';
+    el.style.opacity = '0';
   }
 
   /** Big centred banner for world events. */
@@ -216,8 +237,8 @@ export class Hud {
 
   renderStation(p: PilotInfo, hull?: { hull: number; max: number }) {
     const c = p.cargo;
-    const value = c.ore * PRICES.ore + c.crystal * PRICES.crystal + c.relic * PRICES.relic;
-    $('.st-cargo').innerHTML = `Руда: ${c.ore} × ${PRICES.ore}<br>Кристаллы: ${c.crystal} × ${PRICES.crystal}<br>Реликты: ${c.relic} × ${PRICES.relic}<br><b>Итого: ${value} кр</b> · Баланс: ${p.credits} кр` +
+    const value = cargoValue(c);
+    $('.st-cargo').innerHTML = CARGO_KEYS.map((k) => `${CARGO_NAMES[k]}: ${c[k]} × ${PRICES[k]}`).join('<br>') + `<br><b>Итого: ${value} кр</b> · Баланс: ${p.credits} кр` +
       (hull ? `<br>Корпус: ${Math.round(hull.hull)}/${hull.max} (ремонт ${Math.ceil((hull.max - hull.hull) * REPAIR_COST_PER_HP)} кр)` : '') +
       `<br>Ракеты: ${p.missiles} (${MISSILE_COST} кр/шт)`;
     $('.st-upgrades').innerHTML = UPGRADE_KEYS.map((k) => {

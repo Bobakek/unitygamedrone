@@ -12,12 +12,13 @@ export interface CharState {
   ground: number;
   fuel: number;
 }
-export interface CharInput { mx: number; mz: number; yawDelta: number; jump: boolean; sprint: boolean }
+/** `pitch` is the aim elevation (radians) — it does not affect movement, only the blaster. */
+export interface CharInput { mx: number; mz: number; yawDelta: number; pitch: number; jump: boolean; sprint: boolean }
 
 export const WALK_SPEED = 5;
 export const SPRINT_SPEED = 9;
 
-export const emptyCharInput = (): CharInput => ({ mx: 0, mz: 0, yawDelta: 0, jump: false, sprint: false });
+export const emptyCharInput = (): CharInput => ({ mx: 0, mz: 0, yawDelta: 0, pitch: 0, jump: false, sprint: false });
 export function newChar(p: V3, f: V3): CharState {
   return { p: { ...p }, v: v3(), f: { ...f }, ground: 1, fuel: 1 };
 }

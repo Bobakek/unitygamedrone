@@ -69,8 +69,10 @@ export class Controller {
       char.mz = k('KeyW') - k('KeyS');
       char.yawDelta = Math.max(-0.5, Math.min(0.5, this.yawAcc));
       this.yawAcc -= char.yawDelta;
+      char.pitch = this.footPitch;
       if (k('Space')) flags |= IFLAG.JUMP;
       if (k('ShiftLeft') || k('ShiftRight')) flags |= IFLAG.SPRINT;
+      if (i.mouse(0) && !i.typing && i.locked) flags |= IFLAG.FIRE;
     }
     return quantizeInput({ seq: ++this.seq, mode: m, flags, t, ship, char });
   }

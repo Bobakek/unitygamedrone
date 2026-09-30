@@ -1,6 +1,6 @@
 import { DOCK_RANGE, DT, EXIT_RANGE, GATE_RANGE, HARVEST_RANGE, INTEREST_RADIUS, NODE_RESPAWN, SAFE_ZONE_RADIUS, SHIP_LAND_HEIGHT } from '../../shared/constants.ts';
 import {
-  BOUNTY, combatStats, emptyCargo, flightStats, MAX_LEVEL, MAX_MISSILES, MISSILE_COST, PIRATE_COMBAT, PIRATE_FLIGHT, PRICES,
+  BOUNTY, cargoValue, combatStats, emptyCargo, flightStats, MAX_LEVEL, MAX_MISSILES, MISSILE_COST, PIRATE_COMBAT, PIRATE_FLIGHT,
   REPAIR_COST_PER_HP, UPGRADE_COST, UPGRADE_KEYS, cargoCount, type UpgradeKey,
 } from '../../shared/economy.ts';
 import { getSystem, type SystemDef } from '../../shared/galaxy/system-gen.ts';
@@ -10,7 +10,7 @@ import {
   FWD, qlook, qrot, quat, v3, vcross, vdist, vdistSq, vdot, vlen, vnorm, vscale, vsub, type Quat, type V3,
 } from '../../shared/math/vec.ts';
 import {
-  EFLAG, KIND, MODE, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
+  EFLAG, IFLAG, KIND, MODE, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
 } from '../../shared/net/protocol.ts';
 import { nodesNear, resourceNode } from '../../shared/planet/resources.ts';
 import { planetSites, SITE_NODE_BASE, siteDir, sitesNear } from '../../shared/planet/sites.ts';
@@ -26,6 +26,8 @@ import type { CharEntity, Laser, Missile, ShipEntity } from './entities.ts';
 import { NpcBrain, npcThink, type NpcWorld } from './npc.ts';
 import { WorldEvents } from './world-events.ts';
 import { Outposts } from './outposts.ts';
+import { Fauna } from './fauna.ts';
+import { PILOT_HP } from '../../shared/fauna.ts';
 import type { Session } from './session.ts';
 
 export interface GameContext {
@@ -56,6 +58,7 @@ export class SystemInstance implements NpcWorld {
   private rng: Rng;
   readonly world: WorldEvents;
   readonly outposts: Outposts;
+  readonly fauna: Fauna;
 
   constructor(private ctx: GameContext, id: number) {
     this.def = getSystem(id);
@@ -64,6 +67,7 @@ export class SystemInstance implements NpcWorld {
     for (let i = 0; i < this.def.pirates; i++) this.spawnPirate();
     this.world = new WorldEvents(this);
     this.outposts = new Outposts(this);
+    this.fauna = new Fauna(this);
   }
 
   nextId() { return this.ctx.nextId(); }
@@ -143,6 +147,7 @@ export class SystemInstance implements NpcWorld {
     for (const c of this.chars.values()) out.push({ id: c.id, kind: KIND.CHAR, name: c.name, owner: c.session.id });
     for (const m of this.missiles.values()) out.push({ id: m.id, kind: KIND.MISSILE, name: '', owner: m.owner });
     for (const l of this.world.loot.values()) out.push({ id: l.id, kind: KIND.LOOT, name: 'Контейнер' });
+    for (const c of this.fauna.creatures.values()) out.push(this.fauna.info(c));
     return out;
   }
 
@@ -329,6 +334,7 @@ export class SystemInstance implements NpcWorld {
     this.stepMissiles();
     this.world.step(DT);
     this.outposts.step(DT);
+    this.fauna.step(DT);
 
     for (const ship of this.ships.values()) {
       if (ship.dead) {
@@ -371,6 +377,7 @@ export class SystemInstance implements NpcWorld {
         if (m.flags & 1) this.tryFire(ship);
       } else if (s.mode === MODE.FOOT && m.mode === MODE.FOOT && s.char) {
         stepChar(s.char.state, m.char, this.def.planets[s.char.planet], DT);
+        if (m.flags & IFLAG.FIRE) this.fauna.shoot(s, m.char.pitch);
       }
     }
   }
@@ -473,6 +480,7 @@ export class SystemInstance implements NpcWorld {
       qlook(q, m.v, Math.abs(m.v.y) > Math.abs(m.v.x) ? v3(1, 0, 0) : v3(0, 1, 0));
       entities.push({ id: m.id, kind: KIND.MISSILE, flags: 0, frame: 0, px: m.p.x, py: m.p.y, pz: m.p.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, vx: m.v.x, vy: m.v.y, vz: m.v.z, hull: 1, shield: 0, throttle: 1 });
     }
+    this.fauna.entities(s, entities);
     for (const l of this.world.loot.values()) {
       if (vdistSq(l.p, focus) > r2) continue;
       entities.push({ id: l.id, kind: KIND.LOOT, flags: 0, frame: 0, px: l.p.x, py: l.p.y, pz: l.p.z, qx: 0, qy: 0, qz: 0, qw: 1, vx: l.v.x, vy: l.v.y, vz: l.v.z, hull: 1, shield: 0, throttle: 0 });
@@ -484,7 +492,7 @@ export class SystemInstance implements NpcWorld {
         shipId: ship.id, mode: s.mode, teleport: s.teleport, ship: ship.state,
         hull: Math.max(0, ship.hull), maxHull: ship.combat.maxHull, shield: ship.shield, maxShield: ship.combat.maxShield,
         energy: ship.energy, missiles: s.pilot.missiles,
-        charId: s.char?.id ?? 0, char: s.char?.state ?? null, charPlanet: s.char?.planet ?? -1,
+        charId: s.char?.id ?? 0, char: s.char?.state ?? null, charPlanet: s.char?.planet ?? -1, suit: s.char?.hp ?? PILOT_HP,
       },
     };
   }
@@ -507,7 +515,7 @@ export class SystemInstance implements NpcWorld {
         const g = pl.radius + footHeight(pl, d.x, d.y, d.z) + 0.05;
         const pos = vscale(v3(), d, g);
         const f = vnorm(v3(), v3(fwd.x - up.x * vdot(fwd, up), fwd.y - up.y * vdot(fwd, up), fwd.z - up.z * vdot(fwd, up)));
-        const c: CharEntity = { id: this.ctx.nextId(), name: p.name, state: newChar(pos, f), planet: pl.index, session: s };
+        const c: CharEntity = { id: this.ctx.nextId(), name: p.name, state: newChar(pos, f), planet: pl.index, session: s, hp: PILOT_HP, hurtAt: -99, cool: 0 };
         s.char = c;
         this.chars.set(c.id, c);
         this.infos.push({ id: c.id, kind: KIND.CHAR, name: p.name, owner: s.id });
@@ -519,11 +527,7 @@ export class SystemInstance implements NpcWorld {
         if (s.mode !== MODE.FOOT || !s.char) return null;
         const near = ship.state.frame === s.char.planet + 1 && vdist(s.char.state.p, ship.state.p) <= EXIT_RANGE + 6;
         if (!near) return 'Подойдите ближе к кораблю';
-        this.chars.delete(s.char.id);
-        this.gone.push(s.char.id);
-        s.char = null;
-        s.mode = MODE.SHIP;
-        s.resync();
+        this.recallPilot(s);
         return null;
       }
       case 'dock': {
@@ -549,8 +553,7 @@ export class SystemInstance implements NpcWorld {
       }
       case 'sell': {
         if (s.mode !== MODE.DOCKED) return 'Нужно пристыковаться';
-        let sum = 0;
-        for (const k of ['ore', 'crystal', 'relic'] as const) sum += p.cargo[k] * PRICES[k];
+        const sum = cargoValue(p.cargo);
         if (!sum) return 'Трюм пуст';
         p.credits += sum;
         p.cargo = emptyCargo();
@@ -615,12 +618,26 @@ export class SystemInstance implements NpcWorld {
       case 'respawn':
         if (ship.dead && this.time >= ship.respawnAt) this.respawn(s);
         return null;
+      case 'sample':
+        if (s.mode !== MODE.FOOT) return null;
+        return this.fauna.sample(s, Number(act.id));
       case 'salvage':
         if (s.mode !== MODE.SHIP || ship.dead) return null;
         return this.world.salvage(s, Number(act.id));
       default:
         return null;
     }
+  }
+
+  /** Puts a pilot on foot back into their ship. */
+  recallPilot(s: Session) {
+    if (s.char) {
+      this.chars.delete(s.char.id);
+      this.gone.push(s.char.id);
+      s.char = null;
+    }
+    s.mode = MODE.SHIP;
+    s.resync();
   }
 
   applyStats(s: Session) {

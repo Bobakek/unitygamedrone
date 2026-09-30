@@ -170,7 +170,7 @@ export class Game implements GameContext {
     const sys = s.system;
     switch (cmd) {
       case 'help':
-        s.msg('Команды: /who, /help' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|station|dock|field|gate|open> [dusk|night], /land <n> [dusk|night], /event <convoy|wreck|anomaly>, /credits <n>, /god, /pirate, /system <n>' : ''));
+        s.msg('Команды: /who, /help' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|station|dock|field|gate|open> [dusk|night], /land <n> [dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-7>, /credits <n>, /god, /pirate, /system <n>' : ''));
         return;
       case 'who':
         s.msg(`Онлайн (${this.sessions.size}): ${[...this.sessions.values()].map((o) => o.pilot.name).join(', ')}`);
@@ -189,6 +189,12 @@ export class Game implements GameContext {
         break;
       }
       case 'system': this.transfer(s, Number(args[0]) || 0); break;
+      case 'fauna': {
+        if (!s.char) { s.msg('Выйдите из корабля', 'warn'); break; }
+        const n = sys.fauna.devSpawn(s.char.planet, s.char.state.p, Math.max(0, Math.min(7, Number(args[0]) || 0)), Number(args[1]) || 40).length;
+        s.msg(n ? `Появилось существ: ${n}` : 'Не удалось');
+        break;
+      }
       case 'event': {
         const kind = args[0] as 'convoy' | 'wreck' | 'anomaly';
         if (!['convoy', 'wreck', 'anomaly'].includes(kind)) { s.msg('/event convoy|wreck|anomaly', 'warn'); break; }
@@ -245,7 +251,7 @@ export class Game implements GameContext {
       if (world) s.send(world);
       if (sys.shots.length) {
         const focus = sys.focusOf(s);
-        const near = sys.shots.filter((sh) => sh.shooter !== s.ship.id && vdist({ x: sh.px, y: sh.py, z: sh.pz }, focus) < 8000);
+        const near = sys.shots.filter((sh) => sh.shooter !== s.ship.id && sh.shooter !== s.char?.id && vdist({ x: sh.px, y: sh.py, z: sh.pz }, focus) < 8000);
         if (near.length) s.send(encodeShots(near));
       }
       if (s.transport.buffered < 1 << 20) s.send(encodeSnapshot(sys.buildSnapshot(s)));

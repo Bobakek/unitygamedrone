@@ -9,7 +9,9 @@ export const MSG = {
   WELCOME: 20, SNAPSHOT: 21, INFO: 22, GONE: 23, SHOTS: 24, EVENTS: 25, PILOT: 26, PONG: 27, ERROR: 28, WORLD: 29,
 } as const;
 
-export const KIND = { SHIP: 1, CHAR: 2, MISSILE: 3, LOOT: 4 } as const;
+export const KIND = { SHIP: 1, CHAR: 2, MISSILE: 3, LOOT: 4, CREATURE: 5 } as const;
+/** Shot.level used for the pilot's hand blaster. */
+export const BLASTER_LEVEL = 10;
 export const EFLAG = { LANDED: 1, CRUISE: 2, BOOST: 4, HIDDEN: 8, NPC: 16, SAFE: 32, DEAD: 64 } as const;
 export const IFLAG = { FIRE: 1, BOOST: 2, CRUISE: 4, JUMP: 8, SPRINT: 16 } as const;
 export const MODE = { SHIP: 0, FOOT: 1, DOCKED: 2, DEAD: 3 } as const;
@@ -20,7 +22,7 @@ export interface PilotInfo {
   name: string; credits: number; cargo: Cargo; cargoCap: number; upgrades: Upgrades;
   missiles: number; kills: number; deaths: number;
 }
-export interface EntityInfo { id: number; kind: number; name: string; bp?: Blueprint; npc?: boolean; owner?: number }
+export interface EntityInfo { id: number; kind: number; name: string; bp?: Blueprint; npc?: boolean; owner?: number; species?: number }
 export interface Harvested { planet: number; node: number; left: number }
 export interface Welcome {
   playerId: number; shipId: number; token: string; pilot: PilotInfo; system: number;
@@ -38,14 +40,18 @@ export type GameEvent =
   | { t: 'announce'; text: string; sub?: string; kind?: 'info' | 'warn' | 'good' }
   /** Anomaly scan progress for this pilot (k in 0..1, -1 = left the field). */
   | { t: 'scan'; id: number; k: number }
-  | { t: 'loot'; text: string; pos: [number, number, number] };
+  | { t: 'loot'; text: string; pos: [number, number, number] }
+  /** The local pilot's suit took damage. */
+  | { t: 'hurt'; dmg: number; by: number }
+  /** A creature attacks (animation cue). */
+  | { t: 'bite'; id: number };
 
 export type Action =
   | { a: 'exit' } | { a: 'board' } | { a: 'dock' } | { a: 'undock' } | { a: 'jump' }
   | { a: 'harvest'; node: number }
   | { a: 'sell' } | { a: 'repair' } | { a: 'buyMissiles' } | { a: 'upgrade'; key: string }
   | { a: 'missile'; target: number } | { a: 'respawn' }
-  | { a: 'salvage'; id: number };
+  | { a: 'salvage'; id: number } | { a: 'sample'; id: number };
 
 export function encodeJson(type: number, payload: unknown): Uint8Array {
   const body = new TextEncoder().encode(JSON.stringify(payload));
@@ -72,7 +78,7 @@ export function encodeInput(m: InputMsg): Uint8Array {
   const w = new Writer(32);
   w.u8(MSG.INPUT).u32(m.seq).u8(m.mode).u16(m.flags).f64(m.t);
   if (m.mode === MODE.FOOT) {
-    w.i8(q8(m.char.mx)).i8(q8(m.char.mz)).f32(m.char.yawDelta);
+    w.i8(q8(m.char.mx)).i8(q8(m.char.mz)).f32(m.char.yawDelta).i8(q8(m.char.pitch / 1.3));
   } else {
     const s = m.ship;
     w.i8(q8(s.yaw)).i8(q8(s.pitch)).i8(q8(s.roll)).i8(q8(s.throttle)).i8(q8(s.strafeX)).i8(q8(s.strafeY));
@@ -86,11 +92,12 @@ export function decodeInput(data: Uint8Array): InputMsg {
   const seq = r.u32(), mode = r.u8(), flags = r.u16();
   const tt = r.f64(), t = Number.isFinite(tt) ? tt : 0;
   const ship: ShipInput = { yaw: 0, pitch: 0, roll: 0, throttle: 0, strafeX: 0, strafeY: 0, boost: !!(flags & IFLAG.BOOST), cruise: !!(flags & IFLAG.CRUISE) };
-  const char: CharInput = { mx: 0, mz: 0, yawDelta: 0, jump: !!(flags & IFLAG.JUMP), sprint: !!(flags & IFLAG.SPRINT) };
+  const char: CharInput = { mx: 0, mz: 0, yawDelta: 0, pitch: 0, jump: !!(flags & IFLAG.JUMP), sprint: !!(flags & IFLAG.SPRINT) };
   if (mode === MODE.FOOT) {
     char.mx = d8(r.i8()); char.mz = d8(r.i8());
     const yd = r.f32();
     char.yawDelta = Number.isFinite(yd) ? Math.max(-0.5, Math.min(0.5, yd)) : 0;
+    char.pitch = d8(r.i8()) * 1.3;
   } else {
     ship.yaw = d8(r.i8()); ship.pitch = d8(r.i8()); ship.roll = d8(r.i8());
     ship.throttle = Math.max(-0.3, d8(r.i8())); ship.strafeX = d8(r.i8()); ship.strafeY = d8(r.i8());
@@ -109,6 +116,8 @@ export interface SelfState {
   ship: ShipState;
   hull: number; maxHull: number; shield: number; maxShield: number; energy: number; missiles: number;
   charId: number; char: CharState | null; charPlanet: number;
+  /** Pilot suit integrity 0..100 (on foot). */
+  suit: number;
 }
 export interface EntityState {
   id: number; kind: number; flags: number;
@@ -132,7 +141,7 @@ export function encodeSnapshot(s: Snapshot): Uint8Array {
   w.f64(sh.p.x).f64(sh.p.y).f64(sh.p.z).f64(sh.v.x).f64(sh.v.y).f64(sh.v.z);
   w.f64(sh.q.x).f64(sh.q.y).f64(sh.q.z).f64(sh.q.w);
   w.f64(sh.boost).f64(sh.cruise).f64(sh.cruiseBlock).u8(sh.landed).u8(sh.frame);
-  w.f32(me.hull).f32(me.maxHull).f32(me.shield).f32(me.maxShield).u8(Math.round(me.energy)).u8(me.missiles);
+  w.f32(me.hull).f32(me.maxHull).f32(me.shield).f32(me.maxShield).u8(Math.round(me.energy)).u8(me.missiles).u8(Math.max(0, Math.min(255, Math.round(me.suit))));
   if (me.char) {
     const c = me.char;
     w.u8(1).u32(me.charId).i8(me.charPlanet);
@@ -160,7 +169,7 @@ export function decodeSnapshot(data: Uint8Array): Snapshot {
     q: { x: r.f64(), y: r.f64(), z: r.f64(), w: r.f64() },
     boost: r.f64(), cruise: r.f64(), cruiseBlock: r.f64(), landed: r.u8(), frame: r.u8(),
   };
-  const hull = r.f32(), maxHull = r.f32(), shield = r.f32(), maxShield = r.f32(), energy = r.u8(), missiles = r.u8();
+  const hull = r.f32(), maxHull = r.f32(), shield = r.f32(), maxShield = r.f32(), energy = r.u8(), missiles = r.u8(), suit = r.u8();
   let char: CharState | null = null, charId = 0, charPlanet = -1;
   if (r.u8()) {
     charId = r.u32(); charPlanet = r.i8();
@@ -180,7 +189,7 @@ export function decodeSnapshot(data: Uint8Array): Snapshot {
       hull: r.u8() / 255, shield: r.u8() / 255, throttle: r.u8() / 255,
     });
   }
-  return { tick, time, ack, self: { shipId, mode, teleport, ship, hull, maxHull, shield, maxShield, energy, missiles, charId, char, charPlanet }, entities };
+  return { tick, time, ack, self: { shipId, mode, teleport, ship, hull, maxHull, shield, maxShield, energy, missiles, charId, char, charPlanet, suit }, entities };
 }
 
 // ---------------------------------------------------------------- shots

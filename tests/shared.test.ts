@@ -263,7 +263,7 @@ describe('protocol', () => {
     const char = newChar(v3(1, 2, 3), v3(0, 0, -1));
     const snap = {
       tick: 99, time: 12.5, ack: 77,
-      self: { shipId: 5, mode: MODE.FOOT, teleport: 3, ship, hull: 90, maxHull: 100, shield: 12.5, maxShield: 80, energy: 55, missiles: 4, charId: 9, char, charPlanet: 1 },
+      self: { shipId: 5, mode: MODE.FOOT, teleport: 3, ship, hull: 90, maxHull: 100, shield: 12.5, maxShield: 80, energy: 55, missiles: 4, charId: 9, char, charPlanet: 1, suit: 88 },
       entities: [{ id: 7, kind: 1, flags: 3, frame: 3, px: 1000.5, py: 2, pz: 3, qx: 0, qy: 0.7071, qz: 0, qw: 0.7071, vx: 10, vy: 0, vz: -5, hull: 0.5, shield: 1, throttle: 0.25 }],
     };
     const d = decodeSnapshot(encodeSnapshot(snap));

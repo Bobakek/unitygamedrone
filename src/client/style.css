@@ -145,3 +145,10 @@ button:disabled { opacity: 0.4; cursor: default; }
 .label.site .lb-bar { display: none; }
 .label.site .lb-t { color: #ffe066; }
 .label.site.npc .lb-t { color: #ff9aa6; }
+
+#foot-aim { position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border: 2px solid rgba(255, 210, 120, 0.85); border-radius: 50%; display: none; box-shadow: 0 0 6px rgba(0, 0, 0, 0.6); }
+#suit { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); width: 260px; font-size: 11px; color: var(--dim); display: none; text-align: center; }
+#suit .suit-bar { margin-top: 4px; height: 7px; border-radius: 4px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
+#suit .suit-bar i { display: block; height: 100%; width: 100%; background: linear-gradient(90deg, #6dff9c, #8ff8ff); transition: width 0.2s; }
+#suit.low .suit-bar i { background: linear-gradient(90deg, #ff5a6a, #ffb060); }
+#hurt { position: absolute; inset: 0; pointer-events: none; opacity: 0; background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 45%, rgba(255, 30, 40, 0.55) 100%); transition: opacity 0.35s; }

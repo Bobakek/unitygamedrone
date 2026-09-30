@@ -44,6 +44,10 @@ export interface CharEntity {
   state: CharState;
   planet: number;
   session: Session;
+  /** Suit integrity, time of the last injury and blaster cooldown. */
+  hp: number;
+  hurtAt: number;
+  cool: number;
 }
 
 export interface Missile {

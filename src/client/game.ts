@@ -4,7 +4,7 @@ import { defaultUpgrades, flightStats } from '../shared/economy.ts';
 import { getSystem, type PlanetDef, type SystemDef } from '../shared/galaxy/system-gen.ts';
 import { FWD, qlook, qrot, quat, v3, vcross, vdist, vlen, vnorm, vsub, type Quat, type V3 } from '../shared/math/vec.ts';
 import {
-  EFLAG, KIND, MODE, type EntityInfo, type EntityState, type GameEvent, type PilotInfo, type SelfState, type Shot, type Snapshot, type Welcome,
+  BLASTER_LEVEL, EFLAG, IFLAG, KIND, MODE, type EntityInfo, type EntityState, type GameEvent, type PilotInfo, type SelfState, type Shot, type Snapshot, type Welcome,
 } from '../shared/net/protocol.ts';
 import { surfaceHeight } from '../shared/planet/terrain.ts';
 import { resourceNode } from '../shared/planet/resources.ts';
@@ -37,13 +37,15 @@ import { SpaceBackdrop, Sun } from './world/space.ts';
 import { FieldView, GateView, StationView } from './world/structures.ts';
 import { AnomalyView, LootView, WreckView, type PoiView } from './world/poi-views.ts';
 import { SiteView } from './planet/sites-view.ts';
+import { CreatureView } from './entities/creature.ts';
+import { BLASTER, SAMPLE_RANGE, SPECIES } from '../shared/fauna.ts';
 import { planetSites } from '../shared/planet/sites.ts';
 import { POI_LABEL, SALVAGE_MAX_SPEED, SALVAGE_RANGE, type Poi } from '../shared/events.ts';
 
 interface Remote {
   info: EntityInfo | null;
   buf: InterpBuffer;
-  view: ShipView | AstronautView | MissileView | LootView | null;
+  view: ShipView | AstronautView | MissileView | LootView | CreatureView | null;
   /** World pose at the current render time. */
   p: V3;
   q: Quat;
@@ -411,6 +413,7 @@ export class Game {
     else if (r.info.kind === KIND.CHAR) r.view = this.makeAstronaut(() => r.p, 0.5);
     else if (r.info.kind === KIND.MISSILE) r.view = new MissileView();
     else if (r.info.kind === KIND.LOOT) r.view = new LootView();
+    else if (r.info.kind === KIND.CREATURE && r.info.species !== undefined) r.view = new CreatureView(SPECIES[r.info.species]);
     if (r.view) this.world.add(r.view.group);
   }
 
@@ -443,6 +446,7 @@ export class Game {
   }
 
   private shotColor(shooter: number, level: number) {
+    if (level === BLASTER_LEVEL) return new THREE.Color(2.6, 1.2, 0.3);
     const info = this.infos.get(shooter);
     if (info?.npc) return new THREE.Color(2.4, 0.5, 0.3);
     return [new THREE.Color(0.5, 2.2, 2.6), new THREE.Color(0.5, 2.2, 2.6), new THREE.Color(0.6, 2.6, 1.2), new THREE.Color(2.2, 1.6, 0.4), new THREE.Color(2.4, 0.8, 2.4)][level] ?? new THREE.Color(0.5, 2.2, 2.6);
@@ -451,7 +455,7 @@ export class Game {
   private onShots(shots: Shot[]) {
     for (const s of shots) {
       const p = v3(s.px, s.py, s.pz);
-      this.effects.bolt(p, v3(s.vx, s.vy, s.vz), this.shotColor(s.shooter, s.level), s.shooter, INTERP_DELAY);
+      this.effects.bolt(p, v3(s.vx, s.vy, s.vz), this.shotColor(s.shooter, s.level), s.shooter, INTERP_DELAY, s.level === BLASTER_LEVEL ? 0.45 : undefined);
       const d = vdist(p, this.origin);
       if (d < 3000) setTimeout(() => this.sfx.laser(Math.max(0.1, 1 - d / 3000) * 0.7), INTERP_DELAY * 1000);
     }
@@ -469,6 +473,7 @@ export class Game {
           else {
             const v = this.remotes.get(e.target)?.view;
             if (v instanceof ShipView) v.hit(e.shield);
+            if (v instanceof CreatureView) v.hit();
             if (e.by === myShip) this.sfx.hit(e.shield);
           }
           break;
@@ -505,6 +510,15 @@ export class Game {
           this.hud.chat(null, e.sub ? `${e.text}: ${e.sub}` : e.text);
           this.sfx.beep(e.kind === 'warn');
           break;
+        case 'hurt':
+          this.hud.hurt(Math.min(0.6, e.dmg / 30));
+          this.sfx.hit(false);
+          break;
+        case 'bite': {
+          const v = this.remotes.get(e.id)?.view;
+          if (v instanceof CreatureView) v.attack();
+          break;
+        }
         case 'scan':
           this.scan = e.k < 0 || e.k >= 1 ? null : { id: e.id, k: e.k };
           break;
@@ -552,8 +566,9 @@ export class Game {
     this.conn.input(m);
     this.pred.step(m);
     this.energy = Math.min(100, this.energy + ENERGY_REGEN * DT);
-    if (mode !== MODE.SHIP) return;
     this.fireCd -= DT;
+    if (mode === MODE.FOOT && m.flags & IFLAG.FIRE && this.fireCd <= 0) this.blasterBolt();
+    if (mode !== MODE.SHIP) return;
     const s = this.pred.ship;
     const w = worldPose(s, this.sys!.planets, m.t, this.shipW);
     if (m.flags & 1 && this.fireCd <= 0 && this.energy >= LASER.cost && !s.landed && !isCruising(s) && vdist(w.p, this.sys!.station.pos) > SAFE_ZONE_RADIUS) {
@@ -565,6 +580,30 @@ export class Game {
       this.effects.bolt(p, v3(w.v.x + f.x * LASER.speed, w.v.y + f.y * LASER.speed, w.v.z + f.z * LASER.speed), this.shotColor(this.self!.shipId, this.pilot?.upgrades.weapons ?? 1), this.self!.shipId);
       this.sfx.laser(0.8);
     }
+  }
+
+  /** Local (predicted) hand-blaster bolt; the server does the hit test. */
+  private blasterBolt() {
+    const pl = this.sys!.planets[this.pred.charPlanet];
+    if (!pl) return;
+    this.fireCd = BLASTER.cooldown;
+    const up = vnorm(v3(), vsub(v3(), this.charPos, pl.center));
+    const c = Math.cos(this.ctrl.footPitch), s = Math.sin(this.ctrl.footPitch);
+    const d = v3(this.charFwd.x * c + up.x * s, this.charFwd.y * c + up.y * s, this.charFwd.z * c + up.z * s);
+    const right = vnorm(v3(), vcross(v3(), this.charFwd, up));
+    const p = v3(this.charPos.x + up.x * 1.45 + right.x * 0.35, this.charPos.y + up.y * 1.45 + right.y * 0.35, this.charPos.z + up.z * 1.45 + right.z * 0.35);
+    this.effects.bolt(p, v3(d.x * BLASTER.speed, d.y * BLASTER.speed, d.z * BLASTER.speed), this.shotColor(0, BLASTER_LEVEL), this.self!.charId, 0, 0.45);
+    this.sfx.laser(0.45);
+  }
+
+  /** Carcass within reach of the pilot. */
+  private nearCarcass(): { id: number; name: string } | null {
+    for (const [id, r] of this.remotes) {
+      if (r.info?.kind !== KIND.CREATURE || !r.state || !(r.state.flags & EFLAG.DEAD) || r.state.frame !== this.pred.charPlanet + 1) continue;
+      const sp = SPECIES[r.info.species ?? 0];
+      if (vdist(r.bp, this.charPosB) < SAMPLE_RANGE + sp.size) return { id, name: sp.name };
+    }
+    return null;
   }
 
   private handleKeys(dt: number, mode: number) {
@@ -581,7 +620,9 @@ export class Game {
       else if (mode === MODE.FOOT) this.conn.action({ a: 'board' });
     }
     if (i.hit('KeyF')) {
-      if (mode === MODE.FOOT) {
+      const carcass = mode === MODE.FOOT ? this.nearCarcass() : null;
+      if (carcass) { this.conn.action({ a: 'sample', id: carcass.id }); this.sfx.mining(); }
+      else if (mode === MODE.FOOT) {
         const n = this.nearestNode();
         if (n) {
           this.conn.action({ a: 'harvest', node: n.id });
@@ -818,6 +859,8 @@ export class Game {
         r.view.update(dt, { speed: hs, vUp, ground, jet: !ground && vUp > 2.5, look: 0, turn: 0 });
       } else if (r.view instanceof LootView) {
         r.view.update(dt);
+      } else if (r.view instanceof CreatureView) {
+        r.view.update(dt, Math.hypot(st.vx, st.vy, st.vz), !!(st.flags & EFLAG.DEAD));
       } else {
         r.smokeT -= dt;
         if (r.smokeT <= 0) { r.smokeT = 0.03; this.effects.smoke(r.p); }
@@ -1009,6 +1052,16 @@ export class Game {
       const c = rel(r.p);
       if (r.info.kind === KIND.MISSILE) { blips.push({ x: c.x, y: c.y, z: c.z, kind: 'missile' }); continue; }
       if (r.info.kind === KIND.LOOT) { blips.push({ x: c.x, y: c.y, z: c.z, kind: 'loot' }); continue; }
+      if (r.info.kind === KIND.CREATURE) {
+        const dead = !!r.state && !!(r.state.flags & EFLAG.DEAD);
+        const k = mode === MODE.FOOT ? 20 : 1;
+        if (!dead) blips.push({ x: c.x * k, y: 0, z: c.z * k, kind: r.info.npc ? 'npc' : 'fauna' });
+        if (d < 90 && mode === MODE.FOOT) {
+          const sp = this.project(v3(r.p.x, r.p.y, r.p.z));
+          if (!sp.behind) labels.push({ id, x: sp.x, y: sp.y - 40, text: dead ? `${r.info.name} · туша` : r.info.name, sub: this.fmtDist(d), npc: !!r.info.npc, hull: r.state?.hull ?? 1 });
+        }
+        continue;
+      }
       blips.push({ x: c.x, y: c.y, z: c.z, kind: r.info.npc ? 'npc' : 'player', sel: id === this.targetId });
       if (d < 4000 && mode !== MODE.DOCKED) {
         const sp = this.project(v3(r.p.x, r.p.y, r.p.z));
@@ -1040,6 +1093,7 @@ export class Game {
     this.radar.draw(blips);
 
     this.hud.clock(this.localClock());
+    this.hud.suit(mode === MODE.FOOT ? self.suit : null);
 
     // context prompt
     let prompt: string | null = null;
@@ -1054,7 +1108,9 @@ export class Game {
       else if (this.nearPlanet && this.nearAlt < 250 && speed < 80 && Math.abs(this.ctrl.throttle) >= 0.05) prompt = '<kbd>X</kbd> сброс тяги — корабль сам опустится и сядет';
     } else if (mode === MODE.FOOT) {
       const n = this.nearestNode();
-      if (n) prompt = `<kbd>F</kbd> собрать: ${RESOURCE_NAMES[n.type]}`;
+      const carcass = this.nearCarcass();
+      if (carcass) prompt = `<kbd>F</kbd> взять биообразцы: ${carcass.name}`;
+      else if (n) prompt = `<kbd>F</kbd> собрать: ${RESOURCE_NAMES[n.type]}`;
       else if (ship.frame === this.pred.charPlanet + 1 && vdist(this.charPosB, ship.p) < EXIT_RANGE + 6) prompt = '<kbd>G</kbd> сесть в корабль';
     }
     this.hud.prompt(prompt);

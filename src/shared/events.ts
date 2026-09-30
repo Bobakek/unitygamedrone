@@ -1,4 +1,4 @@
-import type { Cargo } from './economy.ts';
+import { CARGO_KEYS, CARGO_NAMES, type Cargo } from './economy.ts';
 
 /**
  * Dynamic points of interest ("world events") announced by the server:
@@ -45,7 +45,6 @@ export const POI_LABEL: Record<PoiKind, string> = {
 export function describeLoot(l: LootContents): string {
   const parts: string[] = [];
   if (l.credits) parts.push(`+${l.credits} кр`);
-  const names = { ore: 'руда', crystal: 'кристаллы', relic: 'реликты' } as const;
-  for (const k of ['ore', 'crystal', 'relic'] as const) if (l.cargo[k]) parts.push(`${names[k]} ×${l.cargo[k]}`);
+  for (const k of CARGO_KEYS) if (l.cargo[k]) parts.push(`${CARGO_NAMES[k].toLowerCase()} ×${l.cargo[k]}`);
   return parts.join(', ');
 }

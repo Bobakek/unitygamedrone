@@ -8,16 +8,21 @@ export const MAX_LEVEL = 4;
 /** Cost to buy level N (index = target level). */
 export const UPGRADE_COST = [0, 0, 450, 1300, 3200];
 
-export const PRICES: Record<ResourceType, number> = { ore: 14, crystal: 38, relic: 140 };
+/** Everything a hold can carry: mined resources plus biological samples from fauna. */
+export type CargoKey = ResourceType | 'bio';
+export const CARGO_KEYS: readonly CargoKey[] = ['ore', 'crystal', 'relic', 'bio'];
+export const CARGO_NAMES: Record<CargoKey, string> = { ore: 'Руда', crystal: 'Кристаллы', relic: 'Реликты', bio: 'Биообразцы' };
+export const PRICES: Record<CargoKey, number> = { ore: 14, crystal: 38, relic: 140, bio: 30 };
 export const REPAIR_COST_PER_HP = 1.5;
 export const MISSILE_COST = 35;
 export const MAX_MISSILES = 8;
 export const BOUNTY = { npc: 90, player: 120 } as const;
 
 export const defaultUpgrades = (): Upgrades => ({ weapons: 1, shields: 1, hull: 1, engine: 1, cargo: 1 });
-export type Cargo = Record<ResourceType, number>;
-export const emptyCargo = (): Cargo => ({ ore: 0, crystal: 0, relic: 0 });
-export const cargoCount = (c: Cargo) => c.ore + c.crystal + c.relic;
+export type Cargo = Record<CargoKey, number>;
+export const emptyCargo = (): Cargo => ({ ore: 0, crystal: 0, relic: 0, bio: 0 });
+export const cargoCount = (c: Cargo) => CARGO_KEYS.reduce((n, k) => n + (c[k] || 0), 0);
+export const cargoValue = (c: Cargo) => CARGO_KEYS.reduce((n, k) => n + (c[k] || 0) * PRICES[k], 0);
 
 export interface CombatStats {
   maxHull: number; maxShield: number; shieldRegen: number; laserDamage: number; cargoCap: number;
