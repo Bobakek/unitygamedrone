@@ -3,6 +3,8 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   root: 'src/client',
   publicDir: false,
+  // relative asset URLs so the build also works from a static host / sub-path
+  base: './',
   build: {
     outDir: '../../dist/client',
     emptyOutDir: true,

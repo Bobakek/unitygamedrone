@@ -2,12 +2,10 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { defaultUpgrades, emptyCargo, MAX_MISSILES, type Cargo, type Upgrades } from '../shared/economy.ts';
+import { defaultUpgrades, emptyCargo, MAX_MISSILES } from '../shared/economy.ts';
+import type { PilotRecord, PilotStorage } from './storage.ts';
 
-export interface PilotRecord {
-  id: number; name: string; token: string; credits: number; cargo: Cargo; upgrades: Upgrades;
-  missiles: number; kills: number; deaths: number; system: number;
-}
+export type { PilotRecord } from './storage.ts';
 
 interface Row {
   id: number; name: string; token: string; credits: number; cargo: string; upgrades: string;
@@ -15,7 +13,7 @@ interface Row {
 }
 
 /** Pilot persistence on the built-in node:sqlite driver (no native build step). */
-export class PilotStore {
+export class PilotStore implements PilotStorage {
   private db: DatabaseSync;
   constructor(path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });

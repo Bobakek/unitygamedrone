@@ -19,7 +19,7 @@ import type { SimEnv } from '../../shared/sim/env.ts';
 import { emptyInput, isCruising, newShip, stepShip, type StepOut } from '../../shared/sim/ship.ts';
 import { ENERGY_REGEN, GUN_OFFSETS, LASER, leadPoint, MISSILE, segmentSphere, SHIELD_DELAY } from '../../shared/sim/weapons.ts';
 import { pirateBlueprint, playerBlueprint } from '../../shared/ships/blueprint.ts';
-import type { PilotRecord } from '../db.ts';
+import type { PilotRecord } from '../storage.ts';
 import type { CharEntity, Laser, Missile, ShipEntity } from './entities.ts';
 import { NpcBrain, npcThink, type NpcWorld } from './npc.ts';
 import type { Session } from './session.ts';

@@ -10,10 +10,8 @@ export class Renderer {
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
   private composer: EffectComposer;
-  /** `?q=low` — lower resolution, no MSAA/bloom/shadows for weak GPUs. */
-  readonly low = new URLSearchParams(location.search).get('q') === 'low';
-
-  constructor(canvas: HTMLCanvasElement) {
+  /** Low quality — lower resolution, no MSAA/bloom/shadows for weak GPUs. */
+  constructor(canvas: HTMLCanvasElement, readonly low = false) {
     this.gl = new THREE.WebGLRenderer({ canvas, antialias: !this.low, logarithmicDepthBuffer: true, powerPreference: 'high-performance' });
     this.gl.setPixelRatio(this.low ? Math.min(window.devicePixelRatio, 1) * 0.75 : Math.min(window.devicePixelRatio, 1.75));
     this.gl.toneMapping = THREE.NeutralToneMapping;

@@ -3,12 +3,12 @@ import { qlook, qrot, quat, v3, vdist, vnorm, vsub } from '../../shared/math/vec
 import {
   decodeInput, decodeJson, encodeJson, encodeShots, encodeSnapshot, MODE, MSG, type Action, type Welcome,
 } from '../../shared/net/protocol.ts';
-import type { PilotStore } from '../db.ts';
+import type { PilotStorage } from '../storage.ts';
 import { Session, type Transport } from './session.ts';
 import { SystemInstance, type GameContext } from './system.ts';
 
 export interface GameOptions {
-  store: PilotStore;
+  store: PilotStorage;
   dev?: boolean;
   respawnDelay?: number;
   log?: (msg: string) => void;
@@ -31,7 +31,7 @@ export class Game implements GameContext {
   readonly sessions = new Map<number, Session>();
   private ids = 1;
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private store: PilotStore;
+  private store: PilotStorage;
   private log: (m: string) => void;
 
   constructor(opts: GameOptions) {

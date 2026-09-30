@@ -1,7 +1,7 @@
 import type { WebSocket } from 'ws';
 import { encodeJson, MSG, MODE, type InputMsg, type Mode, type PilotInfo } from '../../shared/net/protocol.ts';
 import { combatStats } from '../../shared/economy.ts';
-import type { PilotRecord } from '../db.ts';
+import type { PilotRecord } from '../storage.ts';
 import type { CharEntity, ShipEntity } from './entities.ts';
 import type { SystemInstance } from './system.ts';
 

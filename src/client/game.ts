@@ -16,7 +16,8 @@ import { Sfx } from './audio/sfx.ts';
 import { Input } from './core/input.ts';
 import { Renderer } from './core/renderer.ts';
 import { AstronautView, MissileView, ShipView } from './entities/views.ts';
-import { Connection } from './net/connection.ts';
+import { Connection, type NetClient, type NetHandlers } from './net/connection.ts';
+import { LocalConnection } from './net/local.ts';
 import { InterpBuffer, Timeline } from './net/interp.ts';
 import { AtmosphereView, SkyDome } from './planet/atmosphere.ts';
 import { PlanetView } from './planet/planet-view.ts';
@@ -54,7 +55,7 @@ export class Game {
   private hud = new Hud();
   private radar = new Radar(document.getElementById('radar') as HTMLCanvasElement);
   private sfx = new Sfx();
-  private conn: Connection;
+  private conn: NetClient;
   private timeline = new Timeline();
   private pool = new WorkerPool();
   private ctrl: Controller;
@@ -109,8 +110,8 @@ export class Game {
   private nearPlanet: PlanetDef | null = null;
   private nearAlt = 1e9;
 
-  constructor(canvas: HTMLCanvasElement, name: string, token: string | undefined, private onFatal: (msg: string) => void) {
-    this.r = new Renderer(canvas);
+  constructor(canvas: HTMLCanvasElement, name: string, token: string | undefined, private onFatal: (msg: string) => void, offline = false, low = false) {
+    this.r = new Renderer(canvas, low);
     this.input = new Input(canvas);
     this.ctrl = new Controller(this.input);
     this.pred = new Predictor(() => this.env!, () => this.stats);
@@ -129,8 +130,7 @@ export class Game {
     this.hud.onAction = (a) => { this.conn.action(a); this.sfx.beep(); };
     this.hud.onTyping = (t) => { this.input.typing = t; };
 
-    const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
-    this.conn = new Connection(url, name, token, {
+    const handlers: NetHandlers = {
       welcome: (w) => this.onWelcome(w),
       snapshot: (s) => this.onSnapshot(s),
       info: (l) => this.onInfo(l),
@@ -140,7 +140,9 @@ export class Game {
       pilot: (p) => this.setPilot(p),
       error: (m) => this.onFatal(m),
       closed: () => this.onFatal('Соединение с сервером потеряно'),
-    });
+    };
+    if (offline) this.conn = new LocalConnection(name, token, handlers);
+    else this.conn = new Connection(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`, name, token, handlers);
     requestAnimationFrame(() => this.frame());
     (window as unknown as { __game: Game }).__game = this;
   }
@@ -149,7 +151,9 @@ export class Game {
   private onWelcome(w: Welcome) {
     const first = !this.welcome;
     this.welcome = w;
-    localStorage.setItem('nova.pilot', JSON.stringify({ name: w.pilot.name, token: w.token }));
+    try {
+      localStorage.setItem('nova.pilot', JSON.stringify({ name: w.pilot.name, token: w.token }));
+    } catch { /* storage unavailable */ }
     if (!this.sys || this.sys.id !== w.system) this.buildSystem(w.system);
     for (const id of [...this.remotes.keys()]) this.removeRemote(id);
     this.infos.clear();
@@ -339,6 +343,7 @@ export class Game {
     const dt = Math.min(0.1, (now - this.last) / 1000);
     this.last = now;
     this.time += dt;
+    this.pool.beginFrame();
     if (!this.sys || !this.self) { this.input.endFrame(); return; }
     const mode = this.pred.mode;
     this.handleKeys(dt, mode);

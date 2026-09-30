@@ -12,6 +12,7 @@
     "dev:server": "cross-env DEV=1 tsx watch src/server/main.ts",
     "dev:client": "vite",
     "build": "npm run typecheck && vite build",
+    "build:offline": "cross-env VITE_OFFLINE=1 vite build --outDir ../../dist/offline",
     "typecheck": "tsc --noEmit",
     "start": "cross-env NODE_ENV=production tsx src/server/main.ts",
     "test": "vitest run",

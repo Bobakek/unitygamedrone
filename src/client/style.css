@@ -1,4 +1,6 @@
+/* Single deliberate dark look (space HUD). */
 :root {
+  color-scheme: dark;
   --ink: #e9f1ff;
   --dim: #9fb0c8;
   --panel: rgba(8, 14, 30, 0.62);
@@ -105,6 +107,8 @@ button:disabled { opacity: 0.4; cursor: default; }
 .login-card input { width: 100%; padding: 12px; font-size: 16px; border-radius: 8px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.05); color: var(--ink); margin-bottom: 10px; outline: none; }
 .login-card button { width: 100%; padding: 12px; font-size: 16px; }
 #login-error { color: var(--red); min-height: 18px; }
+.login-low { display: flex; gap: 8px; align-items: center; justify-content: center; color: var(--dim); font-size: 13px; margin: 0 0 10px; cursor: pointer; }
+.login-low input { width: auto; margin: 0; }
 .login-hint { color: var(--dim); font-size: 12px; }
 
 .st-card { width: 640px; }
