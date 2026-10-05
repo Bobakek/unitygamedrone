@@ -1408,11 +1408,13 @@ export class Game {
         const w = this.interior!.toWorld(st, v3(x, y, z), v3());
         l.position.set(w.x - this.origin.x, w.y - this.origin.y, w.z - this.origin.z);
       };
-      put(lamp0, 0, 14, -94);
-      put(lamp1, 0, 7.5, -8);
+      // both hang in the room the camera is in: over the pad in the hangar, along the promenade's length
+      const cz = this.interior.toDeck(st, this.origin).z;
+      if (cz < -60) { put(lamp0, -10, 12, -92); put(lamp1, 12, 10, -90); }
+      else { put(lamp0, 0, 4, -24); put(lamp1, 0, 4, 12); }
       lamp0.color.set('#fff2dc'); lamp1.color.set('#f4f6ff');
       lamp0.distance = lamp1.distance = 80;
-      lamp0.intensity = 140; lamp1.intensity = 120;
+      lamp0.intensity = lamp1.intensity = cz < -60 ? 110 : 70;
       return;
     }
     lamp0.color.set('#6aff5a'); lamp1.color.set('#ff3a2a');
@@ -1623,7 +1625,8 @@ export class Game {
   private updateHud(self: SelfState, mode: number, speed: number) {
     const sys = this.sys!, W = window.innerWidth, H = window.innerHeight;
     const ship = this.pred.ship;
-    const me = mode === MODE.FOOT ? this.charPos : this.shipPos;
+    // distances from the pilot on foot, from the hangar's camera while docked
+    const me = mode === MODE.FOOT || mode === MODE.DECK ? this.charPos : mode === MODE.DOCKED ? this.rig.pos : this.shipPos;
     const invCam = this.r.camera.quaternion.clone().invert();
 
     if (mode === MODE.SHIP) {

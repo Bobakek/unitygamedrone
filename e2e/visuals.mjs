@@ -275,6 +275,82 @@ try {
     await page.evaluate(() => document.querySelector('#shiplog .log-close').click());
     await chat('/god');
   }
+  // the station inside: the hangar with the ship on its pad, the promenade with its window and terminals
+  if (!only || only === 'station') {
+    if ((await page.evaluate(() => window.__game.sys.id)) !== 0) {
+      await chat('/system 0');
+      await page.waitForFunction(() => window.__game.sys.id === 0 && window.__game.pred.ready, null, { timeout: STEP_MS, polling: 250 });
+    }
+    if ((await page.evaluate(() => window.__game.pred.mode)) === 1) { await page.keyboard.press('KeyG'); await mode(0); }
+    await chat('/tp dock');
+    await sleep(1500);
+    await page.keyboard.press('KeyF');
+    await mode(2);
+    // close the station window: the hangar camera circles the ship on its pad
+    await page.evaluate(() => document.querySelector('#station button[data-act="close-station"]').click());
+    await sleep(5000);
+    await page.screenshot({ path: `${OUT}/station-docked.png` });
+    await page.keyboard.press('KeyG');
+    await mode(4);
+    // the pilot steps out facing the airlock: turn round to the ship
+    await page.evaluate(() => { const g = window.__game; g.ctrl.yawAcc = 2.35; g.ctrl.footPitch = 0.12; g.ctrl.footDist = 6; });
+    await sleep(5000);
+    await page.screenshot({ path: `${OUT}/station-hangar.png` });
+    await page.evaluate(() => { window.__game.ctrl.yawAcc = Math.PI; });
+    await sleep(4000);
+    await page.screenshot({ path: `${OUT}/station-hangar-airlock.png` });
+    await chat('/deck contracts');
+    await page.evaluate(() => { window.__game.ctrl.footPitch = 0.05; window.__game.ctrl.footDist = 4; });
+    await sleep(4000);
+    await page.screenshot({ path: `${OUT}/station-terminal.png` });
+    await page.keyboard.press('KeyF');
+    await page.waitForFunction(() => !document.querySelector('#contracts').classList.contains('hidden'), null, { timeout: STEP_MS, polling: 250 });
+    await page.evaluate(() => document.querySelector('#contracts .ct-close').click());
+    // the promenade's end window looks down on the planet; a second pilot walks in front and says hello
+    await chat('/deck window');
+    await page.evaluate(() => { const g = window.__game; g.ctrl.footPitch = 0.08; g.ctrl.footDist = 5; });
+    const b = await browser.newPage({ viewport: { width: 480, height: 270 } });
+    b.on('pageerror', (e) => errors.push(`Bravo: ${e.message}`));
+    await b.goto(`http://localhost:${PORT}/?name=Bravo&autostart=1&q=low`);
+    await b.waitForFunction(() => window.__game?.self && window.__game.pred.ready, null, { timeout: 60000, polling: 250 });
+    await b.evaluate(() => window.__game.conn.chat('/tp dock'));
+    await sleep(1500);
+    await b.keyboard.press('KeyF');
+    await b.waitForFunction(() => window.__game.pred.mode === 2, null, { timeout: STEP_MS, polling: 250 });
+    await b.keyboard.press('KeyG');
+    await b.waitForFunction(() => window.__game.pred.mode === 4, null, { timeout: STEP_MS, polling: 250 });
+    await b.evaluate(() => window.__game.conn.chat('/deck window'));
+    await sleep(1000);
+    // a few steps ahead and to the left, then turn to face Tourist
+    await b.keyboard.down('KeyW');
+    await b.keyboard.down('KeyA');
+    await sleep(1400);
+    await b.keyboard.up('KeyA');
+    await b.keyboard.up('KeyW');
+    await b.evaluate(() => { window.__game.ctrl.yawAcc = 2.6; });
+    await b.evaluate(() => window.__game.conn.chat('Всем привет! Кто летит к обломкам?'));
+    await sleep(3500);
+    await page.screenshot({ path: `${OUT}/station-promenade.png` });
+    const met = await page.evaluate(() => {
+      const r = [...window.__game.remotes.values()].find((x) => x.info?.name === 'Bravo' && x.info.kind === 2);
+      return { bravo: !!r, bubble: [...document.querySelectorAll('.lb-bubble')].some((e) => e.textContent.includes('привет') && e.offsetParent) };
+    });
+    console.log('station meet', JSON.stringify(met));
+    if (!met.bravo || !met.bubble) errors.push(`station: the other pilot or their chat bubble is missing (${JSON.stringify(met)})`);
+    await b.close();
+    // and back over the holo-map to the terminals
+    await page.evaluate(() => { window.__game.ctrl.yawAcc = Math.PI; });
+    await sleep(4000);
+    await page.screenshot({ path: `${OUT}/station-holo.png` });
+    const st = await page.evaluate(() => ({ mode: window.__game.pred.mode, p: window.__game.pred.char?.p, indoor: +window.__game.indoorK.toFixed(2) }));
+    console.log('station deck', JSON.stringify(st));
+    if (st.mode !== 4) errors.push(`station: not on the deck (${JSON.stringify(st)})`);
+    await chat('/deck ramp');
+    await sleep(1500);
+    await page.keyboard.press('KeyG');
+    await mode(2);
+    console.log('done station');
+  }
 } catch (e) {
   errors.push(String(e.stack || e));
 } finally {

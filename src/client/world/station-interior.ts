@@ -111,17 +111,17 @@ export class StationInterior {
     const star = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: new THREE.Color(sys.star.color).multiplyScalar(2), blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
     star.scale.setScalar(0.9);
     this.holo.add(star);
-    const ringMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.2, 0.7, 1.1), transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+    const ringMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.3, 0.9, 1.4), transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
     const maxR = Math.max(...sys.planets.map((pl) => Math.hypot(pl.center.x - sys.star.pos.x, pl.center.z - sys.star.pos.z)));
     sys.planets.forEach((pl, i) => {
       const r = 0.5 + (Math.hypot(pl.center.x - sys.star.pos.x, pl.center.z - sys.star.pos.z) / maxR) * 1.7;
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(r, 0.008, 4, 48), ringMat);
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(r, 0.018, 4, 48), ringMat);
       ring.rotation.x = Math.PI / 2;
       this.holo.add(ring);
       const orbit = new THREE.Group();
       orbit.rotation.y = i * 1.9;
       orbit.userData.speed = 0.25 / r;
-      const ball = new THREE.Mesh(new THREE.SphereGeometry(0.06 + pl.radius / 70000, 10, 8), new THREE.MeshBasicMaterial({ color: new THREE.Color(pl.atmo?.color ?? '#a8a098').multiplyScalar(1.6), toneMapped: false }));
+      const ball = new THREE.Mesh(new THREE.SphereGeometry(0.1 + pl.radius / 50000, 10, 8), new THREE.MeshBasicMaterial({ color: new THREE.Color(pl.atmo?.color ?? '#a8a098').multiplyScalar(1.6), toneMapped: false }));
       ball.position.x = r;
       orbit.add(ball);
       this.holo.add(orbit);
@@ -154,6 +154,23 @@ export class StationInterior {
     add(p, new THREE.BoxGeometry(26, 18, 0.6), wall, false, [-17, 9, -79.7]);
     add(p, new THREE.BoxGeometry(26, 18, 0.6), wall, false, [17, 9, -79.7]);
     add(p, new THREE.BoxGeometry(8, 13.6, 0.6), wall, false, [0, 11.2, -79.7]);
+    // panel seams on the walls, a floor grid
+    for (const y of [3, 7.5, 12]) {
+      for (const s of [-1, 1]) add(p, new THREE.BoxGeometry(0.1, 0.25, 28), dark, false, [s * 29.95, y, -94]);
+      add(p, new THREE.BoxGeometry(60, 0.25, 0.1), dark, false, [0, y, -80.05]);
+    }
+    for (let x = -24; x <= 24; x += 8) if (Math.abs(x) > 4) add(p, new THREE.BoxGeometry(0.1, 18, 0.1), dark, false, [x, 9, -80.05]);
+    for (let x = -27; x <= 27; x += 6) add(p, new THREE.BoxGeometry(0.06, 0.01, 28), '#2c3038', false, [x, 0.005, -94]);
+    for (let z = -105; z <= -82; z += 6) add(p, new THREE.BoxGeometry(60, 0.01, 0.06), '#2c3038', false, [0, 0.005, z]);
+    // the flight control room over the airlock: a lit window with a frame
+    add(p, new THREE.BoxGeometry(16, 3.4, 0.9), dark, 'metal', [0, 10.5, -80.2]);
+    add(p, new THREE.BoxGeometry(15, 2.6, 0.1), '#7ad8ff', true, [0, 10.5, -80.7], undefined, undefined, 0.7);
+    add(p, new THREE.BoxGeometry(16, 0.3, 1.4), trim, 'metal', [0, 8.7, -80.6]);
+    // hazard stripes round the airlock door, a lit sign over it
+    for (let y = 0.5; y < 4.5; y += 1) for (const s of [-1, 1]) add(p, new THREE.BoxGeometry(0.6, 0.5, 0.12), trim, false, [s * 4.5, y, -80.1]);
+    add(p, new THREE.BoxGeometry(8.6, 0.6, 0.12), trim, false, [0, 4.8, -80.1]);
+    // pipes along the side walls
+    for (const s of [-1, 1]) for (const y of [13.5, 14.3]) add(p, new THREE.CylinderGeometry(0.25, 0.25, 28, 8).rotateX(Math.PI / 2), '#8a6a4a', 'metal', [s * 29.2, y, -94]);
     add(p, new THREE.BoxGeometry(61, 0.6, 29), dark, 'metal', [0, 18.3, -94]);
     for (let z = -106; z <= -82; z += 7) add(p, new THREE.BoxGeometry(60, 1.2, 0.8), dark, 'metal', [0, 17.2, z]);
     for (const x of [-18, 0, 18]) add(p, new THREE.BoxGeometry(6, 0.15, 1.4), '#fff4e0', true, [x, 17.4, -94], undefined, undefined, 2);

@@ -169,6 +169,22 @@ try {
   if (after.credits !== before.credits + before.reward.credits || after.xp !== before.reward.xp) errors.push('contract reward not paid');
   await a.evaluate(() => document.querySelector('#contracts .ct-close').click());
 
+  // the station inside: step out into the hangar, use the contracts terminal on the promenade, board again
+  await a.evaluate(() => document.querySelector('#station button[data-act="disembark"]').click());
+  await a.waitForFunction(() => window.__game.pred.mode === 4, null, { timeout: STEP_MS, polling: 250 });
+  await shot(a, '08d-hangar.png', 3000);
+  await chat(a, '/deck contracts');
+  await sleep(1500);
+  await a.keyboard.press('KeyF');
+  await a.waitForFunction(() => !document.querySelector('#contracts').classList.contains('hidden'), null, { timeout: STEP_MS, polling: 250 });
+  await a.evaluate(() => document.querySelector('#contracts .ct-close').click());
+  await shot(a, '08e-promenade.png', 1500);
+  await chat(a, '/deck ramp');
+  await sleep(1500);
+  await a.keyboard.press('KeyG');
+  await a.waitForFunction(() => window.__game.pred.mode === 2, null, { timeout: STEP_MS, polling: 250 });
+  console.log('station deck: walked to the contracts terminal and back on board');
+
   await a.click('#station button.primary');
   await a.waitForFunction(() => window.__game.pred.mode === 0, null, { timeout: 15000, polling: 250 });
   const sys0 = await a.evaluate(() => window.__game.sys.id);

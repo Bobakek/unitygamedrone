@@ -264,11 +264,13 @@ export class Game implements GameContext {
         // dev: on the station deck, step next to a terminal (or the ramp)
         const ch = s.char;
         if (!ch || ch.planet >= 0) { s.msg('Сначала выйдите на станцию', 'warn'); break; }
+        // a terminal, the promenade's window on the planet, or the ramp
         const t = TERMINALS.find((x) => x.kind === args[0]);
-        const to = t ? { x: t.x + (t.x < 0 ? 1.8 : -1.8), z: t.z } : RAMP;
+        const to = t ? { x: t.x + (t.x < 0 ? 1.8 : -1.8), z: t.z } : args[0] === 'window' ? { x: 4, z: 4 } : RAMP;
         ch.state.p = v3(to.x, 0, to.z);
         ch.state.v = v3();
         if (t) ch.state.f = vnorm(v3(), v3(t.x - to.x, 0, 0));
+        else if (args[0] === 'window') ch.state.f = v3(0, 0, 1);
         s.resync();
         break;
       }
