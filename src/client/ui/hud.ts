@@ -31,6 +31,7 @@ export class Hud {
   private lastPilot: PilotInfo | null = null;
   onChat: (text: string) => void = () => {};
   onAction: (a: Action) => void = () => {};
+  onWardrobe: () => void = () => {};
   onTyping: (typing: boolean) => void = () => {};
 
   constructor() {
@@ -49,7 +50,8 @@ export class Hud {
       const b = (e.target as HTMLElement).closest('button');
       if (!b) return;
       const act = b.dataset.act;
-      if (act === 'upgrade') this.onAction({ a: 'upgrade', key: b.dataset.key! });
+      if (act === 'wardrobe') this.onWardrobe();
+      else if (act === 'upgrade') this.onAction({ a: 'upgrade', key: b.dataset.key! });
       else if (act) this.onAction({ a: act } as Action);
     });
   }

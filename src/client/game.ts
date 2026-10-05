@@ -27,6 +27,7 @@ import { AtmosphereView, EnvLighting, SkyDome } from './planet/atmosphere.ts';
 import { CloudLayer } from './planet/clouds.ts';
 import { Underwater } from './world/underwater.ts';
 import { SeaLife } from './planet/sealife.ts';
+import { Wardrobe } from './ui/wardrobe.ts';
 import { DEFAULT_GEAR, gearStats, parseLook, validOutfit, type GearStats } from '../shared/outfit.ts';
 import { PlanetView } from './planet/planet-view.ts';
 import { SurfaceProps } from './planet/props.ts';
@@ -85,6 +86,7 @@ export class Game {
   private r: Renderer;
   private input: Input;
   private hud = new Hud();
+  private wardrobe = new Wardrobe();
   private radar = new Radar(document.getElementById('radar') as HTMLCanvasElement);
   private sfx = new Sfx();
   private conn: NetClient;
@@ -199,6 +201,8 @@ export class Game {
 
     this.hud.onChat = (t) => this.conn.chat(t);
     this.hud.onAction = (a) => { this.conn.action(a); this.sfx.beep(); };
+    this.hud.onWardrobe = () => { if (this.pilot) this.wardrobe.show(this.pilot); };
+    this.wardrobe.onAction = (a) => { this.conn.action(a); this.sfx.beep(); };
     this.hud.onTyping = (t) => { this.input.typing = t; };
 
     const handlers: NetHandlers = {
@@ -374,6 +378,7 @@ export class Game {
     this.stats = flightStats(p.upgrades);
     this.gear = gearStats(validOutfit(p.outfit, p.items));
     this.myAstro?.dress(validOutfit(p.outfit, p.items), p.name);
+    if (this.wardrobe.open) this.wardrobe.setPilot(p);
     this.hud.setPilot(p, this.sys?.name ?? '');
     if (this.self && this.lastMode === MODE.DOCKED) this.hud.renderStation(p, { hull: this.self.hull, max: this.self.maxHull });
   }
@@ -403,6 +408,7 @@ export class Game {
       if (this.pilot && this.self) this.hud.renderStation(this.pilot, { hull: this.self.hull, max: this.self.maxHull });
     }
     if (mode === MODE.DEAD || prev === MODE.DOCKED) { this.ctrl.throttle = 0; this.ctrl.cruiseOn = false; }
+    if (prev === MODE.DOCKED && mode !== MODE.DOCKED) this.wardrobe.close();
     if (mode === MODE.FOOT) {
       this.ctrl.footPitch = -0.12;
       if (!this.myAstro) {
@@ -670,7 +676,7 @@ export class Game {
     const i = this.input;
     if (i.hit('KeyH')) this.hud.toggleHelp();
     if (i.hit('KeyO')) this.toggleSettings();
-    if (i.hit('Escape')) { this.hud.toggleHelp(false); this.toggleSettings(false); }
+    if (i.hit('Escape')) { this.hud.toggleHelp(false); this.toggleSettings(false); this.wardrobe.close(); }
     if (i.hit('Enter')) { this.hud.focusChat(); i.releaseLock(); }
     if (i.hit('KeyZ')) i.releaseLock();
     if (i.hit('KeyV') && mode === MODE.FOOT) {
