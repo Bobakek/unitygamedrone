@@ -5,6 +5,7 @@ import {
 } from '../../shared/net/protocol.ts';
 import type { PilotStorage } from '../storage.ts';
 import { SPECIES } from '../../shared/fauna.ts';
+import { item } from '../../shared/outfit.ts';
 import { Session, type Transport } from './session.ts';
 import { SystemInstance, type GameContext } from './system.ts';
 
@@ -190,6 +191,16 @@ export class Game implements GameContext {
         break;
       }
       case 'system': this.transfer(s, Number(args[0]) || 0); break;
+      case 'wear': {
+        // dev: grant and wear a suit part anywhere
+        const it = item(args[0] ?? '');
+        if (!it) { s.msg('/wear <id> — см. src/shared/outfit.ts', 'warn'); break; }
+        if (!s.pilot.items.includes(it.id) && it.price) s.pilot.items.push(it.id);
+        s.pilot.outfit[it.slot] = it.id;
+        s.sendPilot();
+        s.msg(`Надето: ${it.name}`);
+        break;
+      }
       case 'fauna': {
         if (!s.char) { s.msg('Выйдите из корабля', 'warn'); break; }
         const n = sys.fauna.devSpawn(s.char.planet, s.char.state.p, Math.max(0, Math.min(SPECIES.length - 1, Number(args[0]) || 0)), Number(args[1]) || 40).length;

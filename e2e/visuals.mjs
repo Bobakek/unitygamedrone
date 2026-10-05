@@ -194,6 +194,16 @@ try {
       await page.screenshot({ path: `${OUT}/terran-${when}-landed.png` });
       console.log('done', when, await page.evaluate(() => document.querySelector('.pp-time')?.textContent));
     }
+    // on foot at night: visor up (face visible), helmet lamps on
+    await chat('/wear lights-eva');
+    await page.keyboard.press('KeyG');
+    await mode(1);
+    await page.evaluate(() => { window.__game.ctrl.footPitch = -0.05; window.__game.ctrl.footDist = 2.4; });
+    await sleep(6000);
+    await page.screenshot({ path: `${OUT}/terran-night-foot.png` });
+    const lamps = await page.evaluate(() => ({ visor: window.__game.myAstro?.visorUp, lights: window.__game.myAstro?.lightsOn }));
+    console.log('night on foot', JSON.stringify(lamps));
+    if (!lamps.visor || !lamps.lights) errors.push(`night: visor/lamps not switched (${JSON.stringify(lamps)})`);
   }
 } catch (e) {
   errors.push(String(e.stack || e));

@@ -137,6 +137,17 @@ try {
   await a.waitForFunction(() => window.__game.pred.mode === 2, null, { timeout: 15000, polling: 250 });
   await shot(a, '08-docked.png', 2000);
 
+  // wardrobe: buy oxygen tanks, they are worn at once
+  await chat(a, '/credits 2000');
+  await a.evaluate(() => document.querySelector('#station button[data-act="wardrobe"]').click());
+  await a.waitForFunction(() => !document.querySelector('#wardrobe').classList.contains('hidden'), null, { timeout: 10000, polling: 200 });
+  await a.evaluate(() => document.querySelector('.wd-tabs button[data-slot="pack"]').click());
+  await a.evaluate(() => document.querySelector('.wd-item[data-id="pack-o2"] button[data-do="buy"]').click());
+  await a.waitForFunction(() => window.__game.pilot.outfit.pack === 'pack-o2', null, { timeout: 10000, polling: 200 });
+  await shot(a, '08b-wardrobe.png', 3000);
+  console.log('wardrobe: bought', await a.evaluate(() => window.__game.pilot.items.join(',')));
+  await a.evaluate(() => document.querySelector('.wd-close').click());
+
   await a.click('#station button.primary');
   await a.waitForFunction(() => window.__game.pred.mode === 0, null, { timeout: 15000, polling: 250 });
   const sys0 = await a.evaluate(() => window.__game.sys.id);

@@ -28,7 +28,7 @@ try {
     await page.waitForFunction(() => window.__lab?.ready, null, { timeout: 30000, polling: 200 });
   };
   const species = Array.from({ length: 12 }, (_, i) => i);
-  for (const [q, name] of [['&sheet=pilot&from=0&to=8', 'sheet-pilot-1'], ['&sheet=pilot&from=9&to=16', 'sheet-pilot-2'], ['&sheet=pilot&from=17&to=22', 'sheet-pilot-swim'], ...species.map((i) => [`&sheet=creatures&from=${i}&to=${i}`, `sheet-creature-${i}`])]) {
+  for (const [q, name] of [['&sheet=outfits&from=0', 'sheet-outfits-1'], ['&sheet=outfits&from=1', 'sheet-outfits-2'], ['&sheet=pilot&from=0&to=8', 'sheet-pilot-1'], ['&sheet=pilot&from=9&to=16', 'sheet-pilot-2'], ['&sheet=pilot&from=17&to=22', 'sheet-pilot-swim'], ...species.map((i) => [`&sheet=creatures&from=${i}&to=${i}`, `sheet-creature-${i}`])]) {
     await open(`${q}&ui=0`);
     await sleep(2500);
     await page.screenshot({ path: `${OUT}/${name}.png` });
@@ -47,6 +47,15 @@ try {
       const clip = wide ? { x: 250, y: 100, width: 900, height: 700 } : { x: 450, y: 120, width: 500, height: 700 };
       await page.screenshot({ path: `${OUT}/pilot-${c}-${k}.png`, clip });
     }
+  }
+  // close-ups of the suit: front with the visor down, face behind the raised visor, back, a full kit
+  for (const [look, visor, side, name] of [['', 0, 0.3, 'suit-front'], ['', 1, -0.3, 'suit-face'], ['', 0, 3.0, 'suit-back'],
+    ['suit-orange.helmet-dome.visor-silver.pack-o2.chest-plate.lights-eva.patch-skull', 1, 0.5, 'suit-orange'],
+    ['suit-graphite.helmet-armored.visor-amber.pack-jet.chest-rig.lights-eva.patch-wings', 0, 2.4, 'suit-graphite']]) {
+    await page.evaluate(([l, v]) => { window.__lab.play('pilot', 'idle'); window.__lab.dress(l, v); window.__lab.seek(1.2); }, [look, visor]);
+    await page.evaluate((s) => window.__lab.close(s), side);
+    await sleep(800);
+    await page.screenshot({ path: `${OUT}/${name}.png`, clip: { x: 350, y: 80, width: 700, height: 760 } });
   }
   // one montage of all clip frames (rows = clips), cropped to the subject
   const imgs = clips.map((c) => `<div class="row"><b>${c}</b>${[1, 2, 3].map((k) => `<img src="data:image/png;base64,${readFileSync(`${OUT}/pilot-${c}-${k}.png`).toString('base64')}">`).join('')}</div>`).join('');
