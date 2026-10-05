@@ -172,6 +172,8 @@ try {
   // the station inside: step out into the hangar, use the contracts terminal on the promenade, board again
   await a.evaluate(() => document.querySelector('#station button[data-act="disembark"]').click());
   await a.waitForFunction(() => window.__game.pred.mode === 4, null, { timeout: STEP_MS, polling: 250 });
+  // without pointer lock the cursor's offset from the centre steers the view: keep it centred
+  await a.mouse.move(VW / 2, VH / 2);
   await shot(a, '08d-hangar.png', 3000);
   await chat(a, '/deck contracts');
   await sleep(1500);
