@@ -35,6 +35,8 @@ export interface ShipEntity {
   transient?: boolean;
   /** Bounty override for the killer. */
   bounty?: number;
+  /** Server time a player ship last shot at an NPC (pirates stay hostile to it for a while). */
+  provokedAt?: number;
 }
 
 export interface CharEntity {

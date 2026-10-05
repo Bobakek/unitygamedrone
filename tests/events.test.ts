@@ -5,6 +5,7 @@ import type { Transport } from '../src/server/game/session.ts';
 import {
   ANOMALY_SCAN_TIME, BASE_BOUNTY, PILOT_HP, vnorm, vsub, CFLAG, aimByte, aimPitch, KIND, MOOD, moodOf, cargoCount, decodeJson, encodeJson, FWD, MSG, nodesNear, PROTOCOL_VERSION, qrot, resourceNode, TICK_RATE, v3, vdist,
   type GameEvent, type Poi, getSystem, heightAt, MODE, lookCode, defaultOutfit, type PilotInfo,
+  BOARD_EPOCH_MS, BOUNTY, newCareer, generateBoard, WANTED_BOUNTY, type BoardMsg, type ContractDef, type ContractKind,
 } from '../src/shared/index.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync } from 'node:fs';
@@ -370,6 +371,9 @@ describe('wardrobe', () => {
     const v = store.find('Veteran')!;
     expect(v.items).toEqual([]);
     expect(v.outfit).toEqual(defaultOutfit());
+    expect(v.career).toEqual(newCareer());
+    v.career.xp = 950;
+    v.career.rep.guild = 31;
     v.items.push('suit-tan', 'lights-eva');
     v.outfit.suit = 'suit-tan';
     v.outfit.lights = 'lights-eva';
@@ -379,5 +383,229 @@ describe('wardrobe', () => {
     expect(again.items).toEqual(['suit-tan', 'lights-eva']);
     expect(again.outfit.suit).toBe('suit-tan');
     expect(again.outfit.lights).toBe('lights-eva');
+    expect(again.career.xp).toBe(950);
+    expect(again.career.rep.guild).toBe(31);
+  });
+});
+
+describe('contracts', () => {
+  let clock = 3000 * BOARD_EPOCH_MS + 1000;
+  const game = new Game({ store: new PilotStore(':memory:'), dev: true, now: () => clock });
+  const me = pilot(game, 'Contractor');
+  const sys = me.s.system;
+  const desk = sys.contracts;
+  const career = () => me.s.pilot.career;
+  const fresh = () => { me.s.pilot.career = newCareer(); me.s.pilot.career.xp = 2000; me.s.mode = MODE.DOCKED; };
+  /** First offer of a kind (and tier) on this or a later board. */
+  const offer = (kind: ContractKind, tier?: number): ContractDef => {
+    for (let i = 0; i < 80; i++) {
+      const o = desk.board().offers.find((x) => x.kind === kind && (tier === undefined || x.tier === tier));
+      if (o) return o;
+      clock += BOARD_EPOCH_MS;
+    }
+    throw new Error(`no ${kind} offer`);
+  };
+  const take = (o: ContractDef) => { me.s.mode = MODE.DOCKED; expect(sys.handleAction(me.s, { a: 'takeContract', id: o.id })).toBeNull(); };
+  const done = (o: ContractDef) => career().done.includes(o.id) && !career().active.some((a) => a.id === o.id);
+  const onFoot = (planet: number) => {
+    me.s.mode = MODE.SHIP;
+    sys.devTeleport(me.s, `land${planet}`);
+    expect(sys.handleAction(me.s, { a: 'exit' })).toBeNull();
+    return me.s.char!;
+  };
+
+  it('the board is the same for everyone in an epoch, changes with time and is sent on docking', () => {
+    const a = desk.board().offers;
+    expect(a.length).toBeGreaterThanOrEqual(5);
+    expect(generateBoard(sys.def.id, Math.floor(clock / BOARD_EPOCH_MS))).toEqual(a);
+    expect(new Set(a.map((o) => o.faction))).toEqual(new Set(['fed', 'guild', 'pirate']));
+    expect(a.some((o) => o.tier === 1 && o.faction === 'guild') && a.some((o) => o.tier === 1 && o.faction === 'fed')).toBe(true);
+    sys.devTeleport(me.s, 'dock');
+    expect(sys.handleAction(me.s, { a: 'dock' })).toBeNull();
+    const msg = decodeJson<BoardMsg>(me.sent.filter((d) => d[0] === MSG.BOARD).pop()!);
+    expect(msg.offers.map((o) => o.id)).toEqual(a.map((o) => o.id));
+    expect(msg.next).toBeGreaterThan(0);
+    expect(msg.next).toBeLessThanOrEqual(BOARD_EPOCH_MS);
+    clock += BOARD_EPOCH_MS;
+    expect(desk.board().changed).toBe(true);
+    expect(desk.board().offers[0].id).not.toBe(a[0].id);
+  });
+
+  it('contracts are taken at the station within the limits of the rank', () => {
+    me.s.pilot.career = newCareer();
+    const o1 = offer('supply', 1);
+    me.s.mode = MODE.SHIP;
+    expect(sys.handleAction(me.s, { a: 'takeContract', id: o1.id })).toBe('Нужно пристыковаться');
+    take(o1);
+    expect(sys.handleAction(me.s, { a: 'takeContract', id: o1.id })).toBe('Уже взят');
+    expect(sys.handleAction(me.s, { a: 'takeContract', id: 'nope' })).toBe('Предложение устарело');
+    const hard = offer('survey', 3);
+    expect(sys.handleAction(me.s, { a: 'takeContract', id: hard.id })).toBe('Нужен ранг Капитан');
+    const o2 = desk.board().offers.find((x) => x.tier === 1 && x.id !== o1.id)!;
+    take(o2);
+    const o3 = desk.board().offers.find((x) => x.tier === 1 && x.id !== o1.id && x.id !== o2.id)!;
+    expect(sys.handleAction(me.s, { a: 'takeContract', id: o3.id })).toMatch(/Не больше 2/);
+    // dropping costs a little standing with the client
+    expect(sys.handleAction(me.s, { a: 'dropContract', id: o2.id })).toBeNull();
+    expect(career().active.map((a) => a.id)).toEqual([o1.id]);
+    expect(career().rep[o2.faction]).toBe(-2);
+  });
+
+  it('hunts are counted by kills of the named predator and pay credits, experience and standing', () => {
+    fresh();
+    const o = offer('hunt', 1);
+    take(o);
+    const ch = onFoot(o.planet!);
+    const credits = me.s.pilot.credits;
+    // a wrong species does not count
+    const other = (o.species! + 1) % 8;
+    const [x] = sys.fauna.devSpawn(o.planet!, ch.state.p, other, 12);
+    sys.fauna.damage(x, 999, me.s);
+    expect(career().active[0].have).toBe(0);
+    let killed = 0;
+    while (killed < o.need) {
+      for (const b of sys.fauna.devSpawn(o.planet!, ch.state.p, o.species!, 12)) {
+        if (killed < o.need) { sys.fauna.damage(b, 999, me.s); killed++; }
+      }
+    }
+    expect(done(o)).toBe(true);
+    expect(me.s.pilot.credits).toBe(credits + o.reward.credits);
+    expect(career().xp).toBe(2000 + o.reward.xp);
+    expect(career().rep.guild).toBe(o.reward.rep);
+    expect(me.events().some((e) => e.t === 'announce' && e.text === 'Контракт выполнен')).toBe(true);
+  });
+
+  it('clearing a base counts its turrets; pirate kills count for bounty contracts', () => {
+    fresh();
+    const c = offer('clear');
+    take(c);
+    const p = offer('pirates', 1);
+    take(p);
+    const site = planetSites(sys.def.planets[c.planet!])[c.site!];
+    for (const t of sys.outposts.towersOf(site).slice(0, c.need)) sys.kill(t, me.s.ship.id);
+    expect(done(c)).toBe(true);
+    expect(career().rep.pirate).toBe(-4 * c.need - 4);
+    const raiders = [...sys.ships.values()].filter((sh) => sh.npc?.role === 'raider').slice(0, p.need);
+    expect(raiders.length).toBe(p.need);
+    for (const r of raiders) sys.kill(r, me.s.ship.id);
+    expect(done(p)).toBe(true);
+    expect(career().rep.fed).toBe(c.reward.rep + p.reward.rep + p.need);
+  });
+
+  it('a convoy brings an interception offer, which is withdrawn when the convoy leaves', () => {
+    fresh();
+    sys.devTeleport(me.s, 'open');
+    const poi = sys.world.spawn('convoy')!;
+    expect(poi).toBeTruthy();
+    const o = desk.board().offers.find((x) => x.kind === 'intercept' && x.poi === poi.id)!;
+    expect(o).toBeTruthy();
+    take(o);
+    sys.kill(sys.ships.get(poi.ship!)!, me.s.ship.id);
+    expect(done(o)).toBe(true);
+    // a second convoy gets away
+    const poi2 = sys.world.spawn('convoy')!;
+    const o2 = desk.board().offers.find((x) => x.kind === 'intercept' && x.poi === poi2.id)!;
+    take(o2);
+    const fed = career().rep.fed;
+    sys.ships.get(poi2.ship!)!.npc!.arrived = true;
+    run(game, 1.2);
+    expect(career().active.some((a) => a.id === o2.id)).toBe(false);
+    expect(career().rep.fed).toBe(fed);
+  });
+
+  it('supplies and deliveries are handed over on docking, partly if need be', () => {
+    fresh();
+    const o = offer('supply');
+    const k = o.cargo!;
+    me.s.pilot.cargo[k] = o.need - 1;
+    take(o);
+    expect(career().active[0].have).toBe(o.need - 1);
+    expect(me.s.pilot.cargo[k]).toBe(0);
+    me.s.pilot.cargo[k] = 3;
+    sys.devTeleport(me.s, 'dock');
+    expect(sys.handleAction(me.s, { a: 'dock' })).toBeNull();
+    expect(done(o)).toBe(true);
+    expect(me.s.pilot.cargo[k]).toBe(2);
+    // a delivery is only accepted at the station of the destination system
+    const d = offer('deliver');
+    take(d);
+    me.s.pilot.cargo[d.cargo!] = d.need;
+    sys.devTeleport(me.s, 'dock');
+    sys.handleAction(me.s, { a: 'dock' });
+    expect(career().active[0].have).toBe(0);
+    game.transfer(me.s, d.system);
+    const there = me.s.system;
+    there.devTeleport(me.s, 'dock');
+    expect(there.handleAction(me.s, { a: 'dock' })).toBeNull();
+    expect(done(d)).toBe(true);
+    game.transfer(me.s, sys.def.id);
+  });
+
+  it('surveys and contraband are done on foot at the site', () => {
+    fresh();
+    const sv = offer('survey');
+    take(sv);
+    const ch = onFoot(sv.planet!);
+    const pl = sys.def.planets[sv.planet!];
+    const ruin = planetSites(pl)[sv.site!];
+    run(game, 0.6);
+    expect(done(sv)).toBe(false);
+    ch.state.p = { x: ruin.dir.x * (pl.radius + ruin.h + 1), y: ruin.dir.y * (pl.radius + ruin.h + 1), z: ruin.dir.z * (pl.radius + ruin.h + 1) };
+    run(game, 0.6);
+    expect(done(sv)).toBe(true);
+
+    const sm = offer('smuggle');
+    take(sm);
+    const ch2 = onFoot(sm.planet!);
+    const pl2 = sys.def.planets[sm.planet!];
+    const base = planetSites(pl2)[sm.site!];
+    me.s.pilot.cargo[sm.cargo!] = sm.need - 1;
+    ch2.state.p = { x: base.dir.x * (pl2.radius + base.h + 1), y: base.dir.y * (pl2.radius + base.h + 1), z: base.dir.z * (pl2.radius + base.h + 1) };
+    run(game, 0.6);
+    expect(done(sm)).toBe(false);
+    me.s.pilot.cargo[sm.cargo!] = sm.need;
+    run(game, 0.6);
+    expect(done(sm)).toBe(true);
+    expect(me.s.pilot.cargo[sm.cargo!]).toBe(0);
+    expect(career().rep.fed).toBe(-8);
+    expect(career().rep.pirate).toBe(sm.reward.rep);
+  });
+
+  it('pirates leave their friends alone until provoked', () => {
+    fresh();
+    sys.devTeleport(me.s, 'open');
+    sys.handleAction(me.s, { a: 'undock' });
+    me.s.mode = MODE.SHIP;
+    const at = me.s.ship.world.p;
+    expect(sys.findPrey(at, 500)?.id).toBe(me.s.ship.id);
+    me.s.pilot.career.rep.pirate = 30;
+    expect(sys.findPrey(at, 500)).toBeNull();
+    expect(sys.truce(me.s.ship)).toBe(true);
+    const raider = [...sys.ships.values()].find((sh) => sh.npc?.role === 'raider')!;
+    sys.damage(raider, 1, me.s.ship.id);
+    expect(sys.findPrey(at, 500)?.id).toBe(me.s.ship.id);
+    expect(sys.truce(me.s.ship)).toBe(false);
+  });
+
+  it('a pilot wanted by the Federation is marked and worth more to other pilots', () => {
+    fresh();
+    const other = pilot(game, 'Bounty');
+    desk.rep(me.s, 'fed', -40);
+    expect(sys.shipInfo(me.s.ship).wanted).toBe(true);
+    expect(sys.infos.some((i) => i.id === me.s.ship.id && i.wanted)).toBe(true);
+    const credits = other.s.pilot.credits;
+    me.s.mode = MODE.SHIP;
+    sys.kill(me.s.ship, other.s.ship.id);
+    expect(other.s.pilot.credits).toBe(credits + BOUNTY.player + WANTED_BOUNTY);
+    run(game, 6);
+  });
+
+  it('faction gear is sold only to pilots in good standing', () => {
+    fresh();
+    me.s.pilot.credits = 5000;
+    expect(sys.handleAction(me.s, { a: 'buyItem', id: 'suit-navy' })).toBe('Нужна репутация: Федерация — Друг');
+    me.s.pilot.career.rep.fed = 30;
+    expect(sys.handleAction(me.s, { a: 'buyItem', id: 'suit-navy' })).toBeNull();
+    expect(sys.handleAction(me.s, { a: 'buyItem', id: 'chest-aegis' })).toBe('Нужна репутация: Федерация — Союзник');
   });
 });

@@ -55,7 +55,7 @@ export class Session {
     return {
       name: p.name, credits: Math.floor(p.credits), cargo: { ...p.cargo }, cargoCap: combatStats(p.upgrades).cargoCap,
       upgrades: { ...p.upgrades }, missiles: p.missiles, kills: p.kills, deaths: p.deaths,
-      items: [...p.items], outfit: { ...p.outfit },
+      items: [...p.items], outfit: { ...p.outfit }, career: structuredClone(p.career),
     };
   }
 

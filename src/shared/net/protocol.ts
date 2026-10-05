@@ -3,11 +3,12 @@ import type { ShipInput, ShipState } from '../sim/ship.ts';
 import type { Blueprint } from '../ships/blueprint.ts';
 import type { Cargo, Upgrades } from '../economy.ts';
 import type { Outfit } from '../outfit.ts';
+import type { Career, ContractDef } from '../contracts.ts';
 import { Reader, Writer } from './buffer.ts';
 
 export const MSG = {
   HELLO: 1, INPUT: 2, ACTION: 3, CHAT: 4, PING: 5,
-  WELCOME: 20, SNAPSHOT: 21, INFO: 22, GONE: 23, SHOTS: 24, EVENTS: 25, PILOT: 26, PONG: 27, ERROR: 28, WORLD: 29,
+  WELCOME: 20, SNAPSHOT: 21, INFO: 22, GONE: 23, SHOTS: 24, EVENTS: 25, PILOT: 26, PONG: 27, ERROR: 28, WORLD: 29, BOARD: 30,
 } as const;
 
 export const KIND = { SHIP: 1, CHAR: 2, MISSILE: 3, LOOT: 4, CREATURE: 5 } as const;
@@ -31,9 +32,13 @@ export interface PilotInfo {
   missiles: number; kills: number; deaths: number;
   /** Bought suit parts and the outfit worn. */
   items: string[]; outfit: Outfit;
+  /** Experience, reputation and contracts. */
+  career: Career;
 }
-/** `look` (pilots on foot): outfit code, see outfit.ts lookCode. */
-export interface EntityInfo { id: number; kind: number; name: string; bp?: Blueprint; npc?: boolean; owner?: number; species?: number; look?: string }
+/** The station contract board (sent while docked); `next` = ms until it is refreshed. */
+export interface BoardMsg { system: number; offers: ContractDef[]; next: number }
+/** `look` (pilots on foot): outfit code, see outfit.ts lookCode; `wanted`: a player ship wanted by the Federation. */
+export interface EntityInfo { id: number; kind: number; name: string; bp?: Blueprint; npc?: boolean; owner?: number; species?: number; look?: string; wanted?: boolean }
 export interface Harvested { planet: number; node: number; left: number }
 export interface Welcome {
   playerId: number; shipId: number; token: string; pilot: PilotInfo; system: number;
@@ -65,7 +70,8 @@ export type Action =
   | { a: 'sell' } | { a: 'repair' } | { a: 'buyMissiles' } | { a: 'upgrade'; key: string }
   | { a: 'missile'; target: number } | { a: 'respawn' }
   | { a: 'salvage'; id: number } | { a: 'sample'; id: number }
-  | { a: 'buyItem'; id: string } | { a: 'equip'; id: string };
+  | { a: 'buyItem'; id: string } | { a: 'equip'; id: string }
+  | { a: 'takeContract'; id: string } | { a: 'dropContract'; id: string };
 
 export function encodeJson(type: number, payload: unknown): Uint8Array {
   const body = new TextEncoder().encode(JSON.stringify(payload));

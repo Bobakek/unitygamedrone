@@ -1,5 +1,6 @@
 import type { Cargo, Upgrades } from '../shared/economy.ts';
 import type { Outfit } from '../shared/outfit.ts';
+import type { Career } from '../shared/contracts.ts';
 
 /** Browser-safe pilot storage contract (SQLite on the server, localStorage in offline mode). */
 export interface PilotRecord {
@@ -7,6 +8,8 @@ export interface PilotRecord {
   missiles: number; kills: number; deaths: number; system: number;
   /** Bought suit parts and what the pilot wears. */
   items: string[]; outfit: Outfit;
+  /** Experience, reputation and contracts. */
+  career: Career;
 }
 
 export interface PilotStorage {

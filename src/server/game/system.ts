@@ -27,7 +27,9 @@ import { NpcBrain, npcThink, type NpcWorld } from './npc.ts';
 import { WorldEvents } from './world-events.ts';
 import { Outposts } from './outposts.ts';
 import { Fauna } from './fauna.ts';
-import { item, lookCode, owns, SLOT_NAMES } from '../../shared/outfit.ts';
+import { item, lookCode, owns, repNeedText, repOk, SLOT_NAMES } from '../../shared/outfit.ts';
+import { isPirateFriend, isWanted, WANTED_BOUNTY } from '../../shared/contracts.ts';
+import { ContractDesk } from './contracts.ts';
 import type { Session } from './session.ts';
 
 export interface GameContext {
@@ -35,6 +37,10 @@ export interface GameContext {
   tick: number;
   respawnDelay: number;
   nextId(): number;
+  /** Wall-clock milliseconds (the contract board changes every 10 minutes of real time). */
+  now(): number;
+  /** Is the convoy event `poi` of system `system` still under way? */
+  convoyAlive(system: number, poi: number): boolean;
 }
 
 const tmp = v3(), tmp2 = v3(), aim = v3(), rot = quat();
@@ -59,6 +65,7 @@ export class SystemInstance implements NpcWorld {
   readonly world: WorldEvents;
   readonly outposts: Outposts;
   readonly fauna: Fauna;
+  readonly contracts: ContractDesk;
 
   constructor(private ctx: GameContext, id: number) {
     this.def = getSystem(id);
@@ -68,6 +75,7 @@ export class SystemInstance implements NpcWorld {
     this.world = new WorldEvents(this);
     this.outposts = new Outposts(this);
     this.fauna = new Fauna(this);
+    this.contracts = new ContractDesk(this);
   }
 
   nextId() { return this.ctx.nextId(); }
@@ -86,6 +94,8 @@ export class SystemInstance implements NpcWorld {
   }
 
   get time() { return this.ctx.time; }
+  now() { return this.ctx.now(); }
+  convoyAlive(system: number, poi: number) { return this.ctx.convoyAlive(system, poi); }
   get stationPos() { return this.def.station.pos; }
   ship(id: number) { return this.ships.get(id); }
   inSafeZone(p: V3) { return vdistSq(p, this.def.station.pos) < SAFE_ZONE_RADIUS * SAFE_ZONE_RADIUS; }
@@ -138,7 +148,7 @@ export class SystemInstance implements NpcWorld {
   }
 
   shipInfo(s: ShipEntity): EntityInfo {
-    return { id: s.id, kind: KIND.SHIP, name: s.name, bp: s.bp, npc: !!s.npc, owner: s.session?.id };
+    return { id: s.id, kind: KIND.SHIP, name: s.name, bp: s.bp, npc: !!s.npc, owner: s.session?.id, wanted: s.session && isWanted(s.session.pilot.career) ? true : undefined };
   }
 
   allInfos(): EntityInfo[] {
@@ -246,9 +256,13 @@ export class SystemInstance implements NpcWorld {
     const hp = pos ?? target.world.p;
     this.events.push({ t: 'hit', target: target.id, pos: [hp.x, hp.y, hp.z], shield: absorbed >= dmg - 1e-9, dmg: Math.round(dmg), by: attacker });
     this.world.onHit(target, attacker);
-    if (target.npc && attacker && target.npc.state !== 'flee') {
+    if (target.npc && attacker) {
       const a = this.ships.get(attacker);
-      if (a && !a.npc) { target.npc.target = attacker; target.npc.state = 'attack'; }
+      if (a && !a.npc) {
+        // shooting at pirates ends any truce with them for a while
+        a.provokedAt = this.time;
+        if (target.npc.state !== 'flee') { target.npc.target = attacker; target.npc.state = 'attack'; }
+      }
     }
     if (target.hull <= 0) this.kill(target, attacker);
   }
@@ -274,15 +288,18 @@ export class SystemInstance implements NpcWorld {
       this.ships.delete(target.id);
       this.gone.push(target.id);
       if (!target.transient) this.npcRespawn.push(this.time + 40);
-      this.world.onKill(target);
+      this.world.onKill(target, killer);
       this.outposts.onKill(target, killer);
     }
     if (killer?.session && killer !== target) {
-      const bounty = target.bounty ?? (target.npc ? BOUNTY.npc : BOUNTY.player);
+      // a pilot wanted by the Federation carries an extra price on their head
+      const wanted = target.session && isWanted(target.session.pilot.career) ? WANTED_BOUNTY : 0;
+      const bounty = (target.bounty ?? (target.npc ? BOUNTY.npc : BOUNTY.player)) + wanted;
       killer.session.pilot.credits += bounty;
       killer.session.pilot.kills++;
       killer.session.sendPilot();
-      killer.session.msg(`Цель уничтожена: +${bounty} кр`, 'good');
+      killer.session.msg(wanted ? `Разыскиваемый пилот уничтожен: +${bounty} кр` : `Цель уничтожена: +${bounty} кр`, 'good');
+      if (target.npc && target.npc.role !== 'turret') this.contracts.onPirateKill(killer.session);
     }
   }
 
@@ -304,11 +321,16 @@ export class SystemInstance implements NpcWorld {
     let best: ShipEntity | null = null, bd = range * range;
     for (const s of this.ships.values()) {
       if (s.npc || s.dead || s.docked || s.state.landed || !s.session || s.session.mode !== MODE.SHIP) continue;
-      if (this.inSafeZone(s.world.p)) continue;
+      if (this.inSafeZone(s.world.p) || this.truce(s)) continue;
       const d = vdistSq(s.world.p, from);
       if (d < bd) { bd = d; best = s; }
     }
     return best;
+  }
+
+  /** Pirates leave alone pilots on good terms with the Syndicate, unless they shot at pirates recently. */
+  truce(ship: ShipEntity): boolean {
+    return !!ship.session && isPirateFriend(ship.session.pilot.career) && this.time - (ship.provokedAt ?? -1e9) > 60;
   }
 
   // ------------------------------------------------------------------ tick
@@ -335,6 +357,12 @@ export class SystemInstance implements NpcWorld {
     this.world.step(DT);
     this.outposts.step(DT);
     this.fauna.step(DT);
+    if (this.ctx.tick % 15 === 0) this.contracts.checkSites();
+    if (this.ctx.tick % 30 === 0) {
+      // a fresh board (new epoch, a convoy came or went) goes to everyone docked
+      if (this.contracts.board().changed) for (const s of this.sessions) if (s.mode === MODE.DOCKED) this.contracts.sendBoard(s);
+      for (const s of this.sessions) this.contracts.expire(s);
+    }
 
     for (const ship of this.ships.values()) {
       if (ship.dead) {
@@ -552,6 +580,8 @@ export class SystemInstance implements NpcWorld {
         s.mode = MODE.DOCKED;
         s.resync();
         s.sendPilot();
+        this.contracts.deliver(s);
+        this.contracts.sendBoard(s);
         return null;
       }
       case 'undock': {
@@ -601,6 +631,7 @@ export class SystemInstance implements NpcWorld {
         const it = item(String(act.id));
         if (!it) return null;
         if (owns(p.items, it.id)) return 'Уже куплено';
+        if (!repOk(it, p.career.rep)) return `Нужна репутация: ${repNeedText(it)}`;
         if (p.credits < it.price) return 'Недостаточно кредитов';
         p.credits -= it.price;
         p.items.push(it.id);
@@ -662,6 +693,10 @@ export class SystemInstance implements NpcWorld {
       case 'salvage':
         if (s.mode !== MODE.SHIP || ship.dead) return null;
         return this.world.salvage(s, Number(act.id));
+      case 'takeContract':
+        return this.contracts.take(s, String(act.id));
+      case 'dropContract':
+        return this.contracts.drop(s, String(act.id));
       default:
         return null;
     }

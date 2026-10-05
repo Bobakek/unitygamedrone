@@ -439,6 +439,7 @@ export class Fauna {
       c.deadUntil = this.sys.time + 90;
       c.state.v = v3();
       by.msg(`${c.sp.name} повержен — подойдите и нажмите F, чтобы взять биообразцы`, 'good');
+      this.sys.contracts.onCreatureKill(by, c.sp.id, c.planet);
     }
   }
 

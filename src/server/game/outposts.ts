@@ -67,6 +67,7 @@ export class Outposts {
     if (!t) return;
     t.ship = null;
     t.respawnAt = this.sys.time + TURRET_RESPAWN;
+    if (killer?.session) this.sys.contracts.onTurretKill(killer.session, t.site.planet, t.site.id);
     const standing = this.towers.some((o) => o.site === t.site && o.ship);
     if (standing) return;
     const s = killer?.session;
@@ -119,7 +120,7 @@ export class Outposts {
     const pl = this.sys.def.planets[tower.state.frame - 1];
     for (const s of this.sys.sessions) {
       const sh = s.ship;
-      if (s.mode !== MODE.SHIP || sh.dead || sh.docked || sh.god) continue;
+      if (s.mode !== MODE.SHIP || sh.dead || sh.docked || sh.god || this.sys.truce(sh)) continue;
       const d = vdist(sh.world.p, tower.world.p);
       if (d >= bd) continue;
       vnorm(up, vsub(up, tower.world.p, pl.center));

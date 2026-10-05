@@ -6,6 +6,7 @@ import {
 import type { PilotStorage } from '../storage.ts';
 import { SPECIES } from '../../shared/fauna.ts';
 import { item } from '../../shared/outfit.ts';
+import { CONTRACT_KINDS, FACTIONS, newCareer, rankOf, RANKS, type ContractKind, type Faction } from '../../shared/contracts.ts';
 import { Session, type Transport } from './session.ts';
 import { SystemInstance, type GameContext } from './system.ts';
 
@@ -14,6 +15,8 @@ export interface GameOptions {
   dev?: boolean;
   respawnDelay?: number;
   log?: (msg: string) => void;
+  /** Wall clock in ms (tests move it to change the contract board). */
+  now?: () => number;
 }
 
 export interface Connection {
@@ -35,9 +38,11 @@ export class Game implements GameContext {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private store: PilotStorage;
   private log: (m: string) => void;
+  readonly now: () => number;
 
   constructor(opts: GameOptions) {
     this.store = opts.store;
+    this.now = opts.now ?? Date.now;
     this.dev = !!opts.dev;
     this.respawnDelay = opts.respawnDelay ?? 5;
     this.log = opts.log ?? (() => {});
@@ -46,6 +51,11 @@ export class Game implements GameContext {
 
   nextId() {
     return this.ids++;
+  }
+
+  convoyAlive(system: number, poi: number) {
+    const p = this.systems[system]?.world.pois.get(poi);
+    return !!p && p.kind === 'convoy' && !!p.ship;
   }
 
   // ------------------------------------------------------------------ connections
@@ -172,7 +182,7 @@ export class Game implements GameContext {
     const sys = s.system;
     switch (cmd) {
       case 'help':
-        s.msg('Команды: /who, /help' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|station|dock|field|gate|open> [dusk|night], /land <n> [dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-7>, /credits <n>, /god, /pirate, /system <n>' : ''));
+        s.msg('Команды: /who, /help' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|station|dock|field|gate|open> [dusk|night], /land <n> [dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-11>, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /cargo <вид> <n>' : ''));
         return;
       case 'who':
         s.msg(`Онлайн (${this.sessions.size}): ${[...this.sessions.values()].map((o) => o.pilot.name).join(', ')}`);
@@ -199,6 +209,39 @@ export class Game implements GameContext {
         s.pilot.outfit[it.slot] = it.id;
         s.sendPilot();
         s.msg(`Надето: ${it.name}`);
+        break;
+      }
+      case 'rep': {
+        const f = args[0] as Faction;
+        if (!FACTIONS.includes(f)) { s.msg('/rep fed|guild|pirate <значение -100..100>', 'warn'); break; }
+        sys.contracts.rep(s, f, (Number(args[1]) || 0) - s.pilot.career.rep[f]);
+        s.sendPilot();
+        s.msg(`Репутация (${f}): ${s.pilot.career.rep[f]}`);
+        break;
+      }
+      case 'xp': s.pilot.career.xp = Math.max(0, Number(args[0]) || 0); s.sendPilot(); s.msg(`Звание: ${RANKS[rankOf(s.pilot.career.xp)].name}`); break;
+      case 'career': s.pilot.career = newCareer(); s.sendPilot(); s.msg('Карьера сброшена'); break;
+      case 'contract': {
+        // dev: take an offer of a kind from the current board anywhere, ignoring rank
+        const kind = args[0] as ContractKind;
+        const def = sys.contracts.board().offers.find((o) => o.kind === kind && !s.pilot.career.active.some((a) => a.id === o.id));
+        if (!CONTRACT_KINDS.includes(kind) || !def) { s.msg(`Нет такого предложения. Виды: ${CONTRACT_KINDS.join(', ')}`, 'warn'); break; }
+        s.pilot.career.active.push({ ...structuredClone(def), have: 0 });
+        s.sendPilot();
+        s.msg(`Контракт выдан: ${def.title}`);
+        break;
+      }
+      case 'finish': {
+        const c = s.pilot.career.active[0];
+        if (!c) { s.msg('Нет активных контрактов', 'warn'); break; }
+        sys.contracts.devFinish(s, c);
+        break;
+      }
+      case 'cargo': {
+        const k = args[0] as keyof typeof s.pilot.cargo;
+        if (!(k in s.pilot.cargo)) { s.msg('/cargo ore|crystal|relic|bio <n>', 'warn'); break; }
+        s.pilot.cargo[k] += Number(args[1]) || 1;
+        s.sendPilot();
         break;
       }
       case 'fauna': {

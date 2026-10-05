@@ -6,7 +6,9 @@ import {
   type ShipInput, type SimEnv, Rng, DT, cloneShip, CRUISE_SPOOL, footHeight, copyChar, quat, newPose, planetRot, setFrame, toWorldPoint, worldPose,
   liquidOf, FLOAT_DEPTH, HEAD_UNDER, AIR_TIME, vscale,
   defaultOutfit, gearStats, DEFAULT_GEAR, lookCode, parseLook, validOutfit, type Outfit,
+  generateBoard, objectiveText, FAUNA, FAUNA_SEA, rankOf, RANKS, repLevel, validCareer, newCareer, item, repOk,
 } from './helpers.ts';
+import { planetSites } from '../src/shared/planet/sites.ts';
 
 const sys = getSystem(0);
 const env: SimEnv = { star: sys.star, planets: sys.planets, fields: sys.fields, station: sys.station, time: 0 };
@@ -593,5 +595,47 @@ describe('solid props', () => {
     const du = dx * up.x + dy * up.y + dz * up.z;
     const horiz = Math.hypot(dx - up.x * du, dy - up.y * du, dz - up.z * du);
     expect(horiz).toBeGreaterThanOrEqual(col.r + 0.3);
+  });
+});
+
+describe('contracts', () => {
+  it('boards are deterministic and point at real targets', () => {
+    for (const sysId of [0, 1, 2]) {
+      for (let ep = 0; ep < 30; ep++) {
+        const board = generateBoard(sysId, ep);
+        expect(generateBoard(sysId, ep)).toEqual(board);
+        expect(new Set(board.map((o) => o.id)).size).toBe(board.length);
+        for (const o of board) {
+          expect(o.reward.credits).toBeGreaterThan(0);
+          expect(o.need).toBeGreaterThan(0);
+          expect(objectiveText(o)).not.toContain('undefined');
+          const sys = getSystem(o.system);
+          if (o.kind === 'deliver') expect(o.system).not.toBe(sysId);
+          else expect(o.system).toBe(sysId);
+          if (o.planet !== undefined) {
+            const pl = sys.planets[o.planet];
+            if (o.kind === 'hunt') expect([FAUNA[pl.type]?.[1], FAUNA_SEA[pl.type]?.[1]]).toContain(o.species);
+            if (o.site !== undefined) expect(planetSites(pl)[o.site].kind).toBe(o.kind === 'survey' ? 'ruin' : 'base');
+          }
+        }
+      }
+    }
+  });
+
+  it('ranks, reputation levels and stored careers', () => {
+    expect(rankOf(0)).toBe(0);
+    expect(rankOf(899)).toBe(1);
+    expect(rankOf(900)).toBe(2);
+    expect(rankOf(1e9)).toBe(RANKS.length - 1);
+    expect([-100, -50, -49, -10, 24, 25, 60].map(repLevel)).toEqual([0, 0, 1, 2, 2, 3, 4]);
+    const c = validCareer({ xp: 120.7, rep: { fed: 500, guild: 'x' }, active: [{ id: 'bad' }], done: ['a', 3] });
+    expect(c).toEqual({ xp: 120, rep: { fed: 100, guild: 0, pirate: 0 }, active: [], done: ['a'] });
+    expect(validCareer(null)).toEqual(newCareer());
+    const o = generateBoard(0, 1)[0];
+    expect(validCareer({ active: [{ ...o, have: 1 }] }).active[0]).toEqual({ ...o, have: 1 });
+    const navy = item('suit-navy')!;
+    expect(repOk(navy, { fed: 24, guild: 0, pirate: 0 })).toBe(false);
+    expect(repOk(navy, { fed: 25, guild: 0, pirate: 0 })).toBe(true);
+    expect(repOk(item('suit-white')!, { fed: -100, guild: -100, pirate: -100 })).toBe(true);
   });
 });

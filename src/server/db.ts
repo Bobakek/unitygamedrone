@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { defaultUpgrades, emptyCargo, MAX_MISSILES } from '../shared/economy.ts';
 import { defaultOutfit, validOutfit } from '../shared/outfit.ts';
+import { newCareer, validCareer } from '../shared/contracts.ts';
 import type { PilotRecord, PilotStorage } from './storage.ts';
 
 export type { PilotRecord } from './storage.ts';
@@ -11,7 +12,7 @@ export type { PilotRecord } from './storage.ts';
 interface Row {
   id: number; name: string; token: string; credits: number; cargo: string; upgrades: string;
   missiles: number; kills: number; deaths: number; system: number;
-  items: string | null; outfit: string | null;
+  items: string | null; outfit: string | null; career: string | null;
 }
 
 /** Pilot persistence on the built-in node:sqlite driver (no native build step). */
@@ -38,6 +39,7 @@ export class PilotStore implements PilotStorage {
     const cols = new Set((this.db.prepare('PRAGMA table_info(pilots)').all() as { name: string }[]).map((c) => c.name));
     if (!cols.has('items')) this.db.exec(`ALTER TABLE pilots ADD COLUMN items TEXT NOT NULL DEFAULT '[]'`);
     if (!cols.has('outfit')) this.db.exec(`ALTER TABLE pilots ADD COLUMN outfit TEXT NOT NULL DEFAULT '{}'`);
+    if (!cols.has('career')) this.db.exec(`ALTER TABLE pilots ADD COLUMN career TEXT NOT NULL DEFAULT '{}'`);
   }
 
   private parse(r: Row): PilotRecord {
@@ -45,7 +47,7 @@ export class PilotStore implements PilotStorage {
       id: r.id, name: r.name, token: r.token, credits: r.credits,
       cargo: { ...emptyCargo(), ...JSON.parse(r.cargo) }, upgrades: { ...defaultUpgrades(), ...JSON.parse(r.upgrades) },
       missiles: r.missiles, kills: r.kills, deaths: r.deaths, system: r.system,
-      ...parseGear(r.items, r.outfit),
+      ...parseGear(r.items, r.outfit), career: parseCareer(r.career),
     };
   }
 
@@ -58,15 +60,15 @@ export class PilotStore implements PilotStorage {
     const token = randomBytes(18).toString('base64url');
     const now = Date.now();
     this.db
-      .prepare('INSERT INTO pilots (name, token, credits, cargo, upgrades, missiles, items, outfit, created, last_seen) VALUES (?, ?, 250, ?, ?, ?, ?, ?, ?, ?)')
-      .run(name, token, JSON.stringify(emptyCargo()), JSON.stringify(defaultUpgrades()), MAX_MISSILES / 2, '[]', JSON.stringify(defaultOutfit()), now, now);
+      .prepare('INSERT INTO pilots (name, token, credits, cargo, upgrades, missiles, items, outfit, career, created, last_seen) VALUES (?, ?, 250, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(name, token, JSON.stringify(emptyCargo()), JSON.stringify(defaultUpgrades()), MAX_MISSILES / 2, '[]', JSON.stringify(defaultOutfit()), JSON.stringify(newCareer()), now, now);
     return this.find(name)!;
   }
 
   save(p: PilotRecord): void {
     this.db
-      .prepare('UPDATE pilots SET credits = ?, cargo = ?, upgrades = ?, missiles = ?, kills = ?, deaths = ?, system = ?, items = ?, outfit = ?, last_seen = ? WHERE id = ?')
-      .run(Math.floor(p.credits), JSON.stringify(p.cargo), JSON.stringify(p.upgrades), p.missiles, p.kills, p.deaths, p.system, JSON.stringify(p.items), JSON.stringify(p.outfit), Date.now(), p.id);
+      .prepare('UPDATE pilots SET credits = ?, cargo = ?, upgrades = ?, missiles = ?, kills = ?, deaths = ?, system = ?, items = ?, outfit = ?, career = ?, last_seen = ? WHERE id = ?')
+      .run(Math.floor(p.credits), JSON.stringify(p.cargo), JSON.stringify(p.upgrades), p.missiles, p.kills, p.deaths, p.system, JSON.stringify(p.items), JSON.stringify(p.outfit), JSON.stringify(p.career), Date.now(), p.id);
   }
 
   close(): void {
@@ -81,4 +83,9 @@ export function parseGear(items: string | null | undefined, outfit: string | nul
   try { const v = JSON.parse(items ?? '[]'); if (Array.isArray(v)) list = v.filter((x) => typeof x === 'string'); } catch { /* keep empty */ }
   try { worn = JSON.parse(outfit ?? '{}'); } catch { /* default */ }
   return { items: list, outfit: validOutfit(worn as Record<string, unknown>, list) };
+}
+
+/** Career from stored JSON (old rows have none). */
+export function parseCareer(raw: string | null | undefined) {
+  try { return validCareer(JSON.parse(raw ?? '{}')); } catch { return newCareer(); }
 }

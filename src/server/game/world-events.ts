@@ -186,9 +186,10 @@ export class WorldEvents {
     }
   }
 
-  onKill(target: ShipEntity) {
+  onKill(target: ShipEntity, killer?: ShipEntity) {
     for (const poi of this.pois.values()) {
       if (poi.kind !== 'convoy' || poi.ship !== target.id) continue;
+      if (killer?.session) this.sys.contracts.onFreighterKill(killer.session, poi.id);
       poi.ship = 0;
       poi.name = 'Обломки конвоя';
       poi.until = this.sys.time + 240;
