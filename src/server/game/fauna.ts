@@ -462,6 +462,20 @@ export class Fauna {
   }
 
   /** Suit damage; a pilot who drops to zero is hauled back to the ship and loses half the cargo. */
+  /**
+   * Weather damage (`dmg` for this tick): mild exposure lets the suit keep repairing itself,
+   * the client hears about it every couple of seconds rather than every tick.
+   */
+  hazard(s: Session, dmg: number, stopsRegen: boolean, cause: string) {
+    const ch = s.char;
+    if (!ch || s.ship.god || dmg <= 0) return;
+    const t = this.sys.time;
+    if (stopsRegen) ch.hurtAt = t;
+    ch.hp -= dmg;
+    if (t - (ch.hazardAt ?? -99) > 2) { ch.hazardAt = t; s.sendJson(MSG.EVENTS, { ev: [{ t: 'hurt', dmg: Math.round(dmg * 4), by: 0 }] }); }
+    if (ch.hp <= 0) this.down(s, `Скафандр не выдержал (${cause})`);
+  }
+
   hurt(s: Session, dmg: number, by: number) {
     const ch = s.char;
     if (!ch || s.ship.god) return;
@@ -469,11 +483,16 @@ export class Fauna {
     ch.hurtAt = this.sys.time;
     s.sendJson(MSG.EVENTS, { ev: [{ t: 'hurt', dmg, by }] });
     if (ch.hp > 0) return;
+    this.down(s, 'Скафандр пробит');
+  }
+
+  /** The suit gave out: a rescue drone hauls the pilot back to the ship, half the cargo is lost. */
+  private down(s: Session, why: string) {
     let lost = 0;
     for (const k of CARGO_KEYS) { const n = Math.floor(s.pilot.cargo[k] / 2); s.pilot.cargo[k] -= n; lost += n; }
     this.sys.recallPilot(s);
     s.sendPilot();
-    s.msg(lost ? `Скафандр пробит — спасательный дрон вернул вас на корабль. Потеряно груза: ${lost} ед.` : 'Скафандр пробит — спасательный дрон вернул вас на корабль.', 'warn');
+    s.msg(lost ? `${why} — спасательный дрон вернул вас на корабль. Потеряно груза: ${lost} ед.` : `${why} — спасательный дрон вернул вас на корабль.`, 'warn');
   }
 
   // ------------------------------------------------------------------ network

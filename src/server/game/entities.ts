@@ -57,6 +57,8 @@ export interface CharEntity {
   shotAt: number;
   /** Seconds spent out of air (drowning damage ticks once a second). */
   drown: number;
+  /** Last time the client was told about weather damage. */
+  hazardAt?: number;
 }
 
 export interface Missile {

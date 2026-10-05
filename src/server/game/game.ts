@@ -6,6 +6,7 @@ import {
 import type { PilotStorage } from '../storage.ts';
 import { SPECIES } from '../../shared/fauna.ts';
 import { item } from '../../shared/outfit.ts';
+import { WEATHER, type WeatherKind } from '../../shared/weather.ts';
 import { CONTRACT_KINDS, FACTIONS, newCareer, rankOf, RANKS, type ContractKind, type Faction } from '../../shared/contracts.ts';
 import { Session, type Transport } from './session.ts';
 import { SystemInstance, type GameContext } from './system.ts';
@@ -125,6 +126,8 @@ export class Game implements GameContext {
     s.sendJson(MSG.WELCOME, w);
     s.sendJson(MSG.INFO, { list: s.system.allInfos() });
     s.sendJson(MSG.WORLD, { pois: s.system.world.list() });
+    const ov = s.system.weather.activeOverrides();
+    if (ov.length) s.sendJson(MSG.EVENTS, { ev: ov.map((o) => ({ t: 'weather', ...o })) });
   }
 
   private disconnect(s: Session) {
@@ -242,6 +245,22 @@ export class Game implements GameContext {
         if (!(k in s.pilot.cargo)) { s.msg('/cargo ore|crystal|relic|bio <n>', 'warn'); break; }
         s.pilot.cargo[k] += Number(args[1]) || 1;
         s.sendPilot();
+        break;
+      }
+      case 'weather': {
+        // dev: force the weather on the planet the pilot is on (or nearest to)
+        const kind = (args[0] ?? 'clear') as WeatherKind;
+        if (kind !== 'clear' && !(kind in WEATHER)) { s.msg(`/weather clear|${Object.keys(WEATHER).join('|')} [сила 0..1] [секунд]`, 'warn'); break; }
+        const planet = s.char ? s.char.planet : s.ship.state.frame ? s.ship.state.frame - 1 : -1;
+        if (planet < 0) { s.msg('Нужно быть у планеты', 'warn'); break; }
+        sys.weather.override(planet, kind, args[1] ? Number(args[1]) : 1, args[2] ? Number(args[2]) : 600);
+        s.msg(`Погода: ${kind === 'clear' ? 'ясно' : WEATHER[kind].name}`);
+        break;
+      }
+      case 'strike': {
+        if (!s.char) { s.msg('Выйдите из корабля', 'warn'); break; }
+        const p = s.char.state.p, d = Number(args[0]) || 0;
+        sys.weather.strike(s.char.planet, s, d ? undefined : { ...p });
         break;
       }
       case 'fauna': {

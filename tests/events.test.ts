@@ -6,6 +6,7 @@ import {
   ANOMALY_SCAN_TIME, BASE_BOUNTY, PILOT_HP, vnorm, vsub, CFLAG, aimByte, aimPitch, KIND, MOOD, moodOf, cargoCount, decodeJson, encodeJson, FWD, MSG, nodesNear, PROTOCOL_VERSION, qrot, resourceNode, TICK_RATE, v3, vdist,
   type GameEvent, type Poi, getSystem, heightAt, MODE, lookCode, defaultOutfit, type PilotInfo,
   BOARD_EPOCH_MS, BOUNTY, newCareer, generateBoard, WANTED_BOUNTY, type BoardMsg, type ContractDef, type ContractKind,
+  planetRot, toBodyDir,
 } from '../src/shared/index.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync } from 'node:fs';
@@ -607,5 +608,74 @@ describe('contracts', () => {
     me.s.pilot.career.rep.fed = 30;
     expect(sys.handleAction(me.s, { a: 'buyItem', id: 'suit-navy' })).toBeNull();
     expect(sys.handleAction(me.s, { a: 'buyItem', id: 'chest-aegis' })).toBe('Нужна репутация: Федерация — Союзник');
+  });
+});
+
+describe('weather hazards', () => {
+  const game = new Game({ store: new PilotStore(':memory:'), dev: true });
+  const me = pilot(game, 'Stormy');
+  const sys = me.s.system;
+  const ice = sys.def.planets.find((p) => p.type === 'ice')!;
+  const barren = sys.def.planets.find((p) => p.type === 'barren')!;
+  const terran = sys.def.planets.find((p) => p.type === 'terran')!;
+  const onFoot = (pl: typeof ice) => {
+    me.s.mode = MODE.SHIP;
+    sys.devTeleport(me.s, `land${pl.index}`);
+    expect(sys.handleAction(me.s, { a: 'exit' })).toBeNull();
+    return me.s.char!;
+  };
+
+  it('a blizzard wears the suit down unless it has a thermal layer', () => {
+    sys.weather.override(ice.index, 'blizzard', 1);
+    expect(sys.events.some((e) => e.t === 'weather' && e.planet === ice.index)).toBe(true);
+    let ch = onFoot(ice);
+    run(game, 6);
+    expect(ch.hp).toBeLessThan(ch.maxHp - 10);
+    // with the thermal layer the suit keeps up
+    me.s.pilot.items.push('mod-thermo');
+    me.s.pilot.outfit.mod = 'mod-thermo';
+    ch = onFoot(ice);
+    run(game, 12);
+    expect(ch.hp).toBeGreaterThan(ch.maxHp - 2);
+    sys.weather.override(ice.index, 'clear', 0);
+    me.s.pilot.outfit.mod = 'mod-none';
+  });
+
+  it('a radiation storm burns only on the day side', () => {
+    sys.weather.override(barren.index, 'radiation', 1);
+    const ch = onFoot(barren);
+    const R = planetRot(barren, sys.time);
+    const sun = toBodyDir(R, vnorm(v3(), vsub(v3(), sys.def.star.pos, barren.center)), v3());
+    const put = (d: { x: number; y: number; z: number }) => {
+      const u = vnorm(v3(), d);
+      ch.state.p = { x: u.x * (barren.radius + heightAt(barren, u.x, u.y, u.z) + 0.05), y: u.y * (barren.radius + heightAt(barren, u.x, u.y, u.z) + 0.05), z: u.z * (barren.radius + heightAt(barren, u.x, u.y, u.z) + 0.05) };
+      ch.state.v = v3();
+      ch.hp = ch.maxHp;
+    };
+    put({ x: -sun.x, y: -sun.y, z: -sun.z });
+    run(game, 3);
+    expect(ch.hp).toBe(ch.maxHp);
+    put(sun);
+    run(game, 3);
+    expect(ch.hp).toBeLessThan(ch.maxHp - 5);
+    sys.weather.override(barren.index, 'clear', 0);
+  });
+
+  it('lightning strikes near pilots in a thunderstorm and hurts only up close', () => {
+    sys.weather.override(terran.index, 'storm', 1);
+    const ch = onFoot(terran);
+    ch.hp = ch.maxHp;
+    sys.events.length = 0;
+    const far = { x: ch.state.p.x + 30, y: ch.state.p.y, z: ch.state.p.z };
+    sys.weather.strike(terran.index, me.s, far);
+    expect(ch.hp).toBe(ch.maxHp);
+    sys.weather.strike(terran.index, me.s, { ...ch.state.p });
+    expect(ch.hp).toBe(ch.maxHp - 30);
+    expect(sys.events.filter((e) => e.t === 'strike').length).toBe(2);
+    // the storm itself throws bolts around on its own
+    const before = me.events().filter((e) => e.t === 'strike').length;
+    run(game, 20);
+    expect(me.events().filter((e) => e.t === 'strike').length - before).toBeGreaterThan(1);
+    sys.weather.override(terran.index, 'clear', 0);
   });
 });

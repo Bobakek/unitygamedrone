@@ -156,7 +156,10 @@ export class Wardrobe {
     };
     $('.wd-stats', this.el).innerHTML = row('Прочность', now.hp, next.hp, '') + row('Воздух', now.airTime, next.airTime, ' с')
       + row('Расход джетпака', now.fuelDrain, next.fuelDrain, '/с', 'down') + row('Самопочинка', now.regenRate, next.regenRate, '/с')
-      + row('Биообразцы', now.samples, next.samples, '');
+      + row('Биообразцы', now.samples, next.samples, '')
+      + (now.thermal || next.thermal ? row('Холод и жара', now.thermal * 100, next.thermal * 100, ' %') : '')
+      + (now.filter || next.filter ? row('Песок и кислота', now.filter * 100, next.filter * 100, ' %') : '')
+      + (now.shielding || next.shielding ? row('Радиация', now.shielding * 100, next.shielding * 100, ' %') : '');
     $('.wd-credits', this.el).textContent = `Баланс: ${p.credits} кр`;
   }
 }

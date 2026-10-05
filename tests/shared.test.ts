@@ -7,6 +7,7 @@ import {
   liquidOf, FLOAT_DEPTH, HEAD_UNDER, AIR_TIME, vscale,
   defaultOutfit, gearStats, DEFAULT_GEAR, lookCode, parseLook, validOutfit, type Outfit,
   generateBoard, objectiveText, FAUNA, FAUNA_SEA, rankOf, RANKS, repLevel, validCareer, newCareer, item, repOk,
+  weatherAt, forecast, STORM_OF, WINDOW,
 } from './helpers.ts';
 import { planetSites } from '../src/shared/planet/sites.ts';
 
@@ -637,5 +638,71 @@ describe('contracts', () => {
     expect(repOk(navy, { fed: 24, guild: 0, pirate: 0 })).toBe(false);
     expect(repOk(navy, { fed: 25, guild: 0, pirate: 0 })).toBe(true);
     expect(repOk(item('suit-white')!, { fed: -100, guild: -100, pirate: -100 })).toBe(true);
+  });
+});
+
+describe('weather', () => {
+  const sys0 = getSystem(0);
+  it('each planet gets its own kind of storm on a deterministic schedule', () => {
+    for (const pl of sys0.planets) {
+      let storms = 0, calm = 0, full = 0;
+      for (let t = 0; t < WINDOW * 40; t += 7) {
+        const w = weatherAt(pl, t);
+        expect(weatherAt(pl, t)).toEqual(w);
+        if (w.kind === 'clear') calm++;
+        else { storms++; expect(w.kind).toBe(STORM_OF[pl.type]); if (w.k >= 1) full++; }
+      }
+      expect(storms).toBeGreaterThan(50);
+      expect(calm).toBeGreaterThan(storms);
+      expect(full).toBeGreaterThan(10);
+      // airless worlds have no wind
+      if (!pl.atmo) expect(vlen(weatherAt(pl, 1234).wind)).toBe(0);
+    }
+  });
+
+  it('the forecast agrees with the weather', () => {
+    const pl = sys0.planets.find((p) => p.type === 'ice')!;
+    for (let t = 100; t < WINDOW * 12; t += 53) {
+      const f = forecast(pl, t)!;
+      expect(f).toBeTruthy();
+      expect(f.kind).toBe('blizzard');
+      if (f.active) {
+        expect(weatherAt(pl, t).kind).toBe('blizzard');
+        expect(weatherAt(pl, t + f.inSec + 0.5).kind).toBe('clear');
+      } else {
+        expect(weatherAt(pl, t).kind).toBe('clear');
+        expect(weatherAt(pl, t + f.inSec + 0.5).kind).toBe('blizzard');
+      }
+    }
+    // a dev override wins while it lasts
+    expect(weatherAt(pl, 10, { kind: 'blizzard', k: 0.7, until: 20 }).k).toBe(0.7);
+    expect(weatherAt(pl, 10, { kind: 'clear', k: 1, until: 20 }).kind).toBe('clear');
+  });
+
+  it('wind pushes a pilot along the ground, the same way every time', () => {
+    const pl = sys0.planets.find((p) => p.type === 'terran')!;
+    const run = () => {
+      // a dry spot
+      let d = vnorm(v3(), v3(0.3, 0.8, 0.5));
+      for (let i = 0; i < 200 && heightAt(pl, d.x, d.y, d.z) < 4; i++) d = vnorm(v3(), v3(Math.sin(i * 1.7), Math.cos(i * 2.3), Math.sin(i * 0.9 + 1)));
+      const c = newChar(vscale(v3(), d, pl.radius + footHeight(pl, d.x, d.y, d.z)), vnorm(v3(), v3(1, 0, 0)));
+      const w = vscale(v3(), vnorm(v3(), v3(-0.4, 0.1, 0.9)), 18);
+      const p0 = { ...c.p };
+      for (let i = 0; i < 60; i++) stepChar(c, emptyCharInput(), pl, DT, DEFAULT_GEAR, { wind: w });
+      return { moved: vdist(p0, c.p), along: (c.p.x - p0.x) * w.x + (c.p.y - p0.y) * w.y + (c.p.z - p0.z) * w.z, p: c.p };
+    };
+    const a = run(), b = run();
+    expect(a.p).toEqual(b.p);
+    expect(a.moved).toBeGreaterThan(1);
+    expect(a.along).toBeGreaterThan(0);
+  });
+
+  it('protection modules: gear stats and older look codes', () => {
+    expect(gearStats({ ...defaultOutfit(), mod: 'mod-thermo' }).thermal).toBe(0.85);
+    expect(gearStats({ ...defaultOutfit(), mod: 'mod-wanderer' })).toMatchObject({ thermal: 0.6, filter: 0.6, shielding: 0.6 });
+    const old = 'suit-orange.helmet-dome.visor-gold.pack-plss.chest-dcm.lights-none.patch-flag';
+    expect(parseLook(old).mod).toBe('mod-none');
+    expect(parseLook(old).suit).toBe('suit-orange');
+    expect(parseLook(lookCode({ ...defaultOutfit(), mod: 'mod-rad' })).mod).toBe('mod-rad');
   });
 });

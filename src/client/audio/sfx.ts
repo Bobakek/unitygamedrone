@@ -9,6 +9,9 @@ export class Sfx {
   private muffle: BiquadFilterNode | null = null;
   private hum: GainNode | null = null;
   private wet = false;
+  /** Weather loops: rain hiss and wind howl. */
+  private rain: GainNode | null = null;
+  private wind: { gain: GainNode; filter: BiquadFilterNode } | null = null;
 
   constructor() {
     const start = () => this.init();
@@ -52,7 +55,43 @@ export class Sfx {
     hs.connect(hf); hf.connect(hg); hg.connect(this.master);
     hs.start(); lfo.start();
     this.hum = hg;
+    // rain: bright noise; wind: low noise with a slowly wandering band (gusts)
+    const rs = c.createBufferSource(), rf = c.createBiquadFilter(), rg = c.createGain();
+    rs.buffer = this.noise; rs.loop = true;
+    rf.type = 'highpass'; rf.frequency.value = 1800;
+    rg.gain.value = 0;
+    rs.connect(rf); rf.connect(rg); rg.connect(this.master);
+    rs.start();
+    this.rain = rg;
+    const ws = c.createBufferSource(), wf = c.createBiquadFilter(), wg = c.createGain(), wl = c.createOscillator(), wlg = c.createGain();
+    ws.buffer = this.noise; ws.loop = true; ws.playbackRate.value = 0.5;
+    wf.type = 'bandpass'; wf.frequency.value = 380; wf.Q.value = 1.8;
+    wl.frequency.value = 0.21; wlg.gain.value = 160;
+    wl.connect(wlg); wlg.connect(wf.frequency);
+    wg.gain.value = 0;
+    ws.connect(wf); wf.connect(wg); wg.connect(this.master);
+    ws.start(); wl.start();
+    this.wind = { gain: wg, filter: wf };
   }
+
+  /** Weather ambience: rain (0..1) and wind (0..1) loudness. */
+  weather(rain: number, wind: number) {
+    if (!this.ctx || !this.rain || !this.wind) return;
+    const t = this.ctx.currentTime;
+    this.rain.gain.setTargetAtTime(0.08 * rain, t, 0.5);
+    this.wind.gain.gain.setTargetAtTime(0.16 * wind, t, 0.6);
+  }
+
+  /** Thunder `delay` seconds from now (sound travels), louder when near. */
+  thunder(delay: number, vol: number) {
+    setTimeout(() => {
+      this.burst(2.6, 220, 0.4 * vol, 'lowpass', 50);
+      this.burst(0.25, 1400, 0.12 * vol * vol, 'bandpass', 300);
+    }, Math.max(0, delay) * 1000);
+  }
+
+  /** One Geiger-counter click. */
+  click() { this.burst(0.012, 4200, 0.07, 'highpass'); }
 
   /** Under water: muffled world and a low ambience. */
   underwater(on: boolean) {

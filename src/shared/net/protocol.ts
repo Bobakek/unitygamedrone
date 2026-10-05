@@ -4,6 +4,7 @@ import type { Blueprint } from '../ships/blueprint.ts';
 import type { Cargo, Upgrades } from '../economy.ts';
 import type { Outfit } from '../outfit.ts';
 import type { Career, ContractDef } from '../contracts.ts';
+import type { WeatherKind } from '../weather.ts';
 import { Reader, Writer } from './buffer.ts';
 
 export const MSG = {
@@ -62,7 +63,11 @@ export type GameEvent =
   /** A creature attacks (animation cue). */
   | { t: 'bite'; id: number }
   /** A predator roars as it starts a hunt. */
-  | { t: 'roar'; id: number };
+  | { t: 'roar'; id: number }
+  /** Lightning struck at a body-frame point of a planet. */
+  | { t: 'strike'; planet: number; pos: [number, number, number] }
+  /** The server forced a planet's weather until `until` (dev). */
+  | { t: 'weather'; planet: number; kind: WeatherKind; k: number; until: number };
 
 export type Action =
   | { a: 'exit' } | { a: 'board' } | { a: 'dock' } | { a: 'undock' } | { a: 'jump' }

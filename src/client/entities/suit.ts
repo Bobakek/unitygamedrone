@@ -67,6 +67,9 @@ const SCHEMES: Record<string, Scheme> = {
   'suit-raider': { ...WHITE, fabric: '#232327', soft: '#1b1b1e', hard: '#2a2a30', glove: '#121214', palm: '#0c0c0e', boot: '#141416', sole: '#0a0a0b', pack: '#2a2a30', hose: '#5a1c22', ring: '#8a2a32', accent: '#d0202e', stripe: '#d0202e', inserts: '#8a1a22', helmet: '#2a2a30' },
 };
 
+/** Weather modules: canister colour. */
+const MOD_COLORS: Record<string, string> = { 'mod-thermo': '#e0702a', 'mod-filter': '#46a868', 'mod-rad': '#d8c02a', 'mod-wanderer': '#4a86d8' };
+
 // ---------------------------------------------------------------- materials (shared)
 let fabricTex: THREE.Texture | null = null;
 /** Woven-fabric normal map, generated once. */
@@ -325,6 +328,15 @@ function buildGeometry(o: Outfit): Built {
   hips.add(tor(0.205, 0.026, 32), S.ring, METAL, [0, 0.06, 0], [Math.PI / 2, 0, 0], [1.05, 0.85, 1]);
   hips.add(cyl(0.2, 0.21, 0.05, 24), S.soft, FABRIC, [0, 0.02, 0], [0, 0, 0], [1.05, 1, 0.85]);
   if (S.inserts) hips.add(cyl(0.212, 0.212, 0.03, 24, true), S.inserts, FABRIC, [0, -0.02, 0], [0, 0, 0], [1.05, 1, 0.86]);
+  // weather protection module: a canister on each hip with a status light
+  const mc = MOD_COLORS[o.mod];
+  if (mc) {
+    for (const s of [-1, 1]) {
+      hips.add(cap(0.042, 0.11, 12), mc, HARD, [s * 0.225, -0.03, 0.05]);
+      hips.add(tor(0.044, 0.008, 12), S.ring, METAL, [s * 0.225, 0.02, 0.05], [Math.PI / 2, 0, 0]);
+      L('hips').add(sph(0.011, 8, 6), mc, 1.8, [s * 0.225, 0.075, 0.05]);
+    }
+  }
 
   // ---- spine: hard upper torso, rings, chest gear, hoses, backpack
   const sp = P('spine');

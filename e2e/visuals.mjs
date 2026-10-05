@@ -210,6 +210,38 @@ try {
     console.log('night on foot', JSON.stringify(lamps));
     if (!lamps.visor || !lamps.lights) errors.push(`night: visor/lamps not switched (${JSON.stringify(lamps)})`);
   }
+  // storms on foot: thunderstorm, blizzard, acid rain, radiation (system 0) and a sandstorm (system 1)
+  if (!only || only === 'weather') {
+    const storm = async (sysId, type, kind, file, extra) => {
+      if ((await page.evaluate(() => window.__game.sys.id)) !== sysId) {
+        await chat(`/system ${sysId}`);
+        await page.waitForFunction((x) => window.__game.sys.id === x && window.__game.pred.ready, sysId, { timeout: STEP_MS, polling: 250 });
+      }
+      const idx = await page.evaluate((t) => window.__game.sys.planets.findIndex((p) => p.type === t), type);
+      await chat(`/land ${idx}`);
+      await sleep(4000);
+      await page.keyboard.press('KeyG');
+      await mode(1);
+      await chat(`/weather ${kind} 1`);
+      await page.evaluate(() => { window.__game.ctrl.footPitch = -0.02; window.__game.ctrl.footDist = 4.5; });
+      await sleep(5000);
+      if (extra) await extra();
+      await page.screenshot({ path: `${OUT}/${file}.png` });
+      const st = await page.evaluate(() => ({ kind: window.__game.wx.kind, k: +window.__game.wx.k.toFixed(2), chip: document.querySelector('#weather-chip').textContent, sky: document.querySelector('.pp-forecast').textContent }));
+      console.log('weather', file, JSON.stringify(st));
+      if (st.kind !== kind || st.k < 0.5) errors.push(`${file}: weather not shown (${JSON.stringify(st)})`);
+      await chat('/weather clear');
+      await page.keyboard.press('KeyG');
+      await mode(0);
+    };
+    await chat('/god');
+    await storm(0, 'terran', 'storm', 'weather-storm', async () => { await chat('/strike 1'); await sleep(700); });
+    await storm(0, 'ice', 'blizzard', 'weather-blizzard');
+    await storm(0, 'alien', 'acid', 'weather-acid');
+    await storm(0, 'barren', 'radiation', 'weather-radiation');
+    await storm(1, 'desert', 'sandstorm', 'weather-sandstorm');
+    await chat('/god');
+  }
 } catch (e) {
   errors.push(String(e.stack || e));
 } finally {

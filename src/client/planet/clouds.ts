@@ -34,9 +34,12 @@ function puffGeometry(): THREE.BufferGeometry {
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 
 /** Instanced low-poly cloud layer that slowly drifts around the planet. */
+const STORM_GREY = new THREE.Color('#3a3f48');
+
 export class CloudLayer {
   readonly group = new THREE.Group();
   private mat: THREE.MeshStandardMaterial;
+  private baseColor: THREE.Color;
   private drift = 0;
   private qd = new THREE.Quaternion();
   /** World direction from the planet to its star. */
@@ -44,6 +47,7 @@ export class CloudLayer {
 
   constructor(def: PlanetDef, density = 1) {
     const cfg = COVER[def.type];
+    this.baseColor = new THREE.Color(cfg?.color ?? '#ffffff');
     this.mat = new THREE.MeshStandardMaterial({ color: cfg?.color ?? '#ffffff', flatShading: true, roughness: 1, transparent: true, opacity: 0.94, emissive: cfg?.color ?? '#ffffff', emissiveIntensity: 0.32 });
     // The soft self-glow only applies on the day side, so night-side clouds go dark.
     this.mat.onBeforeCompile = (sh) => {
@@ -81,6 +85,16 @@ export class CloudLayer {
   }
 
   /** `spin` = the planet's body→world rotation; clouds ride it and drift slowly on top. */
+  /** Storm clouds: darker and heavier as `k` (0..1) rises. */
+  storm(k: number) {
+    if (k === this.stormK) return;
+    this.stormK = k;
+    this.mat.color.copy(this.baseColor).lerp(STORM_GREY, k * 0.75);
+    this.mat.emissive.copy(this.baseColor).lerp(STORM_GREY, k * 0.75);
+    this.mat.emissiveIntensity = 0.32 * (1 - k * 0.7);
+  }
+  private stormK = 0;
+
   update(dt: number, fade: number, spin: THREE.Quaternion, toSun: { x: number; y: number; z: number }) {
     this.sunU.value.set(toSun.x, toSun.y, toSun.z);
     this.drift += dt * 0.0025;

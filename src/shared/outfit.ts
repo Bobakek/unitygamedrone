@@ -6,10 +6,11 @@
  */
 import { FACTION_SHORT, REP_NAMES, repLevel, type Faction } from './factions.ts';
 
-export type Slot = 'suit' | 'helmet' | 'visor' | 'pack' | 'chest' | 'lights' | 'patch';
-export const SLOTS: readonly Slot[] = ['suit', 'helmet', 'visor', 'pack', 'chest', 'lights', 'patch'];
+export type Slot = 'suit' | 'helmet' | 'visor' | 'pack' | 'chest' | 'lights' | 'patch' | 'mod';
+/** Order is the network look code: new slots go at the end so older codes still parse. */
+export const SLOTS: readonly Slot[] = ['suit', 'helmet', 'visor', 'pack', 'chest', 'lights', 'patch', 'mod'];
 export const SLOT_NAMES: Record<Slot, string> = {
-  suit: 'Скафандр', helmet: 'Шлем', visor: 'Светофильтр', pack: 'Ранец', chest: 'Грудь', lights: 'Фонари', patch: 'Нашивка',
+  suit: 'Скафандр', helmet: 'Шлем', visor: 'Светофильтр', pack: 'Ранец', chest: 'Грудь', lights: 'Фонари', patch: 'Нашивка', mod: 'Модуль защиты',
 };
 
 /** Gameplay effect of the gear a pilot wears. */
@@ -25,8 +26,12 @@ export interface GearStats {
   regenDelay: number;
   /** Extra bio samples from each carcass. */
   samples: number;
+  /** Protection 0..1 from weather hazards: cold and heat, sand and acid, radiation. */
+  thermal: number;
+  filter: number;
+  shielding: number;
 }
-export const DEFAULT_GEAR: GearStats = { hp: 100, airTime: 75, fuelDrain: 0.45, regenRate: 4, regenDelay: 5, samples: 0 };
+export const DEFAULT_GEAR: GearStats = { hp: 100, airTime: 75, fuelDrain: 0.45, regenRate: 4, regenDelay: 5, samples: 0, thermal: 0, filter: 0, shielding: 0 };
 
 export interface ItemDef {
   id: string;
@@ -85,6 +90,12 @@ export const ITEMS: readonly ItemDef[] = [
   { id: 'patch-comet', slot: 'patch', name: 'Комета', price: 0, desc: 'Комета на тёмном небе.' },
   { id: 'patch-wings', slot: 'patch', name: 'Крылья', price: 0, desc: 'Крылья пилота.' },
   { id: 'patch-skull', slot: 'patch', name: 'Череп', price: 0, desc: 'Пиратский череп.' },
+
+  { id: 'mod-none', slot: 'mod', name: 'Без модуля', price: 0, desc: 'Стандартный скафандр не защищает от непогоды.' },
+  { id: 'mod-thermo', slot: 'mod', name: 'Термослой', price: 500, desc: 'Подогрев и охлаждение костюма: метели и жара почти не страшны.', gear: { thermal: 0.85 } },
+  { id: 'mod-filter', slot: 'mod', name: 'Фильтры', price: 450, desc: 'Уплотнители и фильтры против песка и кислоты.', gear: { filter: 0.85 } },
+  { id: 'mod-rad', slot: 'mod', name: 'Радиационный экран', price: 700, desc: 'Свинцовая подкладка и дозиметр — для радиационных бурь и реакторов.', gear: { shielding: 0.85 } },
+  { id: 'mod-wanderer', slot: 'mod', name: '«Странник»', price: 1400, desc: 'Комплекс Гильдии: понемногу защищает от всего.', gear: { thermal: 0.6, filter: 0.6, shielding: 0.6 }, rep: { faction: 'guild', level: 3 } },
 ];
 
 const BY_ID = new Map(ITEMS.map((i) => [i.id, i]));
@@ -92,7 +103,7 @@ export const item = (id: string): ItemDef | undefined => BY_ID.get(id);
 
 export type Outfit = Record<Slot, string>;
 export const defaultOutfit = (): Outfit => ({
-  suit: 'suit-white', helmet: 'helmet-dome', visor: 'visor-gold', pack: 'pack-plss', chest: 'chest-dcm', lights: 'lights-none', patch: 'patch-flag',
+  suit: 'suit-white', helmet: 'helmet-dome', visor: 'visor-gold', pack: 'pack-plss', chest: 'chest-dcm', lights: 'lights-none', patch: 'patch-flag', mod: 'mod-none',
 });
 
 /** Starter-kit items are owned by everyone. */
@@ -135,6 +146,9 @@ export function itemEffect(it: ItemDef): string {
   if (g.fuelDrain) p.push(`расход топлива −${Math.round((1 - g.fuelDrain / DEFAULT_GEAR.fuelDrain) * 100)}%`);
   if (g.regenRate) p.push(`самопочинка ${DEFAULT_GEAR.regenRate} → ${g.regenRate} ед./с`);
   if (g.samples) p.push(`+${g.samples} биообразец с туши`);
+  if (g.thermal) p.push(`защита от холода и жары ${Math.round(g.thermal * 100)} %`);
+  if (g.filter) p.push(`от песка и кислоты ${Math.round(g.filter * 100)} %`);
+  if (g.shielding) p.push(`от радиации ${Math.round(g.shielding * 100)} %`);
   if (it.id === 'lights-eva') p.push('свет ночью');
   return p.join(', ');
 }

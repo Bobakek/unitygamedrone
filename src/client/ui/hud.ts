@@ -123,6 +123,21 @@ export class Hud {
     setTimeout(() => d.remove(), 7200);
   }
 
+  /** Planet weather in the pilot panel: now / what is coming (null hides it). */
+  forecast(text: string | null) {
+    $('.pp-sky').classList.toggle('hidden', !text);
+    if (text) $('.pp-forecast').textContent = text;
+  }
+
+  /** Storm warning over the suit bar: hazard, damage per second and protection (null hides it). */
+  weatherChip(w: { icon: string; text: string; level: 0 | 1 | 2 } | null) {
+    const el = $('#weather-chip');
+    el.style.display = w ? 'block' : 'none';
+    if (!w) return;
+    el.textContent = `${w.icon} ${w.text}`;
+    el.className = ['safe', 'warn', 'bad'][w.level];
+  }
+
   /** Local solar time on the planet below (null hides it). */
   clock(c: { planet: string; hours: number } | null) {
     $('.pp-clock').classList.toggle('hidden', !c);

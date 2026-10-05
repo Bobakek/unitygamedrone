@@ -5,6 +5,7 @@ export * from './events.ts';
 export * from './fauna.ts';
 export * from './outfit.ts';
 export * from './contracts.ts';
+export * from './weather.ts';
 export * from './math/rng.ts';
 export * from './math/noise.ts';
 export * from './math/vec.ts';

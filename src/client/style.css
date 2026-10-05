@@ -252,3 +252,10 @@ button.ghost:hover { color: var(--ink); border-color: var(--cyan); }
 .ct-close { margin-top: 14px; width: 100%; }
 .label.goal .lb-t { color: #7ac8ff !important; font-weight: 600; }
 .wd-lock { font-size: 11px; color: #ffb48a; }
+
+/* weather */
+#weather-chip { position: absolute; left: 50%; bottom: 86px; transform: translateX(-50%); display: none; padding: 4px 12px; border-radius: 12px; font-size: 12px; background: rgba(8, 14, 30, 0.7); border: 1px solid var(--line); white-space: nowrap; }
+#weather-chip.safe { color: #9fe8ff; }
+#weather-chip.warn { color: #ffd27a; border-color: rgba(255, 200, 100, 0.5); }
+#weather-chip.bad { color: #ff8a7a; border-color: rgba(255, 90, 80, 0.6); animation: gasp 0.8s ease-in-out infinite alternate; }
+.pp-forecast { font-weight: 500 !important; font-size: 12px; }

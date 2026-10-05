@@ -30,6 +30,8 @@ import { Fauna } from './fauna.ts';
 import { item, lookCode, owns, repNeedText, repOk, SLOT_NAMES } from '../../shared/outfit.ts';
 import { isPirateFriend, isWanted, WANTED_BOUNTY } from '../../shared/contracts.ts';
 import { ContractDesk } from './contracts.ts';
+import { WeatherDesk } from './weather.ts';
+import type { Weather } from '../../shared/weather.ts';
 import type { Session } from './session.ts';
 
 export interface GameContext {
@@ -45,6 +47,7 @@ export interface GameContext {
 
 const tmp = v3(), tmp2 = v3(), aim = v3(), rot = quat();
 const stepOut: StepOut = { impact: 0 };
+const charWeather: Weather = { kind: 'clear', k: 0, wind: v3() };
 
 export class SystemInstance implements NpcWorld {
   readonly def: SystemDef;
@@ -66,6 +69,7 @@ export class SystemInstance implements NpcWorld {
   readonly outposts: Outposts;
   readonly fauna: Fauna;
   readonly contracts: ContractDesk;
+  readonly weather: WeatherDesk;
 
   constructor(private ctx: GameContext, id: number) {
     this.def = getSystem(id);
@@ -76,6 +80,17 @@ export class SystemInstance implements NpcWorld {
     this.outposts = new Outposts(this);
     this.fauna = new Fauna(this);
     this.contracts = new ContractDesk(this);
+    this.weather = new WeatherDesk(this);
+  }
+
+  /** Inside a derelict's hull (shelter from the weather). */
+  shelter(_planet: number, _p: V3): boolean {
+    return false;
+  }
+
+  /** Radiation (per second) from derelict reactors at a body-frame point. */
+  reactorDose(_planet: number, _p: V3): number {
+    return 0;
   }
 
   nextId() { return this.ctx.nextId(); }
@@ -357,7 +372,7 @@ export class SystemInstance implements NpcWorld {
     this.world.step(DT);
     this.outposts.step(DT);
     this.fauna.step(DT);
-    if (this.ctx.tick % 15 === 0) this.contracts.checkSites();
+    if (this.ctx.tick % 15 === 0) { this.contracts.checkSites(); this.weather.step(0.5); }
     if (this.ctx.tick % 30 === 0) {
       // a fresh board (new epoch, a convoy came or went) goes to everyone docked
       if (this.contracts.board().changed) for (const s of this.sessions) if (s.mode === MODE.DOCKED) this.contracts.sendBoard(s);
@@ -404,7 +419,9 @@ export class SystemInstance implements NpcWorld {
         ship.fireCooldown -= DT;
         if (m.flags & 1) this.tryFire(ship);
       } else if (s.mode === MODE.FOOT && m.mode === MODE.FOOT && s.char) {
-        stepChar(s.char.state, m.char, this.def.planets[s.char.planet], DT, s.gear());
+        // the client stamps inputs with server time: the same wind as its prediction
+        const wt = Math.max(this.time - 2, Math.min(this.time + 1, m.t));
+        stepChar(s.char.state, m.char, this.def.planets[s.char.planet], DT, s.gear(), this.weather.at(s.char.planet, wt, charWeather));
         s.char.pitch = m.char.pitch;
         s.char.aim = !!(m.flags & IFLAG.AIM);
         if (m.flags & IFLAG.FIRE && !s.char.state.climbMode) this.fauna.shoot(s, m.char.pitch);

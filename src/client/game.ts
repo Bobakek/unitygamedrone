@@ -44,6 +44,8 @@ import { SpaceBackdrop, Sun } from './world/space.ts';
 import { FieldView, GateView, StationView } from './world/structures.ts';
 import { AnomalyView, LootView, WreckView, type PoiView } from './world/poi-views.ts';
 import { SiteView } from './planet/sites-view.ts';
+import { WeatherView } from './world/weather.ts';
+import { forecast, HAZARD_GEAR, HAZARD_NAMES, LAVA_HEAT, STORM_OF, WEATHER, weatherAt, type Weather, type WeatherKind, type WeatherOverride } from '../shared/weather.ts';
 import { CreatureView } from './entities/creature.ts';
 import { BLASTER, moodOf, SAMPLE_RANGE, SPECIES } from '../shared/fauna.ts';
 import { planetSites } from '../shared/planet/sites.ts';
@@ -117,6 +119,12 @@ export class Game {
   private sealife = new SeaLife();
   /** Camera under the sea (0/1), its depth, daylight at the camera, and the last swim state. */
   private camUnder = 0;
+  private weatherV = new WeatherView();
+  private wxOverrides = new Map<number, WeatherOverride>();
+  /** Weather where the camera is: kind, felt strength (fades with altitude), world wind. */
+  private wx = { kind: 'clear' as WeatherKind, k: 0, wind: new THREE.Vector3(), dark: false };
+  private wxBody: Weather = { kind: 'clear', k: 0, wind: v3() };
+  private geigerT = 0;
   private camDepth = 0;
   private dayNow = 1;
   private lastSwim = 0;
@@ -194,9 +202,9 @@ export class Game {
     this.envLight = new EnvLighting(this.r.gl);
     this.input = new Input(canvas);
     this.ctrl = new Controller(this.input);
-    this.pred = new Predictor(() => this.env!, () => this.stats, () => this.gear);
+    this.pred = new Predictor(() => this.env!, () => this.stats, () => this.gear, (planet, t) => this.sys ? weatherAt(this.sys.planets[planet], t, this.wxOverrides.get(planet)) : undefined);
     this.r.scene.add(this.world, this.sky.mesh);
-    this.world.add(this.props.group, this.effects.group, this.underwater.group, this.sealife.group);
+    this.world.add(this.props.group, this.effects.group, this.underwater.group, this.sealife.group, this.weatherV.group);
     this.sunLight = new THREE.DirectionalLight('#ffffff', 2.6);
     Object.assign(this.sunLight.shadow.camera, { near: 1, far: 2400 });
     this.sunLight.shadow.bias = -0.0005;
@@ -633,6 +641,20 @@ export class Game {
           if (e.target === myShip) { this.hud.toast('Внимание: ракета!', 'warn'); this.sfx.beep(true); }
           else this.sfx.missile();
           break;
+        case 'weather':
+          this.wxOverrides.set(e.planet, { kind: e.kind, k: e.k, until: e.until });
+          break;
+        case 'strike': {
+          const pl = this.sys?.planets[e.planet];
+          if (!pl) break;
+          const at = this.toWorld(pl.index + 1, v3(e.pos[0], e.pos[1], e.pos[2]), v3());
+          const d = vdist(at, this.origin);
+          if (d > 6000) break;
+          const up = new THREE.Vector3(at.x - pl.center.x, at.y - pl.center.y, at.z - pl.center.z).normalize();
+          this.weatherV.bolt(at, up, d);
+          this.sfx.thunder(d / 343, Math.max(0.15, 1 - d / 3000));
+          break;
+        }
       }
     }
   }
@@ -1001,7 +1023,7 @@ export class Game {
         swim: c.swim, swimPitch: Math.atan2(mv.vUp, Math.hypot(mv.fwd, mv.side) + 1e-3),
       });
       // gold visor down in daylight, up in the dark or under water; lamps on when it is dark
-      const dark = this.dayNow < 0.35 || this.camUnder > 0;
+      const dark = this.dayNow < 0.35 || this.camUnder > 0 || this.wx.dark;
       this.myAstro.visorUp = this.visorOverride ?? (dark || c.swim === 2 ? 1 : 0);
       this.myAstro.lightsOn = dark || c.swim === 2;
       // splash in and out of deep water; a diver breathes out bubbles
@@ -1059,8 +1081,8 @@ export class Game {
         const swim = st.flags & CFLAG.UNDER ? 2 : st.flags & CFLAG.SWIM ? 1 : 0;
         const ground = !(st.flags & CFLAG.AIR) && !swim;
         const rpl = st.frame ? sys.planets[st.frame - 1] : null;
-        r.view.visorUp = this.dayNow < 0.35 || swim === 2 ? 1 : 0;
-        r.view.lightsOn = this.dayNow < 0.35 || swim === 2;
+        r.view.visorUp = this.dayNow < 0.35 || this.wx.dark || swim === 2 ? 1 : 0;
+        r.view.lightsOn = this.dayNow < 0.35 || this.wx.dark || swim === 2;
         if (swim === 2 && rpl && (r.smokeT -= dt) <= 0) {
           // a diver breathes out bubbles
           r.smokeT = 1.2 + Math.random();
@@ -1101,11 +1123,95 @@ export class Game {
     }
     this.effects.setViewport(window.innerHeight, cam.fov);
     this.underwater.setViewport(window.innerHeight, cam.fov);
+    this.weatherV.setViewport(window.innerHeight, cam.fov);
     this.effects.update(dt, this.origin);
+    this.updateWeather(dt, onFoot);
 
     this.updateEnvironment(toSun, onFoot ? this.charPos : this.shipPos);
     this.updateHud(self, mode, speed);
     this.r.render();
+  }
+
+  /**
+   * Weather around the camera on the nearest planet: felt in full near the ground, fading out
+   * high in the sky; drives the precipitation, fog, light, sound and the storm HUD.
+   */
+  private updateWeather(dt: number, onFoot: boolean) {
+    const np = this.nearPlanet;
+    const now = this.timeline.serverNow;
+    const w = this.wx;
+    w.kind = 'clear'; w.k = 0; w.wind.set(0, 0, 0); w.dark = false;
+    let up = new THREE.Vector3(0, 1, 0), camC = new THREE.Vector3();
+    if (np) {
+      const wb = weatherAt(np, now, this.wxOverrides.get(np.index), this.wxBody);
+      camC.set(this.origin.x - np.center.x, this.origin.y - np.center.y, this.origin.z - np.center.z);
+      up = camC.clone().normalize();
+      const low = 1 - THREE.MathUtils.smoothstep(this.nearAlt, 1500, 4000);
+      w.kind = wb.kind;
+      w.k = this.camUnder ? 0 : wb.k * low;
+      const R = this.rots[np.index];
+      const wv = toWorldDir(R, wb.wind, v3());
+      w.wind.set(wv.x, wv.y, wv.z).multiplyScalar(low);
+      w.dark = w.k > 0.55 && wb.kind !== 'radiation';
+      this.clouds.forEach((c, i) => c.storm(i === np.index && wb.kind !== 'radiation' ? wb.k * 0.9 : 0));
+    }
+    this.weatherV.update(dt, w.kind, w.k, camC, up, w.wind, 0.15 + 0.85 * this.dayNow, this.time, this.origin);
+    const rainy = w.kind === 'storm' || w.kind === 'acid';
+    this.sfx.weather(rainy ? w.k : 0, Math.min(1, w.wind.length() / 20) * (this.camUnder ? 0 : 1));
+
+    // the storm HUD: what hits the suit and how well the gear protects
+    let chip: { icon: string; text: string; level: 0 | 1 | 2 } | null = null;
+    if (np && onFoot && this.pred.char) {
+      const g = this.gear;
+      const wb = this.wxBody;
+      const parts: string[] = [];
+      let dps = 0, rad = false;
+      if (wb.kind !== 'clear' && wb.k > 0.05) {
+        const def = WEATHER[wb.kind];
+        if (def.hazard === 'lightning') parts.push(`${def.name} · молнии`);
+        else if (def.hazard) {
+          const prot = g[HAZARD_GEAR[def.hazard]];
+          rad = def.hazard === 'rad';
+          // radiation storms only burn in sunlight; under water only the cold gets through
+          const shade = rad && this.dayNow < 0.3, wet = (this.pred.char.swim === 2 && def.hazard !== 'cold');
+          const d = shade || wet ? 0 : def.rate * wb.k * (1 - prot);
+          dps += d;
+          parts.push(shade ? `${def.name} · в тени планеты безопасно` : `${def.name} · ${HAZARD_NAMES[def.hazard]} −${d.toFixed(1)}/с · защита ${Math.round(prot * 100)} %`);
+        }
+      }
+      if (np.type === 'lava') {
+        const d = LAVA_HEAT * (1 - g.thermal);
+        dps += d;
+        if (!parts.length) parts.push(`Жара −${d.toFixed(1)}/с · защита ${Math.round(g.thermal * 100)} %`);
+      }
+      if (parts.length) chip = { icon: wb.kind !== 'clear' ? WEATHER[wb.kind].icon : '♨', text: parts.join(' '), level: dps > 0.5 ? 2 : dps > 0.05 || wb.kind === 'storm' ? 1 : 0 };
+      // a Geiger counter ticks in a radiation storm
+      if (rad && dps > 0) {
+        this.geigerT -= dt * (2 + dps * 6);
+        if (this.geigerT <= 0) { this.geigerT = Math.random(); this.sfx.click(); }
+      }
+    }
+    this.hud.weatherChip(chip);
+    let fc: string | null = null;
+    if (np && this.nearAlt < np.radius * 0.8) {
+      const wb = this.wxBody;
+      const ov = this.wxOverrides.get(np.index);
+      if (wb.kind !== 'clear' && wb.k > 0) fc = `${WEATHER[wb.kind].icon} ${WEATHER[wb.kind].name}${ov && now < ov.until ? '' : this.untilText(forecast(np, now))}`;
+      else {
+        const f = forecast(np, now);
+        fc = f ? `ясно · ${WEATHER[STORM_OF[np.type]].name.toLowerCase()} через ${this.mmss(f.inSec)}` : 'ясно';
+      }
+    }
+    this.hud.forecast(fc);
+  }
+
+  private untilText(f: ReturnType<typeof forecast>) {
+    return f && f.active ? ` · стихнет через ${this.mmss(f.inSec)}` : '';
+  }
+
+  private mmss(s: number) {
+    const t = Math.max(0, Math.round(s));
+    return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
   }
 
   private harvestedSet(): Set<string> {
@@ -1186,6 +1292,35 @@ export class Game {
     this.fill.intensity = 0.6 * (1 - inside * 0.6);
     this.sunLight.castShadow = q.shadows && this.nearAlt < 2000;
     this.dayNow = day;
+
+    // storms: shorter visibility tinted by the storm, darker sky and sun, lightning flashes
+    const wk = this.wx.k;
+    if (np?.atmo && wk > 0 && this.wx.kind !== 'clear') {
+      const def = WEATHER[this.wx.kind];
+      const tint = new THREE.Color(def.color).multiplyScalar(0.12 + 0.88 * day);
+      if (def.visibility > 0) {
+        const far = THREE.MathUtils.lerp(Math.min(fog.far, 14000), def.visibility, wk);
+        fog.far = Math.min(fog.far, far);
+        fog.near = Math.min(fog.near, far * 0.03);
+        fog.color.lerp(tint, 0.7 * wk);
+      }
+      const dim = this.wx.kind === 'radiation' ? 0 : (this.wx.kind === 'storm' ? 0.78 : 0.6) * wk;
+      this.sunLight.intensity *= 1 - dim;
+      u.zen.value.lerp(tint, 0.8 * wk);
+      u.hor.value.lerp(tint, 0.85 * wk);
+      this.r.scene.backgroundIntensity *= 1 - 0.5 * wk;
+      this.hemi.color.lerp(tint, 0.4 * wk);
+      if (this.wx.kind === 'storm') this.hemi.intensity *= 1 - 0.35 * wk;
+      if (this.r.scene.environment) this.r.scene.environmentIntensity *= 1 - 0.5 * wk;
+    }
+    if (np?.atmo === null && this.wx.kind === 'radiation' && this.wxBody.k > 0) {
+      // radiation storm on an airless world: a sickly green shimmer over everything
+      this.hemi.color.lerp(new THREE.Color('#9aff6a'), 0.25 * this.wxBody.k);
+    }
+    if (this.weatherV.flash > 0) {
+      this.hemi.intensity += this.weatherV.flash * 3;
+      this.r.scene.backgroundIntensity = Math.min(1, this.r.scene.backgroundIntensity + this.weatherV.flash * 0.5);
+    }
 
     // under the sea: short turquoise visibility, dimmer and bluer light with depth
     const wet = this.camUnder && np ? np : null;

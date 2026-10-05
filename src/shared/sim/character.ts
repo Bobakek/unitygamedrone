@@ -83,11 +83,16 @@ export function charQuat(c: CharState, out: Quat): Quat {
   return qlook(out, c.f, charUp(c, tmp));
 }
 
+/** What the weather adds to the simulation: wind in the planet's body frame (m/s). */
+export interface CharEnv { wind: V3 }
+const CALM: CharEnv = { wind: { x: 0, y: 0, z: 0 } };
+
 /**
  * On-foot movement over a spherical planet with gravity, a small jetpack and swimming.
- * `gear` (air supply, jetpack consumption) comes from the pilot's outfit.
+ * `gear` (air supply, jetpack consumption) comes from the pilot's outfit; `env.wind`
+ * (see weather.ts) pushes the pilot along the ground and drifts them in the air.
  */
-export function stepChar(c: CharState, inp: CharInput, pl: PlanetDef, dt: number, gear: CharGear = DEFAULT_GEAR): void {
+export function stepChar(c: CharState, inp: CharInput, pl: PlanetDef, dt: number, gear: CharGear = DEFAULT_GEAR, env: CharEnv = CALM): void {
   // the suit's air drains while the head is under water and refills above it
   c.air = c.swim === 2 ? Math.max(0, c.air - dt / gear.airTime) : Math.min(1, c.air + 0.3 * dt);
   charUp(c, up);
@@ -149,6 +154,9 @@ export function stepChar(c: CharState, inp: CharInput, pl: PlanetDef, dt: number
   }
   const spd = (inp.sprint ? SPRINT_SPEED : WALK_SPEED) * (inWater ? 0.45 : 1) * (c.scramble ? 0.5 : 1);
   wish.x *= spd; wish.y *= spd; wish.z *= spd;
+  // wind: a push along the ground, a stronger drift in the air
+  const w = env.wind, wu = vdot(w, up), wk = c.ground ? 0.15 : 0.45;
+  wish.x += (w.x - up.x * wu) * wk; wish.y += (w.y - up.y * wu) * wk; wish.z += (w.z - up.z * wu) * wk;
 
   const vr = vdot(c.v, up);
   const tx = c.v.x - up.x * vr, ty = c.v.y - up.y * vr, tz = c.v.z - up.z * vr;
