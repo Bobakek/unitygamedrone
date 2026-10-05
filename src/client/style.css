@@ -174,3 +174,5 @@ button.ghost:hover { color: var(--ink); border-color: var(--cyan); }
 #lab-labels { position: absolute; inset: 0; }
 .lab-label { position: absolute; left: 0; top: 0; white-space: nowrap; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(8, 14, 30, 0.6); color: #e9f1ff; }
 @media (max-width: 700px) { #lab .lab-panel { width: calc(100vw - 24px); max-height: 45vh; } }
+
+.lab-outfit select { background: rgba(20, 28, 40, 0.85); color: var(--fg, #e8eef6); border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 6px; padding: 3px 4px; font-size: 11px; max-width: 150px; }

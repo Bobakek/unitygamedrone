@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { MOOD, SPECIES, type Species } from '../../shared/fauna.ts';
 import { CLIMB_TIME, VAULT_TIME } from '../../shared/sim/character.ts';
 import { QUALITY } from '../core/quality.ts';
 import { Renderer } from '../core/renderer.ts';
 import { AstronautView, type AnimInput } from '../entities/astronaut.ts';
 import { CreatureView, type CreatureAnim } from '../entities/creature.ts';
+import { ITEMS, lookCode, parseLook, SLOT_NAMES, SLOTS, type Outfit } from '../../shared/outfit.ts';
 
 /**
  * Animation lab: a small outdoor set where the pilot and every creature
@@ -25,6 +27,9 @@ const G = 9.8;
 /** Height of the pool's water surface above the lab floor; sea creatures float at SEA_Y. */
 const POOL_Y = 5;
 const SEA_Y = 2.2;
+/** What the lab pilot wears (panel selectors / `?outfit=`), and whether the visor is up. */
+let OUTFIT: Outfit = parseLook(new URLSearchParams(location.search).get('outfit') ?? '');
+let VISOR_UP = new URLSearchParams(location.search).get('visor') === '1' ? 1 : 0;
 
 /** Scripted run-up and traversal over an obstacle (mirrors the shared character sim's timings). */
 function course(kind: 'vault' | 'climb', t: number): { z: number; y: number; inp: Partial<AnimInput> } {
@@ -117,7 +122,7 @@ class Actor {
   /** Rifle pitch for aiming clips (slider). */
   aimPitch = 0;
 
-  constructor(readonly subject: 'pilot' | Species, private clip: PilotClip | CreatureClip) {
+  constructor(readonly subject: 'pilot' | Species, private clip: PilotClip | CreatureClip, private outfit: Outfit = OUTFIT) {
     this.rebuild();
   }
 
@@ -125,7 +130,7 @@ class Actor {
     this.pilot?.dispose();
     this.beast?.dispose();
     this.pilot = this.beast = null;
-    if (this.subject === 'pilot') { this.pilot = new AstronautView(); this.obj.add(this.pilot.group); }
+    if (this.subject === 'pilot') { this.pilot = new AstronautView(this.outfit, 'NOVA'); this.obj.add(this.pilot.group); }
     else {
       this.beast = new CreatureView(this.subject);
       this.obj.add(this.beast.group);
@@ -170,6 +175,8 @@ class Actor {
       } else inp = c.drive({ t: this.t, dt, view: this.pilot, obj: this.obj, ev });
       const fwd = inp.fwd ?? 0, side = inp.side ?? 0;
       this.vel.set(c.course ? 0 : side, 0, c.course ? 0 : -fwd);
+      this.pilot.visorUp = VISOR_UP;
+      this.pilot.lightsOn = VISOR_UP > 0;
       this.pilot.update(dt, {
         speed: Math.hypot(fwd, side), fwd, side, vUp: 0, ground: true, jet: false, look: this.aimPitch, turn: 0, aimPitch: this.aimPitch, ...inp,
       });
@@ -222,6 +229,10 @@ export function startLab(canvas: HTMLCanvasElement) {
   Object.assign(sun.shadow.camera, { left: -30, right: 30, top: 30, bottom: -30, near: 1, far: 60 });
   sun.shadow.bias = -0.0004;
   scene.add(hemi, sun, sun.target);
+  // reflections for visors and metal rings (as the game's sky environment gives)
+  const pmrem = new THREE.PMREMGenerator(r.gl);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  scene.environmentIntensity = 0.55;
   const tex = gridTexture();
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.95 }));
   ground.receiveShadow = true;
@@ -259,6 +270,7 @@ export function startLab(canvas: HTMLCanvasElement) {
       <h2>Лаборатория анимаций</h2>
       <div class="lab-sec">Персонаж</div><div class="lab-row" id="lab-subjects"></div>
       <div class="lab-sec">Анимация</div><div class="lab-row" id="lab-clips"></div>
+      <div class="lab-sec">Наряд пилота</div><div class="lab-row lab-outfit" id="lab-outfit"></div>
       <label class="lab-sl">Скорость воспроизведения <input type="range" id="lab-speed" min="0.1" max="2" step="0.05" value="1"><b id="lab-speed-v">1.0×</b></label>
       <label class="lab-sl">Наклон прицела <input type="range" id="lab-pitch" min="-1" max="1" step="0.05" value="0"></label>
       <div class="lab-row"><button id="lab-pause">Пауза</button><button id="lab-step">Кадр →</button><button id="lab-sheet">Сетка кадров</button><button id="lab-exit">Выход</button></div>
@@ -359,14 +371,35 @@ export function startLab(canvas: HTMLCanvasElement) {
   }
 
   /** Contact sheet: clips laid out as strips of frozen phases, labelled, framed for one screenshot. */
-  function buildSheet(kind: 'pilot' | 'creatures', from = 0, to = 99) {
+  function buildSheet(kind: 'pilot' | 'creatures' | 'outfits', from = 0, to = 99) {
     clear();
     sheet = true;
     block.visible = wall.visible = ramp.visible = false;
     pool.visible = false;
     const dt = 1 / 60;
     const turnToCam = 0.55;
-    if (kind === 'pilot') {
+    if (kind === 'outfits') {
+      // every suit part on a pilot otherwise in the starter kit, a row per slot
+      const idle = PILOT_CLIPS[0];
+      const colW = 1.2, rowD = 2.4;
+      // page 0: suit, helmet, visor; page 1: backpack, chest, lights, patch
+      const rows = from > 0 ? SLOTS.slice(3) : SLOTS.slice(0, 3);
+      const perRow = Math.max(...rows.map((sl) => ITEMS.filter((i) => i.slot === sl).length));
+      rows.forEach((sl, row) => {
+        ITEMS.filter((i) => i.slot === sl).forEach((it, col) => {
+          const a = new Actor('pilot', idle, { ...parseLook(''), [sl]: it.id });
+          for (let t = 0; t < 1.3; t += dt) a.advance(dt);
+          a.obj.position.x = -(col - (perRow - 1) / 2) * colW;
+          a.obj.position.z = (row - (rows.length - 1) / 2) * rowD;
+          // backpacks are shown from behind, patches from the right shoulder
+          a.obj.rotation.y = sl === 'pack' ? Math.PI - 0.35 : sl === 'patch' ? Math.PI / 2 + 0.25 : 0.35;
+          scene.add(a.obj);
+          actors.push(a);
+          label(a, it.name);
+        });
+      });
+      frameBox(perRow * colW, rows.length * rowD, 0);
+    } else if (kind === 'pilot') {
       const clips = PILOT_CLIPS.filter((c) => !c.course).slice(from, to + 1);
       // swim clips are posed in mid-air on the sheet (no pool), each at its own height
       const swimY = (c: PilotClip) => (c.pool ? 1.2 : 0);
@@ -458,14 +491,44 @@ export function startLab(canvas: HTMLCanvasElement) {
   else if (initSubject && initSubject !== 'pilot') subject = Math.max(0, Math.min(SPECIES.length - 1, Number(initSubject) || 0));
   if (params.get('clip')) clipId = params.get('clip')!;
   if (params.get('ui') === '0') ui.querySelector<HTMLElement>('.lab-panel')!.style.display = 'none';
-  if (params.get('sheet') === 'pilot' || params.get('sheet') === 'creatures') {
-    buildSheet(params.get('sheet') as 'pilot' | 'creatures', Number(params.get('from') ?? 0), Number(params.get('to') ?? 99));
+  // outfit selectors (one per slot) and the visor switch
+  const of = $('lab-outfit');
+  for (const sl of SLOTS) {
+    const sel = document.createElement('select');
+    sel.title = SLOT_NAMES[sl];
+    for (const it of ITEMS.filter((i) => i.slot === sl)) {
+      const o = document.createElement('option');
+      o.value = it.id;
+      o.textContent = `${SLOT_NAMES[sl]}: ${it.name}`;
+      sel.appendChild(o);
+    }
+    sel.value = OUTFIT[sl];
+    sel.onchange = () => { OUTFIT = { ...OUTFIT, [sl]: sel.value }; if (!sheet) build(); };
+    of.appendChild(sel);
+  }
+  const vb = document.createElement('button');
+  vb.textContent = 'Светофильтр ↕';
+  vb.onclick = () => { VISOR_UP = VISOR_UP ? 0 : 1; };
+  of.appendChild(vb);
+
+  const sheetKind = params.get('sheet');
+  if (sheetKind === 'pilot' || sheetKind === 'creatures' || sheetKind === 'outfits') {
+    buildSheet(sheetKind, Number(params.get('from') ?? 0), Number(params.get('to') ?? 99));
   } else build();
   requestAnimationFrame(frame);
   (window as unknown as { __lab: unknown }).__lab = {
     ready: true,
     play: (s: typeof subject, c: string) => { subject = s; clipId = c; build(); },
-    sheet: (k: 'pilot' | 'creatures', from?: number, to?: number) => buildSheet(k, from, to),
+    sheet: (k: 'pilot' | 'creatures' | 'outfits', from?: number, to?: number) => buildSheet(k, from, to),
+    /** Dresses the lab pilot (outfit look code) and sets the visor (1 = up). */
+    dress: (look: string, visor = VISOR_UP) => { OUTFIT = parseLook(look); VISOR_UP = visor; build(); },
+    look: () => lookCode(OUTFIT),
+    /** Camera on the pilot's upper body (`side` turns round them). */
+    close: (side = 0) => {
+      controls.target.set(0, 1.45, 0);
+      cam.position.set(Math.sin(side) * 1.9, 1.65, -Math.cos(side) * 1.9);
+      controls.update();
+    },
     pause: (p: boolean) => { paused = p; },
     /** Restarts the current clip and advances it to `t` seconds with a fixed step, then pauses. */
     seek: (t: number) => {

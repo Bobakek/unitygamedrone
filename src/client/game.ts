@@ -27,7 +27,7 @@ import { AtmosphereView, EnvLighting, SkyDome } from './planet/atmosphere.ts';
 import { CloudLayer } from './planet/clouds.ts';
 import { Underwater } from './world/underwater.ts';
 import { SeaLife } from './planet/sealife.ts';
-import { DEFAULT_GEAR, gearStats, validOutfit, type GearStats } from '../shared/outfit.ts';
+import { DEFAULT_GEAR, gearStats, parseLook, validOutfit, type GearStats } from '../shared/outfit.ts';
 import { PlanetView } from './planet/planet-view.ts';
 import { SurfaceProps } from './planet/props.ts';
 import { WorkerPool } from './planet/worker-pool.ts';
@@ -175,6 +175,8 @@ export class Game {
   /** Smoothed rifle aim (RMB on foot or recent shots) — drives camera and pose. */
   private aimK = 0;
   private lastAir = 1;
+  /** Manual visor position (V), or null to follow the light. */
+  private visorOverride: number | null = null;
   private lastShot = -99;
   private nearPlanet: PlanetDef | null = null;
   private nearAlt = 1e9;
@@ -371,6 +373,7 @@ export class Game {
     this.pilot = p;
     this.stats = flightStats(p.upgrades);
     this.gear = gearStats(validOutfit(p.outfit, p.items));
+    this.myAstro?.dress(validOutfit(p.outfit, p.items), p.name);
     this.hud.setPilot(p, this.sys?.name ?? '');
     if (this.self && this.lastMode === MODE.DOCKED) this.hud.renderStation(p, { hull: this.self.hull, max: this.self.maxHull });
   }
@@ -404,6 +407,8 @@ export class Game {
       this.ctrl.footPitch = -0.12;
       if (!this.myAstro) {
         this.myAstro = this.makeAstronaut(() => this.charPos);
+        this.myAstro.enableSpot();
+        if (this.pilot) this.myAstro.dress(validOutfit(this.pilot.outfit, this.pilot.items), this.pilot.name);
         this.world.add(this.myAstro.group);
       }
     }
@@ -439,7 +444,11 @@ export class Game {
   private ensureView(r: Remote) {
     if (r.view || !r.info) return;
     if (r.info.kind === KIND.SHIP && r.info.bp) r.view = new ShipView(r.info.bp);
-    else if (r.info.kind === KIND.CHAR) r.view = this.makeAstronaut(() => r.p, 0.5);
+    else if (r.info.kind === KIND.CHAR) {
+      const a = this.makeAstronaut(() => r.p, 0.5);
+      a.dress(parseLook(r.info.look), r.info.name);
+      r.view = a;
+    }
     else if (r.info.kind === KIND.MISSILE) r.view = new MissileView();
     else if (r.info.kind === KIND.LOOT) r.view = new LootView();
     else if (r.info.kind === KIND.CREATURE && r.info.species !== undefined) r.view = new CreatureView(SPECIES[r.info.species]);
@@ -664,6 +673,11 @@ export class Game {
     if (i.hit('Escape')) { this.hud.toggleHelp(false); this.toggleSettings(false); }
     if (i.hit('Enter')) { this.hud.focusChat(); i.releaseLock(); }
     if (i.hit('KeyZ')) i.releaseLock();
+    if (i.hit('KeyV') && mode === MODE.FOOT) {
+      // visor: automatic → forced up / down → automatic
+      this.visorOverride = this.visorOverride === null ? (this.myAstro && this.myAstro.visorUp > 0.5 ? 0 : 1) : null;
+      this.hud.toast(this.visorOverride === null ? 'Светофильтр: авто' : this.visorOverride ? 'Светофильтр поднят' : 'Светофильтр опущен');
+    }
     if (i.hit('Tab')) this.navIndex = (this.navIndex + 1) % Math.max(1, this.navItems.length);
     if (i.hit('KeyT')) this.pickTarget();
     if (i.hit('KeyG')) {
@@ -935,6 +949,10 @@ export class Game {
         aim: this.aimK > 0.5, aimPitch: this.ctrl.footPitch, climb: c.climbMode ? { mode: c.climbMode, t: climbProgress(c) } : null, scramble: !!c.scramble,
         swim: c.swim, swimPitch: Math.atan2(mv.vUp, Math.hypot(mv.fwd, mv.side) + 1e-3),
       });
+      // gold visor down in daylight, up in the dark or under water; lamps on when it is dark
+      const dark = this.dayNow < 0.35 || this.camUnder > 0;
+      this.myAstro.visorUp = this.visorOverride ?? (dark || c.swim === 2 ? 1 : 0);
+      this.myAstro.lightsOn = dark || c.swim === 2;
       // splash in and out of deep water; a diver breathes out bubbles
       if (!!c.swim !== !!this.lastSwim) this.sfx.splash(Math.min(1, 0.4 + Math.abs(mv.vUp) * 0.2));
       this.lastSwim = c.swim;
@@ -990,6 +1008,8 @@ export class Game {
         const swim = st.flags & CFLAG.UNDER ? 2 : st.flags & CFLAG.SWIM ? 1 : 0;
         const ground = !(st.flags & CFLAG.AIR) && !swim;
         const rpl = st.frame ? sys.planets[st.frame - 1] : null;
+        r.view.visorUp = this.dayNow < 0.35 || swim === 2 ? 1 : 0;
+        r.view.lightsOn = this.dayNow < 0.35 || swim === 2;
         if (swim === 2 && rpl && (r.smokeT -= dt) <= 0) {
           // a diver breathes out bubbles
           r.smokeT = 1.2 + Math.random();

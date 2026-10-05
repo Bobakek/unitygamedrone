@@ -1,10 +1,13 @@
 import * as THREE from 'three';
+import { defaultOutfit, lookCode, type Outfit } from '../../shared/outfit.ts';
 import { glowTexture } from '../world/textures.ts';
+import { buildSuit, type Suit } from './suit.ts';
 
 /**
- * Low-poly astronaut with a full procedural rig: hips → spine → head, arms
- * (shoulder/elbow/hand) and legs (hip/knee/ankle), carrying a blaster rifle
- * and a mining tool. Poses are blended from layers: directional locomotion
+ * Astronaut with a full procedural rig: hips → spine → head, arms
+ * (shoulder/elbow/hand) and legs (hip/knee/ankle), dressed in an EVA suit
+ * built from the pilot's outfit (suit.ts), carrying a blaster rifle and a
+ * mining tool. Poses are blended from layers: directional locomotion
  * (forward, backpedal, strafe, diagonals), jump/fall/jetpack/landing,
  * vaulting and climbing over obstacles, scrambling up slopes, swimming
  * (treading water, front crawl, breaststroke and hovering under water),
@@ -14,10 +17,7 @@ import { glowTexture } from '../world/textures.ts';
  */
 
 const MAT = {
-  suit: new THREE.MeshStandardMaterial({ color: '#f1eee6', flatShading: true, roughness: 0.72 }),
-  accent: new THREE.MeshStandardMaterial({ color: '#f39a4a', flatShading: true, roughness: 0.6 }),
   joint: new THREE.MeshStandardMaterial({ color: '#59606c', flatShading: true, roughness: 0.55, metalness: 0.35 }),
-  visor: new THREE.MeshStandardMaterial({ color: '#ffc24a', flatShading: true, roughness: 0.12, metalness: 0.9, emissive: '#2a1a00' }),
   tool: new THREE.MeshStandardMaterial({ color: '#343944', flatShading: true, roughness: 0.4, metalness: 0.6 }),
   glow: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.6, 2.2, 2.6), toneMapped: false }),
   gun: new THREE.MeshStandardMaterial({ color: '#2c3038', flatShading: true, roughness: 0.35, metalness: 0.75 }),
@@ -44,21 +44,7 @@ function joint(parent: THREE.Object3D, x: number, y: number, z: number) {
 }
 
 const G = {
-  pelvis: new THREE.BoxGeometry(0.36, 0.2, 0.24),
-  torso: new THREE.CapsuleGeometry(0.25, 0.3, 3, 7),
-  chest: new THREE.BoxGeometry(0.34, 0.26, 0.08),
-  pack: new THREE.BoxGeometry(0.4, 0.5, 0.2),
-  nozzle: new THREE.CylinderGeometry(0.05, 0.07, 0.1, 6),
-  helmet: new THREE.SphereGeometry(0.235, 8, 6),
-  visor: new THREE.SphereGeometry(0.2, 8, 5),
   lamp: new THREE.SphereGeometry(0.035, 5, 3),
-  upperArm: new THREE.CapsuleGeometry(0.085, 0.2, 2, 6),
-  foreArm: new THREE.CapsuleGeometry(0.075, 0.18, 2, 6),
-  hand: new THREE.SphereGeometry(0.075, 6, 4),
-  thigh: new THREE.CapsuleGeometry(0.11, 0.24, 2, 6),
-  shin: new THREE.CapsuleGeometry(0.095, 0.24, 2, 6),
-  knee: new THREE.SphereGeometry(0.1, 6, 4),
-  boot: new THREE.BoxGeometry(0.15, 0.11, 0.27),
   toolBody: new THREE.BoxGeometry(0.08, 0.1, 0.26),
   toolBarrel: new THREE.CylinderGeometry(0.025, 0.035, 0.16, 6).rotateX(Math.PI / 2),
   flame: new THREE.ConeGeometry(0.06, 0.5, 6, 1, true).translate(0, -0.25, 0),
@@ -170,6 +156,7 @@ export class AstronautView {
   private head: THREE.Group;
   private sh: THREE.Group[] = [];
   private el: THREE.Group[] = [];
+  private hands: THREE.Group[] = [];
   private hip: THREE.Group[] = [];
   private kn: THREE.Group[] = [];
   private an: THREE.Group[] = [];
@@ -185,6 +172,17 @@ export class AstronautView {
   private flash: THREE.Sprite;
   private holsterQ = new THREE.Quaternion();
   private holsterP = new THREE.Vector3(-0.02, 0.3, 0.4);
+
+  private suit: Suit | null = null;
+  private outfit: Outfit = defaultOutfit();
+  private name = '';
+  private dressKey = '';
+  private spot: THREE.SpotLight | null = null;
+  private visorK = 0;
+  /** Visor target: 0 lowered (sun), 1 raised (face visible). */
+  visorUp = 0;
+  /** Helmet lamps switched on (only shine when the outfit has EVA lights). */
+  lightsOn = false;
 
   private t = Math.random() * 10;
   private phase = 0;
@@ -212,16 +210,11 @@ export class AstronautView {
   /** Called when landing after a fall/jump with the impact strength 0..1. */
   onLand: ((k: number) => void) | null = null;
 
-  constructor() {
+  constructor(outfit: Outfit = defaultOutfit(), name = '') {
     const root = this.group;
     this.hips = joint(root, 0, 0.97, 0);
-    part(this.hips, G.pelvis, MAT.joint);
     this.spine = joint(this.hips, 0, 0.08, 0);
-    part(this.spine, G.torso, MAT.suit, [0, 0.24, 0]);
-    part(this.spine, G.chest, MAT.accent, [0, 0.3, -0.24]);
-    part(this.spine, G.pack, MAT.accent, [0, 0.3, 0.26]);
     for (const s of [-1, 1]) {
-      part(this.spine, G.nozzle, MAT.joint, [s * 0.11, 0.02, 0.3]);
       const f = part(this.spine, G.flame, new THREE.MeshBasicMaterial({ color: new THREE.Color(0.6, 1.8, 2.4), transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }), [s * 0.11, -0.03, 0.3]);
       f.castShadow = false;
       this.flames.push(f);
@@ -230,21 +223,12 @@ export class AstronautView {
     this.flameGlow.position.set(0, -0.15, 0.3);
     this.flameGlow.scale.setScalar(0.9);
     this.spine.add(this.flameGlow);
-
     this.head = joint(this.spine, 0, 0.58, 0);
-    part(this.head, G.helmet, MAT.suit, [0, 0.12, 0]);
-    part(this.head, G.visor, MAT.visor, [0, 0.13, -0.08], [0, 0, 0], [0.95, 0.78, 0.8]);
-    part(this.head, G.lamp, MAT.glow, [0.2, 0.2, -0.06]);
 
     for (const s of [-1, 1]) {
       const sh = joint(this.spine, s * 0.33, 0.44, 0);
-      part(sh, G.knee, MAT.joint, [0, 0, 0], [0, 0, 0], [0.9, 0.9, 0.9]);
-      part(sh, G.upperArm, MAT.suit, [0, -0.16, 0]);
       const el = joint(sh, 0, -0.33, 0);
-      part(el, G.foreArm, MAT.suit, [0, -0.14, 0]);
       const hand = joint(el, 0, -0.29, 0);
-      part(hand, G.hand, MAT.accent);
-      if (s < 0) part(el, new THREE.BoxGeometry(0.1, 0.07, 0.13), MAT.joint, [0.02, -0.2, -0.02]); // wrist computer
       if (s > 0) {
         this.tool.position.set(0, -0.04, -0.06);
         hand.add(this.tool);
@@ -257,20 +241,17 @@ export class AstronautView {
       }
       this.sh.push(sh);
       this.el.push(el);
+      this.hands.push(hand);
       const hip = joint(this.hips, s * 0.12, -0.06, 0);
-      part(hip, G.thigh, MAT.suit, [0, -0.2, 0]);
       const kn = joint(hip, 0, -0.42, 0);
-      part(kn, G.knee, MAT.joint);
-      part(kn, G.shin, MAT.suit, [0, -0.2, 0]);
       const an = joint(kn, 0, -0.41, 0);
-      part(an, G.boot, MAT.joint, [0, -0.04, -0.04]);
       this.hip.push(hip);
       this.kn.push(kn);
       this.an.push(an);
     }
     this.tool.visible = false;
     // mining tool clipped to the belt when not in use
-    this.beltTool.position.set(0.21, -0.02, 0.02);
+    this.beltTool.position.set(0.22, -0.02, 0.02);
     this.beltTool.rotation.set(Math.PI / 2 + 0.2, 0, 0.15);
     part(this.beltTool, G.toolBody, MAT.tool, [0, 0, -0.06]);
     part(this.beltTool, G.toolBarrel, MAT.joint, [0, 0.02, -0.26]);
@@ -307,6 +288,37 @@ export class AstronautView {
     this.beamGlow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: new THREE.Color(1, 2.2, 2.6), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, toneMapped: false }));
     this.beamGlow.visible = false;
     root.add(this.beam, this.beamGlow);
+    this.dress(outfit, name);
+  }
+
+  /** Puts on an outfit (rebuilds the suit only when it or the name tag changes). */
+  dress(outfit: Outfit, name = this.name) {
+    const key = `${lookCode(outfit)}|${name}`;
+    if (key === this.dressKey) return;
+    this.dressKey = key;
+    this.name = name;
+    this.outfit = { ...outfit };
+    this.suit?.dispose();
+    this.suit = buildSuit({ hips: this.hips, spine: this.spine, head: this.head, sh: this.sh, el: this.el, hand: this.hands, hip: this.hip, kn: this.kn, an: this.an }, outfit, name);
+    // jet flames at this backpack's nozzles, the rifle slung on its back
+    this.flames.forEach((f, i) => { const n = this.suit!.nozzles[i]; if (n) f.position.copy(n); });
+    const n0 = this.suit.nozzles[0], n1 = this.suit.nozzles[1] ?? n0;
+    this.flameGlow.position.set((n0.x + n1.x) / 2, n0.y - 0.15, n0.z);
+    this.holsterP.z = this.suit.backZ + 0.02;
+  }
+
+  /** The outfit being worn. */
+  get wearing(): Outfit {
+    return this.outfit;
+  }
+
+  /** Adds a real spot light to the helmet lamps (for the local pilot only: lights are costly). */
+  enableSpot() {
+    if (this.spot) return;
+    this.spot = new THREE.SpotLight('#fff2d8', 0, 45, 0.5, 0.55, 1.4);
+    this.spot.position.set(0, 0.2, -0.1);
+    this.spot.target.position.set(0, -0.6, -8);
+    this.head.add(this.spot, this.spot.target);
   }
 
   /** Plays the harvesting animation; `target` is the node position in scene (origin-relative) space. */
@@ -690,6 +702,13 @@ export class AstronautView {
     }
     this.flash.visible = this.flashT > 0;
     if (this.flash.visible) this.flash.scale.setScalar(0.35 + Math.random() * 0.25);
+
+    // visor slides up to show the face (or down against the sun); lamps when it is dark
+    this.visorK += (this.visorUp - this.visorK) * k(4);
+    if (this.suit?.visor) this.suit.visor.rotation.x = 1.25 * this.visorK;
+    const lit = this.lightsOn && this.outfit.lights === 'lights-eva';
+    this.suit?.lamps.color.setScalar(lit ? 1 : 0.18);
+    if (this.spot) this.spot.intensity = lit ? 35 : 0;
 
     // jetpack flames
     const jetOn = w.jet > 0.1;
