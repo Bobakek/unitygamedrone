@@ -315,7 +315,7 @@ try {
     const b = await browser.newPage({ viewport: { width: 480, height: 270 } });
     b.on('pageerror', (e) => errors.push(`Bravo: ${e.message}`));
     await b.goto(`http://localhost:${PORT}/?name=Bravo&autostart=1&q=low`);
-    await b.waitForFunction(() => window.__game?.self && window.__game.pred.ready, null, { timeout: 60000, polling: 250 });
+    await b.waitForFunction(() => window.__game?.self && window.__game.pred.ready, null, { timeout: Math.max(60000, STEP_MS), polling: 250 });
     await b.evaluate(() => window.__game.conn.chat('/tp dock'));
     await b.waitForFunction(() => { const el = document.querySelector('#prompt'); return el.style.display !== 'none' && el.textContent.includes('стыков'); }, null, { timeout: Math.max(20000, STEP_MS), polling: 250 });
     await b.keyboard.press('KeyF');
