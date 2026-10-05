@@ -31,7 +31,7 @@ try {
   await page.goto(`http://localhost:${PORT}/?name=Tourist&autostart=1${QS}`);
   await page.waitForFunction(() => window.__game?.self && window.__game.pred.ready, null, { timeout: 60000, polling: 250 });
   const chat = (t) => page.evaluate((x) => window.__game.conn.chat(x), t);
-  const mode = (m) => page.waitForFunction((x) => window.__game.pred.mode === x, m, { timeout: 20000, polling: 250 });
+  const mode = (m) => page.waitForFunction((x) => window.__game.pred.mode === x, m, { timeout: Math.max(20000, STEP_MS), polling: 250 });
   const only = process.argv[2];
   // Share of props whose base is off the terrain as currently drawn (LOD) by more than 0.3 m.
   const grounding = () => page.evaluate(() => {
@@ -283,7 +283,8 @@ try {
     }
     if ((await page.evaluate(() => window.__game.pred.mode)) === 1) { await page.keyboard.press('KeyG'); await mode(0); }
     await chat('/tp dock');
-    await sleep(1500);
+    // dock as soon as the client offers it (slow renderers take a while to get there)
+    await page.waitForFunction(() => { const el = document.querySelector('#prompt'); return el.style.display !== 'none' && el.textContent.includes('стыков'); }, null, { timeout: Math.max(20000, STEP_MS), polling: 250 });
     await page.keyboard.press('KeyF');
     await mode(2);
     // close the station window: the hangar camera circles the ship on its pad
@@ -314,7 +315,7 @@ try {
     await b.goto(`http://localhost:${PORT}/?name=Bravo&autostart=1&q=low`);
     await b.waitForFunction(() => window.__game?.self && window.__game.pred.ready, null, { timeout: 60000, polling: 250 });
     await b.evaluate(() => window.__game.conn.chat('/tp dock'));
-    await sleep(1500);
+    await b.waitForFunction(() => { const el = document.querySelector('#prompt'); return el.style.display !== 'none' && el.textContent.includes('стыков'); }, null, { timeout: Math.max(20000, STEP_MS), polling: 250 });
     await b.keyboard.press('KeyF');
     await b.waitForFunction(() => window.__game.pred.mode === 2, null, { timeout: STEP_MS, polling: 250 });
     await b.keyboard.press('KeyG');
