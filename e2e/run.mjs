@@ -173,9 +173,10 @@ try {
   await a.waitForFunction(() => window.__game.pred.mode === 0, null, { timeout: 15000, polling: 250 });
   const sys0 = await a.evaluate(() => window.__game.sys.id);
   await chat(a, '/tp gate');
-  await sleep(1500);
+  // the client offers the jump once its own ship is at the gate (slow renderers take a while to get there)
+  await a.waitForFunction(() => { const el = document.querySelector('#prompt'); return el.style.display !== 'none' && el.textContent.includes('прыжок'); }, null, { timeout: Math.max(20000, STEP_MS), polling: 250 });
   await a.keyboard.press('KeyF');
-  await a.waitForFunction((s0) => window.__game.sys.id !== s0 && window.__game.pred.ready, sys0, { timeout: 20000, polling: 250 });
+  await a.waitForFunction((s0) => window.__game.sys.id !== s0 && window.__game.pred.ready, sys0, { timeout: Math.max(20000, STEP_MS), polling: 250 });
   console.log('jumped from system', sys0, 'to', await a.evaluate(() => `${window.__game.sys.id} (${window.__game.sys.name})`));
   await shot(a, '09-new-system.png', 4000);
 
