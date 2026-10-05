@@ -8,6 +8,10 @@ const PORT = 8090;
 const OUT = new URL('./out/', import.meta.url).pathname;
 rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
+// On a slow software renderer: E2E_Q=low (graphics preset), E2E_VIEWPORT=960x540, E2E_TIMEOUT=120000 (ms per step).
+const [VW, VH] = (process.env.E2E_VIEWPORT ?? '1280x720').split('x').map(Number);
+const QS = process.env.E2E_Q ? `&q=${process.env.E2E_Q}` : '';
+const STEP_MS = Number(process.env.E2E_TIMEOUT ?? 30000);
 
 const server = spawn(process.execPath, ['--import', 'tsx', 'src/server/main.ts'], {
   env: { ...process.env, PORT: String(PORT), DEV: '1', DB_PATH: `${OUT}/e2e.db` },
@@ -35,10 +39,11 @@ try {
   browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 
   async function open(name, extra = '') {
-    const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+    const page = await browser.newPage({ viewport: { width: VW, height: VH } });
+    page.setDefaultTimeout(STEP_MS);
     page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
     page.on('console', (m) => { if (m.type() === 'error') errors.push(`${name}: ${m.text()}`); });
-    await page.goto(`http://localhost:${PORT}/?name=${name}&autostart=1${extra}`);
+    await page.goto(`http://localhost:${PORT}/?name=${name}&autostart=1${QS}${extra}`);
     await page.waitForFunction(() => window.__game?.self && window.__game.pred.ready, null, { timeout: 60000, polling: 250 });
     return page;
   }
