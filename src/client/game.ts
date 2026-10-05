@@ -28,6 +28,8 @@ import { CloudLayer } from './planet/clouds.ts';
 import { Underwater } from './world/underwater.ts';
 import { SeaLife } from './planet/sealife.ts';
 import { Wardrobe } from './ui/wardrobe.ts';
+import { ContractsUi } from './ui/contracts.ts';
+import { KIND_NAMES, type ActiveContract } from '../shared/contracts.ts';
 import { DEFAULT_GEAR, gearStats, parseLook, validOutfit, type GearStats } from '../shared/outfit.ts';
 import { PlanetView } from './planet/planet-view.ts';
 import { SurfaceProps } from './planet/props.ts';
@@ -67,7 +69,8 @@ interface Remote {
   prevF?: V3;
 }
 
-interface NavItem { name: string; pos: V3; kind: 'planet' | 'station' | 'gate' | 'event'; radius: number; ship?: number }
+/** `site`: a point on a planet (body frame) the marker follows as the planet turns. */
+interface NavItem { name: string; pos: V3; kind: 'planet' | 'station' | 'gate' | 'event' | 'goal'; radius: number; ship?: number; site?: { planet: number; p: V3 } }
 
 const RESOURCE_NAMES = { ore: 'руда', crystal: 'кристалл', relic: 'реликт' } as const;
 const DUST: Record<string, string> = { terran: '#9a8a6a', ocean: '#b0a080', alien: '#c090d0', desert: '#d9a060', ice: '#e8f4ff', lava: '#5a4a4a', barren: '#9a948e' };
@@ -87,6 +90,7 @@ export class Game {
   private input: Input;
   private hud = new Hud();
   private wardrobe = new Wardrobe();
+  private contracts = new ContractsUi();
   private radar = new Radar(document.getElementById('radar') as HTMLCanvasElement);
   private sfx = new Sfx();
   private conn: NetClient;
@@ -131,6 +135,8 @@ export class Game {
   private myAstro: AstronautView | null = null;
   private welcome: Welcome | null = null;
   private pilot: PilotInfo | null = null;
+  private goalIds: string[] = [];
+  private goalsKnown = false;
   /** Effects of the local pilot's outfit (prediction must match the server). */
   private gear: GearStats = DEFAULT_GEAR;
   private self: SelfState | null = null;
@@ -203,6 +209,8 @@ export class Game {
     this.hud.onAction = (a) => { this.conn.action(a); this.sfx.beep(); };
     this.hud.onWardrobe = () => { if (this.pilot) this.wardrobe.show(this.pilot); };
     this.wardrobe.onAction = (a) => { this.conn.action(a); this.sfx.beep(); };
+    this.hud.onContracts = () => { if (this.pilot) this.contracts.show(this.pilot); };
+    this.contracts.onAction = (a) => { this.conn.action(a); this.sfx.beep(); };
     this.hud.onTyping = (t) => { this.input.typing = t; };
 
     const handlers: NetHandlers = {
@@ -214,6 +222,7 @@ export class Game {
       events: (e) => this.onEvents(e),
       pilot: (p) => this.setPilot(p),
       world: (p) => this.onWorld(p),
+      board: (b) => this.contracts.setBoard(b),
       error: (m) => this.onFatal(m),
       closed: () => this.onFatal('Соединение с сервером потеряно'),
     };
@@ -348,8 +357,33 @@ export class Game {
       ...this.baseNav,
       ...this.pois.map((p) => ({ name: p.kind === 'convoy' ? p.name : `${POI_LABEL[p.kind]}: ${p.name.replace(/^(Обломки|Аномалия) /, '')}`, pos: v3(p.pos[0], p.pos[1], p.pos[2]), kind: 'event' as const, radius: 0, ship: p.ship })),
     ];
+    this.navItems.push(...this.goalNav());
     const i = this.navItems.findIndex((n) => n.name === cur);
     this.navIndex = i >= 0 ? i : Math.min(this.navIndex, this.navItems.length - 1);
+  }
+
+  /** Navigation points for the targets of active contracts (another system: its gate). */
+  private goalNav(): NavItem[] {
+    const sys = this.sys;
+    if (!sys || !this.pilot) return [];
+    const out: NavItem[] = [];
+    for (const c of this.pilot.career.active) {
+      const name = `◆ ${KIND_NAMES[c.kind]}: `;
+      if (c.system !== sys.id) {
+        const g = sys.gates.find((x) => x.target === c.system);
+        if (g) out.push({ name: `${name}${g.name}`, pos: g.pos, kind: 'goal', radius: 0 });
+        continue;
+      }
+      const pl = c.planet !== undefined ? sys.planets[c.planet] : undefined;
+      if (pl && c.site !== undefined) {
+        const s = planetSites(pl)[c.site];
+        if (!s) continue;
+        const r = pl.radius + s.h + 12;
+        out.push({ name: `${name}${s.name}`, pos: v3(), kind: 'goal', radius: 0, site: { planet: pl.index, p: v3(s.dir.x * r, s.dir.y * r, s.dir.z * r) } });
+      } else if (pl) out.push({ name: `${name}${pl.name}`, pos: pl.center, kind: 'goal', radius: pl.radius });
+      else if (c.kind === 'supply' || c.kind === 'deliver') out.push({ name: `${name}${sys.station.name}`, pos: sys.station.pos, kind: 'goal', radius: 0 });
+    }
+    return out;
   }
 
   private onWorld(list: Poi[]) {
@@ -379,7 +413,18 @@ export class Game {
     this.gear = gearStats(validOutfit(p.outfit, p.items));
     this.myAstro?.dress(validOutfit(p.outfit, p.items), p.name);
     if (this.wardrobe.open) this.wardrobe.setPilot(p);
+    this.contracts.setPilot(p);
     this.hud.setPilot(p, this.sys?.name ?? '');
+    // a freshly taken contract becomes the navigation target
+    const had = new Set(this.goalIds), first = !this.goalsKnown;
+    this.goalsKnown = true;
+    this.goalIds = p.career.active.map((c) => c.id);
+    this.rebuildNav();
+    const fresh = p.career.active.find((c: ActiveContract) => !had.has(c.id));
+    if (fresh && !first && had.size + 1 === this.goalIds.length) {
+      const i = this.navItems.findIndex((n) => n.kind === 'goal' && n.name.startsWith(`◆ ${KIND_NAMES[fresh.kind]}`));
+      if (i >= 0) { this.navIndex = i; this.hud.toast(`Цель контракта — в навигации: ${this.navItems[i].name.slice(2)}`); }
+    }
     if (this.self && this.lastMode === MODE.DOCKED) this.hud.renderStation(p, { hull: this.self.hull, max: this.self.maxHull });
   }
 
@@ -408,7 +453,7 @@ export class Game {
       if (this.pilot && this.self) this.hud.renderStation(this.pilot, { hull: this.self.hull, max: this.self.maxHull });
     }
     if (mode === MODE.DEAD || prev === MODE.DOCKED) { this.ctrl.throttle = 0; this.ctrl.cruiseOn = false; }
-    if (prev === MODE.DOCKED && mode !== MODE.DOCKED) this.wardrobe.close();
+    if (prev === MODE.DOCKED && mode !== MODE.DOCKED) { this.wardrobe.close(); this.contracts.close(); }
     if (mode === MODE.FOOT) {
       this.ctrl.footPitch = -0.12;
       if (!this.myAstro) {
@@ -676,7 +721,7 @@ export class Game {
     const i = this.input;
     if (i.hit('KeyH')) this.hud.toggleHelp();
     if (i.hit('KeyO')) this.toggleSettings();
-    if (i.hit('Escape')) { this.hud.toggleHelp(false); this.toggleSettings(false); this.wardrobe.close(); }
+    if (i.hit('Escape')) { this.hud.toggleHelp(false); this.toggleSettings(false); this.wardrobe.close(); this.contracts.close(); }
     if (i.hit('Enter')) { this.hud.focusChat(); i.releaseLock(); }
     if (i.hit('KeyZ')) i.releaseLock();
     if (i.hit('KeyV') && mode === MODE.FOOT) {
@@ -1236,8 +1281,9 @@ export class Game {
     for (const n of this.navItems) {
       const r = n.ship ? this.remotes.get(n.ship) : undefined;
       if (r?.visible) Object.assign(n.pos, r.p);
+      if (n.site) this.toWorld(n.site.planet + 1, n.site.p, n.pos);
     }
-    const items = this.navItems.map((n) => ({ name: n.name, dist: this.fmtDist(Math.max(0, vdist(n.pos, me) - (n.kind === 'planet' ? n.radius : 0))) }));
+    const items = this.navItems.map((n) => ({ name: n.name, dist: this.fmtDist(Math.max(0, vdist(n.pos, me) - (n.kind === 'planet' || n.kind === 'goal' ? n.radius : 0))) }));
     this.hud.navList(items, this.navIndex);
     const nav = this.navItems[this.navIndex];
     if (nav && mode !== MODE.DOCKED) {
@@ -1276,10 +1322,11 @@ export class Game {
       blips.push({ x: c.x, y: c.y, z: c.z, kind: r.info.npc ? 'npc' : 'player', sel: id === this.targetId });
       if (d < 4000 && mode !== MODE.DOCKED) {
         const sp = this.project(v3(r.p.x, r.p.y, r.p.z));
-        if (!sp.behind) labels.push({ id, x: sp.x, y: sp.y - 18, text: r.info.name, sub: this.fmtDist(d), npc: !!r.info.npc, hull: r.state?.hull ?? 1 });
+        if (!sp.behind) labels.push({ id, x: sp.x, y: sp.y - 18, text: r.info.wanted ? `${r.info.name} · РАЗЫСКИВАЕТСЯ` : r.info.name, sub: this.fmtDist(d), npc: !!r.info.npc || !!r.info.wanted, hull: r.state?.hull ?? 1 });
       }
     }
     for (const p of this.pois) { const pc = rel(v3(p.pos[0], p.pos[1], p.pos[2])); blips.push({ x: pc.x, y: pc.y, z: pc.z, kind: 'poi' }); }
+    for (const n of this.navItems) if (n.kind === 'goal') { const gc = rel(n.pos); blips.push({ x: gc.x, y: gc.y, z: gc.z, kind: 'goal' }); }
     const sc = rel(sys.station.pos);
     blips.push({ x: sc.x, y: sc.y, z: sc.z, kind: 'station' });
     for (const g of sys.gates) { const gc = rel(g.pos); blips.push({ x: gc.x, y: gc.y, z: gc.z, kind: 'gate' }); }
@@ -1297,7 +1344,8 @@ export class Game {
         if (d > 6000 || d < 25) return;
         const sp = this.project(w);
         if (sp.behind) return;
-        labels.push({ id: -1000 - np.index * 32 - k, x: sp.x, y: sp.y, text: s.name, sub: this.fmtDist(d), npc: s.kind === 'base', hull: 1, site: true });
+        const goal = !!this.pilot?.career.active.some((c) => c.system === this.sys?.id && c.planet === np.index && c.site === s.id);
+        labels.push({ id: -1000 - np.index * 32 - k, x: sp.x, y: sp.y, text: goal ? `◆ ${s.name}` : s.name, sub: this.fmtDist(d), npc: s.kind === 'base', hull: 1, site: true, goal });
       });
     }
     this.hud.setLabels(labels);

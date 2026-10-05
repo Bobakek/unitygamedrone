@@ -51,7 +51,11 @@ try {
   // close-ups of the suit: front with the visor down, face behind the raised visor, back, a full kit
   for (const [look, visor, side, name] of [['', 0, 0.3, 'suit-front'], ['', 1, -0.3, 'suit-face'], ['', 0, 3.0, 'suit-back'],
     ['suit-orange.helmet-dome.visor-silver.pack-o2.chest-plate.lights-eva.patch-skull', 1, 0.5, 'suit-orange'],
-    ['suit-graphite.helmet-armored.visor-amber.pack-jet.chest-rig.lights-eva.patch-wings', 0, 2.4, 'suit-graphite']]) {
+    ['suit-graphite.helmet-armored.visor-amber.pack-jet.chest-rig.lights-eva.patch-wings', 0, 2.4, 'suit-graphite'],
+    // faction gear bought for reputation
+    ['suit-navy.helmet-dome.visor-gold.pack-plss.chest-aegis.lights-eva.patch-flag', 0, 0.4, 'suit-navy'],
+    ['suit-miner.helmet-dome.visor-amber.pack-deep.chest-rig.lights-eva.patch-planet', 1, 2.3, 'suit-miner'],
+    ['suit-raider.helmet-armored.visor-chameleon.pack-raider.chest-plate.lights-none.patch-skull', 0, 2.5, 'suit-raider']]) {
     await page.evaluate(([l, v]) => { window.__lab.play('pilot', 'idle'); window.__lab.dress(l, v); window.__lab.seek(1.2); }, [look, visor]);
     await page.evaluate((s) => window.__lab.close(s), side);
     await sleep(800);

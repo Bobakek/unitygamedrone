@@ -2,10 +2,11 @@ import {
   CARGO_KEYS, CARGO_NAMES, cargoCount, cargoValue, UPGRADE_COST, MAX_LEVEL, PRICES, REPAIR_COST_PER_HP, MISSILE_COST, UPGRADE_KEYS, type UpgradeKey,
 } from '../../shared/economy.ts';
 import type { Action, PilotInfo } from '../../shared/net/protocol.ts';
+import { FACTION_COLORS, objectiveText, RANKS, rankOf } from '../../shared/contracts.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
 
-export interface LabelData { id: number; x: number; y: number; text: string; sub: string; npc: boolean; hull: number; site?: boolean }
+export interface LabelData { id: number; x: number; y: number; text: string; sub: string; npc: boolean; hull: number; site?: boolean; goal?: boolean }
 export interface TargetBox { x: number; y: number; size: number; name: string; info: string; shield: number; hull: number; lock: 0 | 1 | 2 }
 export interface FlightData { speed: number; throttle: number; boost: number; energy: number; shield: number; hull: number; mode: string }
 
@@ -32,6 +33,7 @@ export class Hud {
   onChat: (text: string) => void = () => {};
   onAction: (a: Action) => void = () => {};
   onWardrobe: () => void = () => {};
+  onContracts: () => void = () => {};
   onTyping: (typing: boolean) => void = () => {};
 
   constructor() {
@@ -51,6 +53,7 @@ export class Hud {
       if (!b) return;
       const act = b.dataset.act;
       if (act === 'wardrobe') this.onWardrobe();
+      else if (act === 'contracts') this.onContracts();
       else if (act === 'upgrade') this.onAction({ a: 'upgrade', key: b.dataset.key! });
       else if (act) this.onAction({ a: act } as Action);
     });
@@ -76,6 +79,8 @@ export class Hud {
     $('.pp-cargo').title = CARGO_KEYS.map((k) => `${CARGO_NAMES[k]} ${p.cargo[k]}`).join(', ');
     $('.pp-missiles').textContent = String(p.missiles);
     $('.pp-system').textContent = system;
+    $('.pp-rank').textContent = RANKS[rankOf(p.career.xp)].name;
+    $('.pp-tasks').innerHTML = p.career.active.map((c) => `<div class="pp-task${c.have >= c.need ? ' full' : ''}" style="--fc:${FACTION_COLORS[c.faction]}"><b>◆ ${esc(c.title)}</b><span>${esc(objectiveText(c))}</span></div>`).join('');
     if (!this.station.classList.contains('hidden')) this.renderStation(p);
   }
 
@@ -112,7 +117,9 @@ export class Hud {
     const s = document.createElement('span');
     s.textContent = sub;
     d.append(b, s);
-    box.replaceChildren(d);
+    // banners that arrive together (contract done + promotion) stack instead of replacing each other
+    while (box.children.length >= 2) box.firstElementChild!.remove();
+    box.append(d);
     setTimeout(() => d.remove(), 7200);
   }
 
@@ -194,6 +201,7 @@ export class Hud {
       }
       el.classList.toggle('npc', l.npc);
       el.classList.toggle('site', !!l.site);
+      el.classList.toggle('goal', !!l.goal);
       el.style.left = `${l.x}px`;
       el.style.top = `${l.y}px`;
       (el.querySelector('.lb-t') as HTMLElement).textContent = l.text;

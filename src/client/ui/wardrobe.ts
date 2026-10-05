@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import type { Action, PilotInfo } from '../../shared/net/protocol.ts';
-import { gearStats, ITEMS, itemEffect, owns, SLOT_NAMES, SLOTS, validOutfit, type Outfit, type Slot } from '../../shared/outfit.ts';
+import { gearStats, ITEMS, itemEffect, owns, repNeedText, repOk, SLOT_NAMES, SLOTS, validOutfit, type Outfit, type Slot } from '../../shared/outfit.ts';
 import { AstronautView } from '../entities/astronaut.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
@@ -139,12 +139,14 @@ export class Wardrobe {
     $('.wd-items', this.el).innerHTML = ITEMS.filter((i) => i.slot === this.slot).map((it) => {
       const have = owns(p.items, it.id), on = this.worn[it.slot] === it.id, trying = this.trying[it.slot] === it.id;
       const fx = itemEffect(it);
+      const locked = !have && !repOk(it, p.career.rep);
       const action = on ? '<button disabled>Надето</button>'
         : have ? '<button data-do="equip">Надеть</button>'
+        : locked ? `<button disabled>🔒 ${it.price} кр</button>`
         : `<button data-do="buy" ${p.credits < it.price ? 'disabled' : ''}>Купить · ${it.price} кр</button>`;
       return `<div class="wd-item${trying ? ' trying' : ''}${on ? ' on' : ''}" data-id="${it.id}">
         <div class="wd-name">${it.name}<span>${it.price ? (have ? 'куплено' : `${it.price} кр`) : 'бесплатно'}</span></div>
-        <div class="wd-desc">${it.desc}</div>${fx ? `<div class="wd-fx">${fx}</div>` : ''}${action}</div>`;
+        <div class="wd-desc">${it.desc}</div>${fx ? `<div class="wd-fx">${fx}</div>` : ''}${it.rep ? `<div class="wd-lock">${locked ? '🔒' : '✓'} Репутация: ${repNeedText(it)}</div>` : ''}${action}</div>`;
     }).join('');
     // what the tried-on outfit changes against what is worn
     const now = gearStats(this.worn), next = gearStats(this.trying);

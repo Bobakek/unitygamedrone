@@ -24,6 +24,8 @@
         <div class="pp-row"><span>Ракеты</span><b class="pp-missiles"></b></div>
         <div class="pp-row"><span>Система</span><b class="pp-system"></b></div>
         <div class="pp-row pp-clock hidden"><span class="pp-where"></span><b class="pp-time"></b></div>
+        <div class="pp-row"><span>Звание</span><b class="pp-rank"></b></div>
+        <div class="pp-tasks"></div>
       </div>
 
       <div id="nav-panel" class="panel"><div class="np-title">Навигация <small>Tab</small></div><div class="np-list"></div></div>
@@ -63,6 +65,7 @@
             <button data-act="sell">Продать груз</button>
             <button data-act="repair">Ремонт корпуса</button>
             <button data-act="buyMissiles">Докупить ракеты</button>
+            <button data-act="contracts" class="st-contracts">Контракты</button>
             <button data-act="wardrobe" class="st-wardrobe">Гардероб пилота</button>
           </section>
           <section>
@@ -90,6 +93,15 @@
           </div>
         </div>
         <button class="primary wd-close">Готово</button>
+      </div>
+    </div>
+
+    <div id="contracts" class="modal hidden">
+      <div class="ct-card-wrap">
+        <div class="ct-top"><h2 class="ct-title">Контракты</h2><span class="ct-rank"></span></div>
+        <div class="ct-tabs"></div>
+        <div class="ct-body"></div>
+        <button class="primary ct-close">Готово</button>
       </div>
     </div>
 
@@ -135,6 +147,7 @@
             <p>В воде: <kbd>C</kbd> нырнуть, <kbd>Space</kbd> всплыть, <kbd>W</kbd> плыть туда, куда смотрите; следите за воздухом</p>
             <p><kbd>Колесо</kbd> дистанция камеры, <kbd>V</kbd> светофильтр шлема</p>
             <p>Скафандр и снаряжение — в гардеробе на станции</p>
+            <p>Контракты фракций — на доске станции; цели — в навигации (<kbd>Tab</kbd>) и на радаре ◆</p>
             <p>Низкие камни перепрыгиваются на бегу сами</p>
             <p><kbd>ЛКМ</kbd> бластер-винтовка, <kbd>ПКМ</kbd> прицел</p>
             <p><kbd>F</kbd> собрать ресурс / тайник / биообразцы</p>
@@ -142,7 +155,7 @@
             <p><kbd>Enter</kbd> чат, <kbd>H</kbd> эта справка, <kbd>O</kbd> настройки, <kbd>Z</kbd> освободить мышь</p>
           </div>
         </div>
-        <p class="help-hint">Продавайте ресурсы и получайте награды за пиратов на станции, покупайте улучшения.</p>
+        <p class="help-hint">Продавайте ресурсы и получайте награды за пиратов на станции, покупайте улучшения. Контракты дают опыт (звания) и репутацию у Федерации, Гильдии старателей и Синдиката — она открывает снаряжение в гардеробе.</p>
       </div>
     </div>
 

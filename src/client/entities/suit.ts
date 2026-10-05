@@ -61,6 +61,10 @@ const SCHEMES: Record<string, Scheme> = {
   'suit-orlan': { ...WHITE, fabric: '#eef0f2', soft: '#d6dce4', accent: '#2a5aa8', stripe: '#c51f2a', inserts: '#2a5aa8' },
   'suit-tan': { ...WHITE, fabric: '#c9b58f', soft: '#b39d77', hard: '#d2c19e', glove: '#7a6a52', palm: '#4a4034', boot: '#6c5c46', sole: '#3a3128', pack: '#c2b18e', hose: '#a89878', accent: '#5a4c3a', helmet: '#d6c7a6' },
   'suit-graphite': { ...WHITE, fabric: '#3c4048', soft: '#31343b', hard: '#464a52', glove: '#25282d', palm: '#1a1c20', boot: '#22252a', sole: '#141518', pack: '#4a4e56', hose: '#5a5e66', ring: '#8a9098', accent: '#f07a2a', stripe: '#f07a2a', helmet: '#464a52' },
+  // faction suits (sold for reputation)
+  'suit-navy': { ...WHITE, fabric: '#26375e', soft: '#1f2d4e', hard: '#2e4170', glove: '#1c2236', palm: '#141826', boot: '#1a2032', sole: '#0f121c', pack: '#2e4170', hose: '#8a96b0', ring: '#d9b45a', accent: '#d9b45a', stripe: '#d9b45a', helmet: '#2e4170' },
+  'suit-miner': { ...WHITE, fabric: '#e8c21e', soft: '#cfa914', hard: '#f0cc2a', glove: '#3a3a3a', palm: '#222222', boot: '#4a3a2a', sole: '#1e1a16', pack: '#e0b81c', hose: '#5a5a5a', accent: '#2a2a2a', stripe: '#dfe4ea', helmet: '#f0cc2a' },
+  'suit-raider': { ...WHITE, fabric: '#232327', soft: '#1b1b1e', hard: '#2a2a30', glove: '#121214', palm: '#0c0c0e', boot: '#141416', sole: '#0a0a0b', pack: '#2a2a30', hose: '#5a1c22', ring: '#8a2a32', accent: '#d0202e', stripe: '#d0202e', inserts: '#8a1a22', helmet: '#2a2a30' },
 };
 
 // ---------------------------------------------------------------- materials (shared)
@@ -330,7 +334,8 @@ function buildGeometry(o: Outfit): Built {
   for (const s of [-1, 1]) sp.add(tor(0.105, 0.022), S.ring, METAL, [s * 0.305, 0.44, 0], [0, Math.PI / 2, 0]);
   if (S.inserts) for (const s of [-1, 1]) sp.add(box(0.03, 0.3, 0.3), S.inserts, HARD, [s * 0.285, 0.22, 0], [0, 0, 0], [1, 1, 1]);
   // chest: display and control module (lower under an armour plate), or a vest with pouches
-  const dcmY = o.chest === 'chest-plate' ? 0.16 : 0.36;
+  const armored = o.chest === 'chest-plate' || o.chest === 'chest-aegis';
+  const dcmY = armored ? 0.16 : 0.36;
   const sg = L('spine');
   sp.add(box(0.27, 0.13, 0.085), S.pack, HARD, [0, dcmY, -0.235]);
   sp.add(box(0.27, 0.03, 0.06), S.accent, HARD, [0, dcmY - 0.075, -0.22]);
@@ -340,6 +345,12 @@ function buildGeometry(o: Outfit): Built {
     const plate = new THREE.CylinderGeometry(0.3, 0.3, 0.26, 20, 1, true, Math.PI - 0.75, 1.5);
     sp.add(plate, S.accent === '#2a2d33' ? '#4a5058' : '#5a6068', [0.4, 0.3, 0.1], [0, 0.39, -0.02], [0, 0, 0], [1, 1, 0.82]);
     sp.add(plate.clone(), '#3a3f46', [0.5, 0.4, 0], [0, 0.39, -0.025], [0, 0, 0], [1.02, 0.25, 0.84]);
+  } else if (o.chest === 'chest-aegis') {
+    // Federation fleet armour: a taller navy breastplate with gold rims and a star
+    const plate = new THREE.CylinderGeometry(0.3, 0.3, 0.32, 24, 1, true, Math.PI - 0.85, 1.7);
+    sp.add(plate, '#2a3a62', [0.35, 0.45, 0.1], [0, 0.37, -0.02], [0, 0, 0], [1, 1, 0.84]);
+    for (const y of [0.53, 0.21]) sp.add(plate.clone(), '#d9b45a', METAL, [0, y, -0.025], [0, 0, 0], [1.02, 0.06, 0.86]);
+    sp.add(cyl(0.045, 0.045, 0.02, 5), '#e8c46a', METAL, [0, 0.4, -0.27], [Math.PI / 2, 0, 0]);
   } else if (o.chest === 'chest-rig') {
     for (const s of [-1, 1]) sp.add(box(0.05, 0.42, 0.02), '#5e5a48', FABRIC, [s * 0.12, 0.38, -0.205], [0.18, 0, 0]);
     for (const x of [-0.13, 0, 0.13]) sp.add(box(0.1, 0.09, 0.06), '#6a6450', FABRIC, [x, 0.13, -0.235]);
@@ -374,14 +385,30 @@ function buildGeometry(o: Outfit): Built {
       for (const s of [-1, 1]) nozzles.push(new THREE.Vector3(s * 0.11, -0.03, 0.3));
       break;
     }
-    case 'pack-jet': {
+    case 'pack-jet':
+    case 'pack-raider': {
+      // the Syndicate's afterburner pack: longer black pods with red fins
+      const raider = o.pack === 'pack-raider';
       plss(0.29);
       for (const s of [-1, 1]) {
-        sp.add(cyl(0.07, 0.07, 0.3, 14), S.pack, HARD, [s * 0.29, 0.22, 0.31]);
-        sp.add(cyl(0.05, 0.085, 0.09, 14, true), '#3a3d44', METAL, [s * 0.29, 0.03, 0.31]);
-        sp.add(box(0.02, 0.18, 0.12), S.accent, HARD, [s * 0.36, 0.3, 0.31]);
-        nozzles.push(new THREE.Vector3(s * 0.29, -0.01, 0.31));
+        sp.add(cyl(raider ? 0.078 : 0.07, raider ? 0.078 : 0.07, raider ? 0.38 : 0.3, 14), raider ? '#24242a' : S.pack, HARD, [s * 0.29, raider ? 0.24 : 0.22, 0.31]);
+        sp.add(cyl(0.05, raider ? 0.095 : 0.085, raider ? 0.11 : 0.09, 14, true), '#3a3d44', METAL, [s * 0.29, raider ? 0.0 : 0.03, 0.31]);
+        sp.add(box(0.02, raider ? 0.26 : 0.18, raider ? 0.16 : 0.12), raider ? '#d0202e' : S.accent, HARD, [s * 0.37, 0.3, 0.31]);
+        if (raider) sg.add(tor(0.06, 0.008, 14), '#ff4030', 1.2, [s * 0.29, 0.06, 0.31], [Math.PI / 2, 0, 0]);
+        nozzles.push(new THREE.Vector3(s * 0.29, raider ? -0.04 : -0.01, 0.31));
       }
+      break;
+    }
+    case 'pack-deep': {
+      // the Guild's deep-water pack: three yellow tanks
+      plss(0.27, 0.5);
+      for (const x of [-0.15, 0, 0.15]) {
+        sp.add(cap(0.068, 0.36, 16), '#e0b81c', HARD, [x, 0.32, 0.45]);
+        sp.add(cyl(0.018, 0.018, 0.05, 10), '#7a808a', METAL, [x, 0.6, 0.45]);
+        sp.add(tor(0.07, 0.009, 18), '#2a2a2a', HARD, [x, 0.22, 0.45], [Math.PI / 2, 0, 0]);
+      }
+      backZ = 0.53;
+      for (const s of [-1, 1]) nozzles.push(new THREE.Vector3(s * 0.11, -0.03, 0.3));
       break;
     }
     case 'pack-medic': {
@@ -567,7 +594,7 @@ export function buildSuit(j: SuitJoints, o: Outfit, name: string): Suit {
   patch.rotation.set(0, Math.PI / 2, 0);
   put(j.sh[1], patch);
   if (name) {
-    const dcmY = o.chest === 'chest-plate' ? 0.16 : 0.36;
+    const dcmY = o.chest === 'chest-plate' || o.chest === 'chest-aegis' ? 0.16 : 0.36;
     const tag = new THREE.Mesh(plane(0.2, 0.04), decalMaterial(nameTexture(name)));
     tag.position.set(0, dcmY + 0.04, -0.2785);
     tag.rotation.y = Math.PI;

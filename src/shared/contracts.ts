@@ -125,7 +125,7 @@ function makers(sysId: number): Record<Exclude<ContractKind, 'intercept'>, Maker
       return {
         id, kind: 'hunt', faction: 'guild', tier, system: sysId, planet: pl.index, species, need,
         title: `Охота: ${SPECIES[species].name}`,
-        desc: `Хищники нападают на старателей на ${pl.name}. Уничтожьте ${SPECIES[species].name.toLowerCase()} ×${need} — ${sea.length ? 'в море, под водой' : 'пешком, из бластера'}.`,
+        desc: `Хищники нападают на старателей на ${pl.name}. Цель — ${SPECIES[species].name.toLowerCase()} ×${need}, ${sea.length ? 'в море, под водой' : 'пешком, из бластера'}.`,
         reward: reward([0, 250, 420, 650][tier] + (sea.length ? 80 : 0), tier),
       };
     },
@@ -147,7 +147,7 @@ function makers(sysId: number): Record<Exclude<ContractKind, 'intercept'>, Maker
       return {
         id, kind: 'clear', faction: 'fed', tier, system: sysId, planet: pl.index, site: s.id, need,
         title: `Зачистка: ${s.name}`,
-        desc: `Пиратская база ${s.name} на ${pl.name} обстреливает корабли. Уничтожьте турели: ${need} из 3.`,
+        desc: `${s.name} на ${pl.name} обстреливает корабли. Уничтожьте турели: ${need} из 3.`,
         reward: reward([0, 450, 700, 1000][tier], tier), side: { pirate: -4 },
       };
     },
@@ -179,7 +179,7 @@ function makers(sysId: number): Record<Exclude<ContractKind, 'intercept'>, Maker
       return {
         id, kind: 'survey', faction: 'guild', tier, system: sysId, planet: pl.index, site: s.id, need: 1,
         title: `Разведка: ${s.name}`,
-        desc: `Гильдии нужны данные о руинах ${s.name} на ${pl.name}. Дойдите до центра руин пешком.`,
+        desc: `Гильдии нужны данные: ${s.name} на ${pl.name}. Высадитесь и дойдите до центра пешком.`,
         reward: reward([0, 200, 340, 500][tier], tier),
       };
     },
@@ -192,7 +192,7 @@ function makers(sysId: number): Record<Exclude<ContractKind, 'intercept'>, Maker
       return {
         id, kind: 'smuggle', faction: 'pirate', tier, system: sysId, planet: pl.index, site: s.id, cargo, need,
         title: `Контрабанда: ${s.name}`,
-        desc: `Анонимный заказчик ждёт ${CARGO_NAMES[cargo].toLowerCase()} ×${need} на пиратской базе ${s.name} (${pl.name}). Принесите пешком. Федерации это не понравится.`,
+        desc: `Анонимный заказчик ждёт ${CARGO_NAMES[cargo].toLowerCase()} ×${need}. Место встречи — ${s.name} на ${pl.name}, груз принести пешком. Федерации это не понравится.`,
         reward: reward(need * PRICES[cargo] * 2.5 + 100, tier), side: { fed: -8 },
       };
     },
