@@ -4,6 +4,8 @@
  * client prediction) and a compact code other players receive to dress the
  * pilot's model the same way.
  */
+import { FACTION_SHORT, REP_NAMES, repLevel, type Faction } from './factions.ts';
+
 export type Slot = 'suit' | 'helmet' | 'visor' | 'pack' | 'chest' | 'lights' | 'patch';
 export const SLOTS: readonly Slot[] = ['suit', 'helmet', 'visor', 'pack', 'chest', 'lights', 'patch'];
 export const SLOT_NAMES: Record<Slot, string> = {
@@ -37,6 +39,8 @@ export interface ItemDef {
   gear?: Partial<GearStats>;
   /** Extra hp on top of the base suit (stacks across slots). */
   armor?: number;
+  /** Sold only to pilots with at least this standing with a faction (REP level index). */
+  rep?: { faction: Faction; level: number };
 }
 
 export const ITEMS: readonly ItemDef[] = [
@@ -46,6 +50,9 @@ export const ITEMS: readonly ItemDef[] = [
   { id: 'suit-orlan', slot: 'suit', name: 'Бело-синий «Орлан»', price: 450, desc: 'Белый с синими вставками и красной окантовкой.' },
   { id: 'suit-tan', slot: 'suit', name: 'Песчаный разведчик', price: 500, desc: 'Пыльно-песочный, для пустынь и скал.' },
   { id: 'suit-graphite', slot: 'suit', name: 'Графитовый', price: 800, desc: 'Тёмный матовый скафандр с оранжевой окантовкой.' },
+  { id: 'suit-navy', slot: 'suit', name: 'Флотский', price: 600, desc: 'Тёмно-синий скафандр флота Федерации с золотыми кантами.', rep: { faction: 'fed', level: 3 } },
+  { id: 'suit-miner', slot: 'suit', name: 'Старательский', price: 500, desc: 'Сигнальный жёлтый с отражающими полосами — форма Гильдии.', rep: { faction: 'guild', level: 3 } },
+  { id: 'suit-raider', slot: 'suit', name: 'Рейдер', price: 700, desc: 'Чёрный с красным — так ходят люди Синдиката.', rep: { faction: 'pirate', level: 3 } },
 
   { id: 'helmet-dome', slot: 'helmet', name: 'Купол EMU', price: 0, desc: 'Прозрачный шлем-пузырь со щитком, светофильтром и фонарями.' },
   { id: 'helmet-panorama', slot: 'helmet', name: 'Панорамный', price: 450, desc: 'Почти весь из стекла — лучший обзор.' },
@@ -61,10 +68,13 @@ export const ITEMS: readonly ItemDef[] = [
   { id: 'pack-o2', slot: 'pack', name: 'Кислородные баллоны', price: 900, desc: 'Два дополнительных баллона: вдвое больше воздуха под водой.', gear: { airTime: 150 } },
   { id: 'pack-jet', slot: 'pack', name: 'Усиленный джетпак', price: 1200, desc: 'Крупные сопла и экономичный двигатель: топлива хватает дольше.', gear: { fuelDrain: 0.27 } },
   { id: 'pack-medic', slot: 'pack', name: 'Ремонтный модуль', price: 1000, desc: 'Латает скафандр быстрее и раньше.', gear: { regenRate: 10, regenDelay: 2.5 } },
+  { id: 'pack-deep', slot: 'pack', name: 'Глубоководный ранец', price: 1300, desc: 'Три баллона Гильдии для работы под водой.', gear: { airTime: 240 }, rep: { faction: 'guild', level: 4 } },
+  { id: 'pack-raider', slot: 'pack', name: 'Форсажный ранец', price: 1700, desc: 'Краденый форсажный двигатель Синдиката: топлива хватает надолго.', gear: { fuelDrain: 0.2 }, rep: { faction: 'pirate', level: 4 } },
 
   { id: 'chest-dcm', slot: 'chest', name: 'Пульт DCM', price: 0, desc: 'Стандартный нагрудный пульт управления.' },
   { id: 'chest-plate', slot: 'chest', name: 'Бронепластина', price: 1100, desc: 'Композитная пластина поверх пульта.', armor: 30 },
   { id: 'chest-rig', slot: 'chest', name: 'Разгрузка с контейнерами', price: 600, desc: 'Подсумки для образцов: с каждой туши на один образец больше.', gear: { samples: 1 } },
+  { id: 'chest-aegis', slot: 'chest', name: 'Щит «Эгида»', price: 1600, desc: 'Флотская броня Федерации с эмблемой на груди.', armor: 45, rep: { faction: 'fed', level: 4 } },
 
   { id: 'lights-none', slot: 'lights', name: 'Без фонарей', price: 0, desc: 'Фонари не установлены.' },
   { id: 'lights-eva', slot: 'lights', name: 'EVA-фонари', price: 300, desc: 'Два прожектора на шлеме освещают путь ночью.' },
@@ -98,6 +108,11 @@ export function validOutfit(o: Partial<Record<string, unknown>> | null | undefin
   }
   return out;
 }
+
+/** True when the pilot's standing allows buying the item. */
+export const repOk = (it: ItemDef, rep: Record<Faction, number>) => !it.rep || repLevel(rep[it.rep.faction] ?? 0) >= it.rep.level;
+/** "Гильдия — Друг" */
+export const repNeedText = (it: ItemDef) => (it.rep ? `${FACTION_SHORT[it.rep.faction]} — ${REP_NAMES[it.rep.level]}` : '');
 
 /** Gameplay stats of an outfit. */
 export function gearStats(o: Outfit): GearStats {
