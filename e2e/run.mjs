@@ -153,6 +153,22 @@ try {
   console.log('wardrobe: bought', await a.evaluate(() => window.__game.pilot.items.join(',')));
   await a.evaluate(() => document.querySelector('.wd-close').click());
 
+  // contracts: take an offer from the station board, it shows in the HUD, finish it (dev) for the reward
+  await a.evaluate(() => document.querySelector('#station button[data-act="contracts"]').click());
+  await a.waitForFunction(() => !document.querySelector('#contracts').classList.contains('hidden') && document.querySelector('#contracts button[data-take]'), null, { timeout: 30000, polling: 250 });
+  const taken = await a.evaluate(() => { const b = document.querySelector('#contracts button[data-take]'); b.click(); return b.dataset.take; });
+  await a.waitForFunction((id) => window.__game.pilot.career.active.some((c) => c.id === id), taken, { timeout: 15000, polling: 250 });
+  await a.evaluate(() => document.querySelector('#contracts button[data-tab="mine"]').click());
+  await shot(a, '08c-contracts.png', 2000);
+  if (await a.evaluate(() => document.querySelectorAll('.pp-tasks .pp-task').length) !== 1) errors.push('contract not shown in the HUD tracker');
+  const before = await a.evaluate(() => ({ credits: window.__game.pilot.credits, reward: window.__game.pilot.career.active[0].reward }));
+  await chat(a, '/finish');
+  await a.waitForFunction((id) => window.__game.pilot.career.done.includes(id), taken, { timeout: 15000, polling: 250 });
+  const after = await a.evaluate(() => ({ credits: window.__game.pilot.credits, xp: window.__game.pilot.career.xp }));
+  console.log('contract', taken, 'done:', JSON.stringify({ before, after }));
+  if (after.credits !== before.credits + before.reward.credits || after.xp !== before.reward.xp) errors.push('contract reward not paid');
+  await a.evaluate(() => document.querySelector('#contracts .ct-close').click());
+
   await a.click('#station button.primary');
   await a.waitForFunction(() => window.__game.pred.mode === 0, null, { timeout: 15000, polling: 250 });
   const sys0 = await a.evaluate(() => window.__game.sys.id);
