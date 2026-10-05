@@ -4,7 +4,7 @@ import { defaultUpgrades, flightStats } from '../shared/economy.ts';
 import { getSystem, type PlanetDef, type SystemDef } from '../shared/galaxy/system-gen.ts';
 import { FWD, qlook, qrot, quat, v3, vcross, vdist, vlen, vnorm, vsub, type Quat, type V3 } from '../shared/math/vec.ts';
 import {
-  aimPitch, BLASTER_LEVEL, CFLAG, EFLAG, IFLAG, KIND, MODE, type EntityInfo, type EntityState, type GameEvent, type PilotInfo, type SelfState, type Shot, type Snapshot, type Welcome,
+  aimPitch, BLASTER_LEVEL, DRONE_LEVEL, CFLAG, EFLAG, IFLAG, KIND, MODE, type EntityInfo, type EntityState, type GameEvent, type PilotInfo, type SelfState, type Shot, type Snapshot, type Welcome,
 } from '../shared/net/protocol.ts';
 import { heightAt, liquidOf, surfaceHeight, waterColors } from '../shared/planet/terrain.ts';
 import { resourceNode } from '../shared/planet/resources.ts';
@@ -47,14 +47,16 @@ import { SiteView } from './planet/sites-view.ts';
 import { WeatherView } from './world/weather.ts';
 import { forecast, HAZARD_GEAR, HAZARD_NAMES, LAVA_HEAT, STORM_OF, WEATHER, weatherAt, type Weather, type WeatherKind, type WeatherOverride } from '../shared/weather.ts';
 import { CreatureView } from './entities/creature.ts';
+import { DroneView } from './entities/drone.ts';
 import { BLASTER, moodOf, SAMPLE_RANGE, SPECIES } from '../shared/fauna.ts';
-import { planetSites } from '../shared/planet/sites.ts';
+import { planetSites, siteDir, sitePlane, sitesNear, wreckAt, wreckZone, type SiteDef } from '../shared/planet/sites.ts';
+import { wreckLog } from '../shared/planet/wreck-log.ts';
 import { POI_LABEL, SALVAGE_MAX_SPEED, SALVAGE_RANGE, type Poi } from '../shared/events.ts';
 
 interface Remote {
   info: EntityInfo | null;
   buf: InterpBuffer;
-  view: ShipView | AstronautView | MissileView | LootView | CreatureView | null;
+  view: ShipView | AstronautView | MissileView | LootView | CreatureView | DroneView | null;
   /** World pose at the current render time. */
   p: V3;
   q: Quat;
@@ -125,6 +127,9 @@ export class Game {
   private wx = { kind: 'clear' as WeatherKind, k: 0, wind: new THREE.Vector3(), dark: false };
   private wxBody: Weather = { kind: 'clear', k: 0, wind: v3() };
   private geigerT = 0;
+  /** 0..1: how far the camera is inside a wrecked hull (dims daylight, lights the emergency lamps). */
+  private indoorK = 0;
+  private wreckLights = [new THREE.PointLight('#6aff5a', 0, 30, 1.6), new THREE.PointLight('#ff3a2a', 0, 24, 1.6)];
   private camDepth = 0;
   private dayNow = 1;
   private lastSwim = 0;
@@ -210,7 +215,8 @@ export class Game {
     this.sunLight.shadow.bias = -0.0005;
     this.sunLight.shadow.normalBias = 0.05;
     this.hemi = new THREE.HemisphereLight('#6a7a9a', '#2a2630', 1.6);
-    this.r.scene.add(this.sunLight, this.sunLight.target, this.hemi, this.fill, this.fill.target);
+    this.r.scene.add(this.sunLight, this.sunLight.target, this.hemi, this.fill, this.fill.target, ...this.wreckLights);
+    document.querySelector('#shiplog .log-close')!.addEventListener('click', () => this.closeLog());
     this.r.scene.fog = new THREE.Fog('#000000', 1e8, 2e8);
 
     this.hud.onChat = (t) => this.conn.chat(t);
@@ -386,8 +392,10 @@ export class Game {
       if (pl && c.site !== undefined) {
         const s = planetSites(pl)[c.site];
         if (!s) continue;
-        const r = pl.radius + s.h + 12;
-        out.push({ name: `${name}${s.name}`, pos: v3(), kind: 'goal', radius: 0, site: { planet: pl.index, p: v3(s.dir.x * r, s.dir.y * r, s.dir.z * r) } });
+        // the goal of the site: the centre of ruins and bases, the bridge of a wreck
+        const g = siteDir(pl, s, s.goal.x, s.goal.z);
+        const r = pl.radius + s.h + (s.kind === 'wreck' ? 2 : 12);
+        out.push({ name: `${name}${s.name}`, pos: v3(), kind: 'goal', radius: 0, site: { planet: pl.index, p: v3(g.x * r, g.y * r, g.z * r) } });
       } else if (pl) out.push({ name: `${name}${pl.name}`, pos: pl.center, kind: 'goal', radius: pl.radius });
       else if (c.kind === 'supply' || c.kind === 'deliver') out.push({ name: `${name}${sys.station.name}`, pos: sys.station.pos, kind: 'goal', radius: 0 });
     }
@@ -510,7 +518,7 @@ export class Game {
     }
     else if (r.info.kind === KIND.MISSILE) r.view = new MissileView();
     else if (r.info.kind === KIND.LOOT) r.view = new LootView();
-    else if (r.info.kind === KIND.CREATURE && r.info.species !== undefined) r.view = new CreatureView(SPECIES[r.info.species]);
+    else if (r.info.kind === KIND.CREATURE && r.info.species !== undefined) r.view = SPECIES[r.info.species]?.drone ? new DroneView() : new CreatureView(SPECIES[r.info.species]);
     if (r.view) this.world.add(r.view.group);
   }
 
@@ -544,6 +552,7 @@ export class Game {
 
   private shotColor(shooter: number, level: number) {
     if (level === BLASTER_LEVEL) return new THREE.Color(2.6, 1.2, 0.3);
+    if (level === DRONE_LEVEL) return new THREE.Color(2.8, 0.35, 0.3);
     const info = this.infos.get(shooter);
     if (info?.npc) return new THREE.Color(2.4, 0.5, 0.3);
     return [new THREE.Color(0.5, 2.2, 2.6), new THREE.Color(0.5, 2.2, 2.6), new THREE.Color(0.6, 2.6, 1.2), new THREE.Color(2.2, 1.6, 0.4), new THREE.Color(2.4, 0.8, 2.4)][level] ?? new THREE.Color(0.5, 2.2, 2.6);
@@ -575,7 +584,7 @@ export class Game {
           else {
             const v = this.remotes.get(e.target)?.view;
             if (v instanceof ShipView) v.hit(e.shield);
-            if (v instanceof CreatureView) v.hit();
+            if (v instanceof CreatureView || v instanceof DroneView) v.hit();
             if (e.by === myShip) this.sfx.hit(e.shield);
           }
           break;
@@ -729,12 +738,69 @@ export class Game {
     this.sfx.blaster();
   }
 
+  /** A wreck's bridge console within reach of the pilot on foot. */
+  private nearLog(): SiteDef | null {
+    const pl = this.pred.charPlanet >= 0 ? this.sys?.planets[this.pred.charPlanet] : null;
+    if (!pl) return null;
+    const w = wreckAt(pl, this.charPosB);
+    if (!w || wreckZone(w.site, w.x, w.z) !== 'bridge') return null;
+    return Math.hypot(w.x - w.site.goal.x, w.z - w.site.goal.z) < 2.6 ? w.site : null;
+  }
+
+  private openLog(s: SiteDef) {
+    const pl = this.sys!.planets[s.planet];
+    const log = wreckLog(s, pl.name);
+    document.querySelector('#shiplog .log-title')!.textContent = log.title;
+    const body = document.querySelector('#shiplog .log-body')!;
+    body.replaceChildren(...log.entries.map((t) => { const p = document.createElement('p'); p.textContent = t; return p; }));
+    document.getElementById('shiplog')!.classList.remove('hidden');
+    this.input.releaseLock();
+    this.sfx.beep(true);
+  }
+
+  private closeLog() {
+    document.getElementById('shiplog')!.classList.add('hidden');
+  }
+
+  /**
+   * Keeps the third-person camera from seeing through the walls of a wreck next to the pilot,
+   * and under its roof while the pilot is inside.
+   */
+  private wallClamp(pl: PlanetDef, pivot: V3) {
+    const R = this.rots[pl.index];
+    const pB = toBodyPoint(pl, R, pivot, v3()), cB = toBodyPoint(pl, R, this.rig.pos, v3());
+    const up = vnorm(v3(), pB);
+    let tMin = 1;
+    for (const s of sitesNear(pl, up, 60)) {
+      if (s.kind !== 'wreck') continue;
+      const a = sitePlane(pl, s, pB), b = sitePlane(pl, s, cB);
+      const dx = b.x - a.x, dz = b.z - a.z;
+      for (const w of s.walls) {
+        const ex = w.x1 - w.x0, ez = w.z1 - w.z0;
+        const den = dx * ez - dz * ex;
+        if (Math.abs(den) < 1e-9) continue;
+        const t = ((w.x0 - a.x) * ez - (w.z0 - a.z) * ex) / den;
+        const u = ((w.x0 - a.x) * dz - (w.z0 - a.z) * dx) / den;
+        if (t > 0 && t < tMin && u >= 0 && u <= 1) tMin = t;
+      }
+    }
+    if (tMin < 1) {
+      const len = vdist(pivot, this.rig.pos) || 1;
+      const k = Math.max(0.08, tMin - 0.4 / len);
+      this.rig.pos.x = pivot.x + (this.rig.pos.x - pivot.x) * k;
+      this.rig.pos.y = pivot.y + (this.rig.pos.y - pivot.y) * k;
+      this.rig.pos.z = pivot.z + (this.rig.pos.z - pivot.z) * k;
+    }
+    const inside = wreckAt(pl, this.charPosB);
+    if (inside && vlen(this.charPosB) < inside.roof) this.rig.clampRadius(pl.center, 0, inside.roof - 0.45);
+  }
+
   /** Carcass within reach of the pilot. */
-  private nearCarcass(): { id: number; name: string } | null {
+  private nearCarcass(): { id: number; name: string; drone: boolean } | null {
     for (const [id, r] of this.remotes) {
       if (r.info?.kind !== KIND.CREATURE || !r.state || !(r.state.flags & EFLAG.DEAD) || r.state.frame !== this.pred.charPlanet + 1) continue;
       const sp = SPECIES[r.info.species ?? 0];
-      if (vdist(r.bp, this.charPosB) < SAMPLE_RANGE + sp.size) return { id, name: sp.name };
+      if (vdist(r.bp, this.charPosB) < SAMPLE_RANGE + sp.size) return { id, name: sp.name, drone: !!sp.drone };
     }
     return null;
   }
@@ -743,7 +809,7 @@ export class Game {
     const i = this.input;
     if (i.hit('KeyH')) this.hud.toggleHelp();
     if (i.hit('KeyO')) this.toggleSettings();
-    if (i.hit('Escape')) { this.hud.toggleHelp(false); this.toggleSettings(false); this.wardrobe.close(); this.contracts.close(); }
+    if (i.hit('Escape')) { this.hud.toggleHelp(false); this.toggleSettings(false); this.wardrobe.close(); this.contracts.close(); this.closeLog(); }
     if (i.hit('Enter')) { this.hud.focusChat(); i.releaseLock(); }
     if (i.hit('KeyZ')) i.releaseLock();
     if (i.hit('KeyV') && mode === MODE.FOOT) {
@@ -759,7 +825,9 @@ export class Game {
     }
     if (i.hit('KeyF')) {
       const carcass = mode === MODE.FOOT ? this.nearCarcass() : null;
-      if (carcass) { this.conn.action({ a: 'sample', id: carcass.id }); this.sfx.mining(); }
+      const log = mode === MODE.FOOT ? this.nearLog() : null;
+      if (log) this.openLog(log);
+      else if (carcass) { this.conn.action({ a: 'sample', id: carcass.id }); this.sfx.mining(); }
       else if (mode === MODE.FOOT) {
         const n = this.nearestNode();
         if (n) {
@@ -927,6 +995,7 @@ export class Game {
       // never leave the lens cutting the water plane: stay on the swimmer's side of it
       if (swim === 1) this.rig.clampRadius(charPl.center, charPl.radius + 0.3, Infinity);
       else if (swim === 2) this.rig.clampRadius(charPl.center, 0, charPl.radius - 0.3);
+      this.wallClamp(charPl, piv);
     } else if (mode === MODE.DOCKED) this.rig.orbit(dt, sys.station.pos, 900);
     const np = this.nearPlanet;
     if (np && this.nearAlt < np.maxHeight * 3 + 400) {
@@ -1023,7 +1092,7 @@ export class Game {
         swim: c.swim, swimPitch: Math.atan2(mv.vUp, Math.hypot(mv.fwd, mv.side) + 1e-3),
       });
       // gold visor down in daylight, up in the dark or under water; lamps on when it is dark
-      const dark = this.dayNow < 0.35 || this.camUnder > 0 || this.wx.dark;
+      const dark = this.dayNow < 0.35 || this.camUnder > 0 || this.wx.dark || this.indoorK > 0.5;
       this.myAstro.visorUp = this.visorOverride ?? (dark || c.swim === 2 ? 1 : 0);
       this.myAstro.lightsOn = dark || c.swim === 2;
       // splash in and out of deep water; a diver breathes out bubbles
@@ -1065,7 +1134,7 @@ export class Game {
       if (!r.visible || !st) continue;
       this.place(r.view.group, r.p);
       r.view.group.quaternion.set(r.q.x, r.q.y, r.q.z, r.q.w);
-      const grounded = r.view instanceof AstronautView || r.view instanceof CreatureView || (r.view instanceof ShipView && !!(st.flags & EFLAG.LANDED));
+      const grounded = r.view instanceof AstronautView || r.view instanceof CreatureView || r.view instanceof DroneView || (r.view instanceof ShipView && !!(st.flags & EFLAG.LANDED));
       if (grounded) this.liftToGround(r.view.group, st.frame, r.bp, r.p);
       if (r.view instanceof ShipView) {
         r.view.throttle = st.throttle;
@@ -1100,6 +1169,10 @@ export class Game {
         });
       } else if (r.view instanceof LootView) {
         r.view.update(dt);
+      } else if (r.view instanceof DroneView) {
+        const dead = !!(st.flags & EFLAG.DEAD);
+        r.view.update(dt, { speed: Math.hypot(st.vx, st.vy, st.vz), mood: moodOf(st.throttle), dead });
+        if (dead && (r.smokeT -= dt) <= 0) { r.smokeT = 0.25; this.effects.smoke(r.p); }
       } else if (r.view instanceof CreatureView) {
         // heading change rate drives turning-in-place steps
         const f = qrot(v3(), r.bq, FWD), up = vnorm(v3(), r.bp);
@@ -1214,6 +1287,34 @@ export class Game {
     return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
   }
 
+  /** Is the camera inside a wreck's hull? Eases `indoorK` and places the wreck's lights. */
+  private updateIndoor(np: PlanetDef | null) {
+    let hit: { pl: PlanetDef; site: SiteDef; zone: string | null } | null = null;
+    if (np && this.nearAlt < 300) {
+      const camB = toBodyPoint(np, this.rots[np.index], this.origin, v3());
+      const w = wreckAt(np, camB);
+      if (w && vlen(camB) < w.roof) hit = { pl: np, site: w.site, zone: wreckZone(w.site, w.x, w.z) };
+    }
+    this.indoorK += ((hit ? 1 : 0) - this.indoorK) * 0.25;
+    if (this.indoorK < 0.01) this.indoorK = 0;
+    const [green, red] = this.wreckLights;
+    if (!hit || this.indoorK <= 0) { green.intensity = 0; red.intensity = 0; return; }
+    const { pl, site } = hit;
+    const R = this.rots[pl.index];
+    const put = (l: THREE.PointLight, x: number, z: number, lift: number) => {
+      const d = siteDir(pl, site, x, z);
+      const r = pl.radius + site.h + lift;
+      const w = toWorldPoint(pl, R, v3(d.x * r, d.y * r, d.z * r), v3());
+      l.position.set(w.x - this.origin.x, w.y - this.origin.y, w.z - this.origin.z);
+    };
+    put(green, -26, 0, 3.5);
+    green.intensity = 60 * this.indoorK;
+    // the red lamp hangs over the middle of the room the camera is in
+    const zn = site.zones?.find((z) => z.kind === hit!.zone) ?? site.zones![2];
+    put(red, (zn.x0 + zn.x1) / 2, (zn.z0 + zn.z1) / 2, 5.5);
+    red.intensity = (hit.zone === 'rad' ? 6 : 14) * this.indoorK;
+  }
+
   private harvestedSet(): Set<string> {
     const now = this.timeline.serverNow;
     const s = new Set<string>();
@@ -1292,6 +1393,16 @@ export class Game {
     this.fill.intensity = 0.6 * (1 - inside * 0.6);
     this.sunLight.castShadow = q.shadows && this.nearAlt < 2000;
     this.dayNow = day;
+
+    // inside a wrecked hull: daylight only through the breaches, emergency lamps and the reactor glow
+    this.updateIndoor(np);
+    const ik = this.indoorK;
+    if (ik > 0) {
+      this.sunLight.intensity *= 1 - 0.9 * ik;
+      this.hemi.intensity *= 1 - 0.7 * ik;
+      this.fill.intensity *= 1 - 0.8 * ik;
+      if (this.r.scene.environment) this.r.scene.environmentIntensity *= 1 - 0.8 * ik;
+    }
 
     // storms: shorter visibility tinted by the storm, darker sky and sun, lightning flashes
     const wk = this.wx.k;
@@ -1450,7 +1561,7 @@ export class Game {
         if (!dead) blips.push({ x: c.x * k, y: 0, z: c.z * k, kind: r.info.npc ? 'npc' : 'fauna' });
         if (d < 90 && mode === MODE.FOOT) {
           const sp = this.project(v3(r.p.x, r.p.y, r.p.z));
-          if (!sp.behind) labels.push({ id, x: sp.x, y: sp.y - 40, text: dead ? `${r.info.name} · туша` : r.info.name, sub: this.fmtDist(d), npc: !!r.info.npc, hull: r.state?.hull ?? 1 });
+          if (!sp.behind) labels.push({ id, x: sp.x, y: sp.y - 40, text: dead ? `${r.info.name} · ${SPECIES[r.info.species ?? 0]?.drone ? 'сбит' : 'туша'}` : r.info.name, sub: this.fmtDist(d), npc: !!r.info.npc, hull: r.state?.hull ?? 1 });
         }
         continue;
       }
@@ -1506,7 +1617,8 @@ export class Game {
     } else if (mode === MODE.FOOT) {
       const n = this.nearestNode();
       const carcass = this.nearCarcass();
-      if (carcass) prompt = `<kbd>F</kbd> взять биообразцы: ${carcass.name}`;
+      if (this.nearLog()) prompt = '<kbd>F</kbd> бортовой журнал';
+      else if (carcass) prompt = carcass.drone ? '<kbd>F</kbd> разобрать дрона' : `<kbd>F</kbd> взять биообразцы: ${carcass.name}`;
       else if (n) prompt = `<kbd>F</kbd> собрать: ${RESOURCE_NAMES[n.type]}`;
       else if (ship.frame === this.pred.charPlanet + 1 && vdist(this.charPosB, ship.p) < EXIT_RANGE + 6) prompt = '<kbd>G</kbd> сесть в корабль';
     }

@@ -15,6 +15,8 @@ export const MSG = {
 export const KIND = { SHIP: 1, CHAR: 2, MISSILE: 3, LOOT: 4, CREATURE: 5 } as const;
 /** Shot.level used for the pilot's hand blaster. */
 export const BLASTER_LEVEL = 10;
+/** Shot.level of a wreck's guard drone. */
+export const DRONE_LEVEL = 11;
 export const EFLAG = { LANDED: 1, CRUISE: 2, BOOST: 4, HIDDEN: 8, NPC: 16, SAFE: 32, DEAD: 64 } as const;
 /**
  * Flags of pilots on foot (KIND.CHAR). For these entities `throttle` carries the traversal

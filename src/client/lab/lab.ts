@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { MOOD, SPECIES, type Species } from '../../shared/fauna.ts';
+import { MOOD, SPECIES as ALL_SPECIES, type Species } from '../../shared/fauna.ts';
+
+/** Animals only: the guard drones of wrecks have no rig to show here. */
+const SPECIES = ALL_SPECIES.filter((s) => !s.drone);
 import { CLIMB_TIME, VAULT_TIME } from '../../shared/sim/character.ts';
 import { QUALITY } from '../core/quality.ts';
 import { Renderer } from '../core/renderer.ts';

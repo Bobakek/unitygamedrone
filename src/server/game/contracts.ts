@@ -5,7 +5,7 @@ import {
 } from '../../shared/contracts.ts';
 import { v3, vdist, vscale } from '../../shared/math/vec.ts';
 import { MODE, MSG, type BoardMsg, type GameEvent } from '../../shared/net/protocol.ts';
-import { planetSites } from '../../shared/planet/sites.ts';
+import { planetSites, siteDir } from '../../shared/planet/sites.ts';
 import type { Session } from './session.ts';
 import type { SystemInstance } from './system.ts';
 
@@ -145,8 +145,10 @@ export class ContractDesk {
         const pl = this.sys.def.planets[ch.planet];
         const site = planetSites(pl)[c.site];
         if (!site) continue;
-        vscale(sitePos, site.dir, pl.radius + site.h);
-        if (vdist(sitePos, ch.state.p) > SITE_REACH) continue;
+        // the goal: the centre of ruins, the bridge of a wreck
+        const g = siteDir(pl, site, site.goal.x, site.goal.z, sitePos);
+        vscale(sitePos, g, Math.hypot(ch.state.p.x, ch.state.p.y, ch.state.p.z));
+        if (vdist(sitePos, ch.state.p) > (site.kind === 'wreck' ? 6 : SITE_REACH)) continue;
         if (c.kind === 'smuggle' && c.cargo) {
           if (s.pilot.cargo[c.cargo] < c.need) {
             const last = this.hinted.get(s.id) ?? -99;

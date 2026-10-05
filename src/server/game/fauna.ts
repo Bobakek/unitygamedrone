@@ -2,8 +2,9 @@ import { CARGO_KEYS, cargoCount, combatStats } from '../../shared/economy.ts';
 import { BLASTER, FAUNA, FAUNA_SEA, moodByte, SAMPLE_RANGE, SPECIES, stepCreature, stepSwimmer, type CreatureState, type Mood, type Species } from '../../shared/fauna.ts';
 import { hashInts, Rng } from '../../shared/math/rng.ts';
 import { qlook, quat, v3, vcross, vdist, vlen, vnorm, vscale, vsub, type V3 } from '../../shared/math/vec.ts';
-import { BLASTER_LEVEL, EFLAG, KIND, MODE, MSG, type EntityState } from '../../shared/net/protocol.ts';
-import { inSite } from '../../shared/planet/sites.ts';
+import { BLASTER_LEVEL, DRONE_LEVEL, EFLAG, KIND, MODE, MSG, type EntityState } from '../../shared/net/protocol.ts';
+import { inSite, siteDir, sitePlane, sitesNear, type SiteDef } from '../../shared/planet/sites.ts';
+import type { CharEntity } from './entities.ts';
 import { footHeight, heightAt, liquidOf } from '../../shared/planet/terrain.ts';
 import { planetRot, toWorldDir, toWorldPoint } from '../../shared/sim/frames.ts';
 import { segmentSphere } from '../../shared/sim/weapons.ts';
@@ -30,6 +31,29 @@ interface Creature {
   wish: V3 | null;
   target: number;
   biteCool: number;
+  /** Guard drones: the wreck and post they guard, and where they patrol to (site plane). */
+  guard?: { site: SiteDef; post: number; x: number; z: number; tx: number; tz: number };
+}
+
+/** Guard drones: hover height, how far they see, how far they stray from their post, respawn time. */
+const HOVER = 1.7;
+const DRONE_SIGHT = 24;
+const LEASH = 16;
+const DRONE_RESPAWN = 480;
+const DRONE = 12;
+
+/** Does a wall of the site stand between two site-plane points? */
+function wallBetween(s: SiteDef, a: { x: number; z: number }, b: { x: number; z: number }): boolean {
+  const dx = b.x - a.x, dz = b.z - a.z;
+  for (const w of s.walls) {
+    const ex = w.x1 - w.x0, ez = w.z1 - w.z0;
+    const den = dx * ez - dz * ex;
+    if (Math.abs(den) < 1e-9) continue;
+    const t = ((w.x0 - a.x) * ez - (w.z0 - a.z) * ex) / den;
+    const u = ((w.x0 - a.x) * dz - (w.z0 - a.z) * dx) / den;
+    if (t > 0 && t < 1 && u >= 0 && u <= 1) return true;
+  }
+  return false;
 }
 
 const MAX_NEAR = 8;
@@ -54,6 +78,8 @@ export class Fauna {
   private rng: Rng;
   private acc = 0;
   private herds = 0;
+  /** `${planet}:${site}:${post}` → when a downed guard drone comes back. */
+  private guardRespawn = new Map<string, number>();
 
   constructor(private sys: SystemInstance) {
     this.rng = new Rng(hashInts(sys.def.seed, 0xfa0a));
@@ -83,6 +109,7 @@ export class Fauna {
     }
     for (const q of pres) {
       const pl = this.sys.def.planets[q.planet];
+      this.guardWrecks(q.planet, q.p);
       const kinds = FAUNA[pl.type];
       if (!kinds) continue;
       let near = 0, hunters = 0;
@@ -108,6 +135,105 @@ export class Fauna {
       const predator = sharks < 1 && this.rng.chance(0.4);
       this.spawnSea(q.planet, q.p, SPECIES[sea[predator ? 1 : 0]]);
     }
+  }
+
+  /** Guard drones of the wrecks near a pilot: one per post; a downed one returns after a while. */
+  private guardWrecks(planet: number, p: V3) {
+    const pl = this.sys.def.planets[planet];
+    for (const s of sitesNear(pl, vnorm(v3(), p), 160)) {
+      if (s.kind !== 'wreck' || !s.posts) continue;
+      s.posts.forEach((_, k) => {
+        if ((this.guardRespawn.get(`${planet}:${s.id}:${k}`) ?? 0) > this.sys.time) return;
+        for (const c of this.creatures.values()) if (c.guard && c.planet === planet && c.guard.site === s && c.guard.post === k) return;
+        this.spawnDrone(planet, s, k);
+      });
+    }
+  }
+
+  private spawnDrone(planet: number, s: SiteDef, k: number): Creature {
+    const pl = this.sys.def.planets[planet];
+    const post = s.posts![k];
+    const d = siteDir(pl, s, post.x, post.z);
+    const r = pl.radius + footHeight(pl, d.x, d.y, d.z) + HOVER;
+    const c: Creature = {
+      id: this.sys.nextId(), sp: SPECIES[DRONE], planet, herd: ++this.herds, home: { ...d }, hp: SPECIES[DRONE].hp, dead: false, deadUntil: 0,
+      state: { p: v3(d.x * r, d.y * r, d.z * r), v: v3(), f: { ...s.east } },
+      mood: 'wander', moodUntil: this.sys.time, wish: null, target: 0, biteCool: 1,
+      guard: { site: s, post: k, x: post.x, z: post.z, tx: post.x, tz: post.z },
+    };
+    this.creatures.set(c.id, c);
+    this.sys.infos.push(this.info(c));
+    return c;
+  }
+
+  /**
+   * A guard drone: patrols around its post inside the wreck; a pilot it can see (no wall in
+   * between) within DRONE_SIGHT is engaged from 7–13 m with strafing and a shot every 1.3 s.
+   */
+  private stepDrone(c: Creature, pl: PlanetDef, dt: number) {
+    const g = c.guard!, s = g.site, t = this.sys.time;
+    c.biteCool -= dt;
+    const me = sitePlane(pl, s, c.state.p);
+    let prey: CharEntity | null = null, pd = DRONE_SIGHT;
+    for (const ch of this.sys.chars.values()) {
+      if (ch.planet !== c.planet || ch.session.ship.god) continue;
+      const d = vdist(ch.state.p, c.state.p);
+      if (d >= pd || wallBetween(s, me, sitePlane(pl, s, ch.state.p))) continue;
+      prey = ch; pd = d;
+    }
+    let gx = g.tx, gz = g.tz, speed = c.sp.walk;
+    if (prey) {
+      c.mood = 'hunt';
+      c.target = prey.session.id;
+      const pp = sitePlane(pl, s, prey.state.p);
+      const dx = pp.x - me.x, dz = pp.z - me.z, dl = Math.hypot(dx, dz) || 1;
+      const want = pd > 13 ? 1 : pd < 7 ? -1 : 0;
+      const strafe = Math.sin(t * 0.9 + c.id);
+      gx = me.x + (dx / dl) * want * 3 - (dz / dl) * strafe * 2;
+      gz = me.z + (dz / dl) * want * 3 + (dx / dl) * strafe * 2;
+      if (Math.hypot(gx - g.x, gz - g.z) > LEASH) { gx = g.x; gz = g.z; }
+      speed = c.sp.run;
+      if (c.biteCool <= 0) { c.biteCool = 1.3; this.droneShot(c, prey, pl); }
+    } else {
+      c.mood = 'wander';
+      if (t > c.moodUntil || Math.hypot(g.tx - me.x, g.tz - me.z) < 0.5) {
+        c.moodUntil = t + this.rng.range(3, 6);
+        g.tx = g.x + this.rng.range(-5, 5); g.tz = g.z + this.rng.range(-4, 4);
+      }
+      gx = g.tx; gz = g.tz;
+    }
+    // move in the site plane, never through a wall
+    const mx = gx - me.x, mz = gz - me.z, ml = Math.hypot(mx, mz);
+    const step = Math.min(ml, speed * dt);
+    const nx = ml > 0.05 ? me.x + (mx / ml) * step : me.x, nz = ml > 0.05 ? me.z + (mz / ml) * step : me.z;
+    const moveTo = wallBetween(s, me, { x: nx, z: nz }) ? me : { x: nx, z: nz };
+    if (moveTo === me && !prey) c.moodUntil = t;
+    const d = siteDir(pl, s, moveTo.x, moveTo.z);
+    const r = pl.radius + footHeight(pl, d.x, d.y, d.z) + HOVER + Math.sin(t * 2.1 + c.id) * 0.12;
+    const np = v3(d.x * r, d.y * r, d.z * r);
+    c.state.v = dt > 0 ? vscale(v3(), vsub(v3(), np, c.state.p), 1 / dt) : v3();
+    c.state.p = np;
+    // face the pilot it fights, else where it goes
+    vnorm(up, np);
+    const look = prey ? vsub(v3(), prey.state.p, np) : c.state.v;
+    const lu = look.x * up.x + look.y * up.y + look.z * up.z;
+    const f = v3(look.x - up.x * lu, look.y - up.y * lu, look.z - up.z * lu);
+    if (vlen(f) > 0.05) this.face(c, vnorm(f, f), dt * 2);
+  }
+
+  /** A drone's bolt at a pilot: most hit the chest, the rest fly a little wide. */
+  private droneShot(c: Creature, prey: CharEntity, pl: PlanetDef) {
+    const hit = this.rng.chance(0.7);
+    vnorm(up, prey.state.p);
+    const aim = v3(prey.state.p.x + up.x * 1.2, prey.state.p.y + up.y * 1.2, prey.state.p.z + up.z * 1.2);
+    if (!hit) { aim.x += this.rng.range(-1.6, 1.6); aim.y += this.rng.range(-1.6, 1.6); aim.z += this.rng.range(-1.6, 1.6); }
+    const d = vnorm(v3(), vsub(v3(), aim, c.state.p));
+    const R = planetRot(pl, this.sys.time, rot);
+    toWorldPoint(pl, R, c.state.p, wp);
+    toWorldDir(R, d, wv);
+    const sp = BLASTER.speed * 0.8;
+    this.sys.shots.push({ shooter: c.id, px: wp.x, py: wp.y, pz: wp.z, vx: wv.x * sp, vy: wv.y * sp, vz: wv.z * sp, level: DRONE_LEVEL });
+    if (hit) this.hurt(prey.session, c.sp.bite, c.id);
   }
 
   /** In the water, or within 150 m of water at least 5 m deep. */
@@ -221,6 +347,13 @@ export class Fauna {
     for (const c of [...this.creatures.values()]) {
       if (c.dead) {
         if (t > c.deadUntil) this.remove(c);
+        else if (c.sp.drone) {
+          // a downed drone drops to the deck
+          const pl = this.sys.def.planets[c.planet];
+          vnorm(up, c.state.p);
+          const floor = pl.radius + footHeight(pl, up.x, up.y, up.z) + 0.35, l = vlen(c.state.p);
+          if (l > floor) vscale(c.state.p, up, Math.max(floor, l - 4 * dt));
+        }
         else if (c.sp.aquatic) {
           // a carcass floats up to the surface
           const R = this.sys.def.planets[c.planet].radius, l = vlen(c.state.p), to = Math.min(R - 0.35, l + 0.5 * dt);
@@ -229,6 +362,7 @@ export class Fauna {
         continue;
       }
       const pl = this.sys.def.planets[c.planet];
+      if (c.sp.drone) { this.stepDrone(c, pl, dt); continue; }
       if (c.sp.aquatic) { this.stepSea(c, pl, dt); continue; }
       c.biteCool -= dt;
       // closest pilot on foot on this planet
@@ -405,9 +539,9 @@ export class Fauna {
     for (const c of this.creatures.values()) {
       if (c.planet !== ch.planet || c.dead) continue;
       const cu = vnorm(tmp, c.state.p);
-      const lift = c.sp.aquatic ? 0 : c.sp.size * 0.8;
+      const lift = c.sp.aquatic || c.sp.drone ? 0 : c.sp.size * 0.8;
       const center = v3(c.state.p.x + cu.x * lift, c.state.p.y + cu.y * lift, c.state.p.z + cu.z * lift);
-      const tt = segmentSphere(o, end, center, c.sp.size * 1.05);
+      const tt = segmentSphere(o, end, center, c.sp.drone ? 0.9 : c.sp.size * 1.05);
       if (tt >= 0 && tt < best) { best = tt; hit = c; }
     }
     // everyone nearby sees the bolt (world space)
@@ -425,7 +559,8 @@ export class Fauna {
   damage(c: Creature, dmg: number, by: Session) {
     if (c.dead) return;
     c.hp -= dmg;
-    if (c.sp.predator) {
+    if (c.sp.drone) c.target = by.id;
+    else if (c.sp.predator) {
       if (c.hp < c.sp.hp * 0.25) {
         vnorm(up, c.state.p);
         c.mood = 'flee';
@@ -438,7 +573,8 @@ export class Fauna {
       c.hp = 0;
       c.deadUntil = this.sys.time + 90;
       c.state.v = v3();
-      by.msg(`${c.sp.name} повержен — подойдите и нажмите F, чтобы взять биообразцы`, 'good');
+      if (c.guard) this.guardRespawn.set(`${c.planet}:${c.guard.site.id}:${c.guard.post}`, this.sys.time + DRONE_RESPAWN);
+      by.msg(c.sp.drone ? 'Дрон-охранник сбит — подойдите и нажмите F, чтобы разобрать его' : `${c.sp.name} повержен — подойдите и нажмите F, чтобы взять биообразцы`, 'good');
       this.sys.contracts.onCreatureKill(by, c.sp.id, c.planet);
     }
   }
@@ -450,6 +586,18 @@ export class Fauna {
     if (!ch || !c || !c.dead || c.planet !== ch.planet) return 'Здесь нечего брать';
     if (vdist(c.state.p, ch.state.p) > SAMPLE_RANGE + c.sp.size) return 'Подойдите ближе';
     const free = combatStats(s.pilot.upgrades).cargoCap - cargoCount(s.pilot.cargo);
+    if (c.sp.drone) {
+      // a downed drone is stripped for crystals and saleable parts
+      const n = Math.min(free, this.rng.int(1, 2)), credits = this.rng.int(30, 60);
+      s.pilot.cargo.crystal += n;
+      s.pilot.credits += credits;
+      s.sendPilot();
+      this.remove(c);
+      const pl = this.sys.def.planets[c.planet];
+      toWorldPoint(pl, planetRot(pl, this.sys.time, rot), c.state.p, wp);
+      s.sendJson(MSG.EVENTS, { ev: [{ t: 'loot', text: `Дрон разобран: ${n ? `кристаллы ×${n}, ` : ''}+${credits} кр`, pos: [wp.x, wp.y, wp.z] }] });
+      return null;
+    }
     if (free <= 0) return 'Трюм полон';
     const n = Math.min(free, c.sp.samples + s.gear().samples);
     s.pilot.cargo.bio += n;

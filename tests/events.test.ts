@@ -13,7 +13,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { collidersNear } from '../src/shared/planet/prop-rules.ts';
-import { inSite, planetSites, SITE_NODE_BASE } from '../src/shared/planet/sites.ts';
+import { inSite, planetSites, SITE_NODE_BASE, siteDir } from '../src/shared/planet/sites.ts';
 
 /** In-process pilot: a fake transport that records what the server sends. */
 function pilot(game: Game, name: string) {
@@ -677,5 +677,91 @@ describe('weather hazards', () => {
     run(game, 20);
     expect(me.events().filter((e) => e.t === 'strike').length - before).toBeGreaterThan(1);
     sys.weather.override(terran.index, 'clear', 0);
+  });
+});
+
+describe('wrecks', () => {
+  const game = new Game({ store: new PilotStore(':memory:'), dev: true });
+  const me = pilot(game, 'Salvager');
+  const sys = me.s.system;
+  const pl = sys.def.planets.find((p) => p.type === 'ice')!;
+  const site = planetSites(pl).find((s) => s.kind === 'wreck')!;
+  const at = (x: number, z: number) => {
+    const d = siteDir(pl, site, x, z);
+    return { x: d.x * (pl.radius + heightAt(pl, d.x, d.y, d.z) + 0.05), y: d.y * (pl.radius + heightAt(pl, d.x, d.y, d.z) + 0.05), z: d.z * (pl.radius + heightAt(pl, d.x, d.y, d.z) + 0.05) };
+  };
+  const onFootAt = (x: number, z: number) => {
+    me.s.mode = MODE.SHIP;
+    sys.devTeleport(me.s, `land${pl.index}`);
+    expect(sys.handleAction(me.s, { a: 'exit' })).toBeNull();
+    const ch = me.s.char!;
+    ch.state.p = at(x, z);
+    ch.state.v = v3();
+    ch.hp = ch.maxHp;
+    return ch;
+  };
+  const drones = () => [...sys.fauna.creatures.values()].filter((c) => c.sp.drone && c.planet === pl.index);
+
+  it('the hull shelters from a blizzard, the reactor room does not and is radioactive', () => {
+    me.s.ship.god = false;
+    sys.weather.override(pl.index, 'blizzard', 1);
+    let ch = onFootAt(-4, -4);
+    me.s.ship.god = true; // keep the drones from shooting in this test: god pilots are ignored
+    expect(sys.shelter(pl.index, ch.state.p)).toBe(true);
+    me.s.ship.god = false;
+    const hp0 = ch.hp;
+    sys.weather.step(2);
+    expect(ch.hp).toBe(hp0);
+    ch = onFootAt(-30, -4);
+    expect(sys.reactorDose(pl.index, ch.state.p)).toBeGreaterThan(0);
+    sys.weather.step(2);
+    expect(ch.hp).toBeLessThan(ch.maxHp - 5);
+    sys.weather.override(pl.index, 'clear', 0);
+  });
+
+  it('guard drones appear, shoot pilots they can see but not through walls, and are stripped for parts', () => {
+    me.s.ship.god = true;
+    let ch = onFootAt(40, 14);
+    run(game, 1.2);
+    const ds = drones();
+    expect(ds.length).toBe(site.posts!.length);
+    // outside the north wall: no line of sight
+    me.s.ship.god = false;
+    ch = onFootAt(0, 13);
+    run(game, 4);
+    expect(ch.hp).toBe(ch.maxHp);
+    // in the hold, 8 m from the hold drone
+    ch = onFootAt(5, 0);
+    run(game, 5);
+    expect(ch.hp).toBeLessThan(ch.maxHp);
+    expect(me.events().some((e) => e.t === 'hurt' && ds.some((d) => d.id === e.by))).toBe(true);
+    // shoot it down and take it apart
+    const d = ds.find((x) => Math.hypot(x.guard!.x - -3, x.guard!.z) < 1)!;
+    sys.fauna.damage(d, 999, me.s);
+    ch.state.p = { ...d.state.p };
+    const credits = me.s.pilot.credits, crystal = me.s.pilot.cargo.crystal;
+    expect(sys.handleAction(me.s, { a: 'sample', id: d.id })).toBeNull();
+    expect(me.s.pilot.credits).toBeGreaterThan(credits);
+    expect(me.s.pilot.cargo.crystal).toBeGreaterThan(crystal);
+    // it does not come back right away
+    run(game, 2);
+    expect(drones().length).toBe(site.posts!.length - 1);
+  });
+
+  it('a wreck survey is done on the bridge', () => {
+    me.s.ship.god = true;
+    me.s.pilot.career = newCareer();
+    me.s.pilot.career.xp = 2000;
+    const def: ContractDef = {
+      id: 'test-wreck', kind: 'survey', faction: 'guild', tier: 2, title: 't', desc: 'd', system: sys.def.id, planet: pl.index, site: site.id, need: 1,
+      reward: { credits: 100, xp: 10, rep: 1 },
+    };
+    me.s.pilot.career.active.push({ ...def, have: 0 });
+    onFootAt(20, 0);
+    run(game, 0.6);
+    expect(me.s.pilot.career.done).not.toContain('test-wreck');
+    onFootAt(site.goal.x - 1, 0);
+    run(game, 0.6);
+    expect(me.s.pilot.career.done).toContain('test-wreck');
   });
 });

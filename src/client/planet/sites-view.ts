@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { PlanetDef, PlanetType } from '../../shared/galaxy/system-gen.ts';
 import { Rng } from '../../shared/math/rng.ts';
-import { siteDir, TURRET_HEIGHT, WALL_HEIGHT, type SiteDef } from '../../shared/planet/sites.ts';
+import { siteDir, TURRET_HEIGHT, WALL_HEIGHT, WRECK_ROOF, type SiteDef } from '../../shared/planet/sites.ts';
 import { heightAt } from '../../shared/planet/terrain.ts';
 import { add, newParts, taperedBox, type Parts } from '../entities/ship-builder.ts';
 import { glowTexture } from '../world/textures.ts';
@@ -46,7 +46,7 @@ export class SiteView {
     this.group.quaternion.copy(q);
     this.inv.copy(q).invert();
     const p = newParts();
-    if (s.kind === 'ruin') this.ruin(p); else this.base(p);
+    if (s.kind === 'ruin') this.ruin(p); else if (s.kind === 'wreck') this.wreck(p); else this.base(p);
     for (const [list, mat] of [[[...p.hull, ...p.glass], solidMat], [p.metal, metalMat], [p.glow, glowMat]] as const) {
       if (!list.length) continue;
       const m = new THREE.Mesh(mergeGeometries(list as THREE.BufferGeometry[])!, mat);
@@ -189,6 +189,129 @@ export class SiteView {
       const f = this.at(x, z, -1);
       add(p, new THREE.CylinderGeometry(0.2, 0.3, 9, 5), steel, 'metal', [f[0], f[1] + 4.5, f[2]]);
       this.light([f[0], f[1] + 9.3, f[2]], new THREE.Color(2.2, 1.9, 1.4), 6);
+    }
+  }
+
+  /**
+   * A crashed ship lying on its belly: ribbed hull with a torn stern, a breach in the side,
+   * roof panels (a couple missing over the hold), and inside — bridge consoles, bunks,
+   * cargo, the cracked reactor glowing green, emergency strips and sparking panels.
+   */
+  private wreck(p: Parts) {
+    const s = this.site, r = new Rng(s.seed);
+    const hull = '#7c8188', dark = '#2a2e34', inner = '#3c424a', rust = '#7a4a30', stripe = '#d08030', burnt = '#1e1c1c', deck = '#4a4f56';
+    const top = WRECK_ROOF;
+    // walls: the hull outline and the bulkheads, in short pieces that follow the ground
+    s.walls.forEach((w, k) => {
+      const len = Math.hypot(w.x1 - w.x0, w.z1 - w.z0), pieces = Math.max(1, Math.round(len / 4));
+      const outer = k < s.walls.length - 10;
+      for (let j = 0; j < pieces; j++) {
+        const t0 = j / pieces, t1 = (j + 1) / pieces;
+        const a = this.at(w.x0 + (w.x1 - w.x0) * t0, w.z0 + (w.z1 - w.z0) * t0, -1);
+        const b = this.at(w.x0 + (w.x1 - w.x0) * t1, w.z0 + (w.z1 - w.z0) * t1, -1);
+        const lo = Math.min(a[1], b[1]);
+        const color = outer ? (r.chance(0.12) ? rust : r.chance(0.1) ? burnt : hull) : inner;
+        this.beam(p, a, b, (lo + top + 0.3) / 2, top + 0.3 - lo, outer ? 0.6 : 0.35, color, 0.15);
+        if (outer && r.chance(0.5)) this.beam(p, a, b, top - 1.6, 0.35, 0.7, stripe, 0.1);
+      }
+    });
+    // roof panels over the hull, two missing above the hold; the nose as a wedge
+    for (let x = -36; x < 30; x += 6) {
+      if (x === -12 || x === 0) continue;
+      const c = this.at(x + 3, 0);
+      add(p, new THREE.BoxGeometry(6.05, 0.5, 20.6), r.chance(0.15) ? burnt : hull, 'metal', [c[0], top + 0.25, c[2]]);
+    }
+    const nose = this.at(37, 0);
+    add(p, taperedBox(20.6, 0.5, 14, 0.15, 1).rotateY(Math.PI / 2), hull, 'metal', [nose[0], top + 0.25, nose[2]]);
+    // a spine and ribs over the roof and down the sides
+    const sp0 = this.at(-34, 0), sp1 = this.at(32, 0);
+    this.beam(p, sp0, sp1, top + 0.9, 1.1, 2.2, dark);
+    for (let x = -30; x <= 24; x += 6) {
+      for (const z of [-10.4, 10.4]) {
+        const g = this.at(x, z, -1);
+        add(p, new THREE.BoxGeometry(0.9, top + 1.4 - g[1], 0.5), dark, 'metal', [g[0], (g[1] + top + 0.4) / 2, g[2]]);
+      }
+      const c = this.at(x, 0);
+      add(p, new THREE.BoxGeometry(0.9, 0.5, 21.4), dark, 'metal', [c[0], top + 0.6, c[2]]);
+    }
+    // cockpit canopy: dark glass across the nose
+    const cv = this.at(40, 0);
+    add(p, new THREE.BoxGeometry(5, 1.4, 9), '#1a2a38', 'metal', [cv[0], top - 1.2, cv[2]], [0, 0, -0.25]);
+    // the torn stern: broken engine bells, one lying apart, and the furrow it ploughed
+    for (const z of [-5.5, 5.5]) {
+      const e = this.at(-38, z, 1.5);
+      add(p, new THREE.CylinderGeometry(2.4, 3.2, 4, 10, 1, true).rotateZ(Math.PI / 2), dark, 'metal', [e[0], e[1] + 1, e[2]], [0, r.range(-0.2, 0.2), r.range(-0.3, 0.3)]);
+    }
+    const loose = this.at(-52, -9, 1);
+    add(p, new THREE.CylinderGeometry(2.2, 3, 4, 10, 1, true).rotateZ(Math.PI / 2), burnt, 'metal', [loose[0], loose[1] + 0.6, loose[2]], [0.4, 0.8, 0.5]);
+    for (let k = 0; k < 9; k++) {
+      const f = this.at(-44 - k * 5, r.range(-2, 2), -0.6);
+      add(p, new THREE.BoxGeometry(5.5, 0.8, r.range(5, 8)), burnt, false, f, [r.range(-0.05, 0.05), r.range(-0.1, 0.1), 0]);
+    }
+    // a broken wing dug into the ground north of the hull
+    const wg = this.at(-2, 16, 0.5);
+    add(p, taperedBox(14, 0.6, 9, 0.4, 1).rotateY(Math.PI / 2), hull, 'metal', [wg[0], wg[1] + 1.4, wg[2]], [0.35, 0.15, 0]);
+    // debris scattered around
+    for (let k = 0; k < 14; k++) {
+      const a = r.range(0, Math.PI * 2), d = r.range(16, 40);
+      const g = this.at(Math.cos(a) * d * 1.4, Math.sin(a) * d * 0.7, 0.2);
+      add(p, box3(r.range(0.5, 1.6)), r.pick([hull, dark, rust, burnt]), false, g, [r.range(0, 3), r.range(0, 3), r.range(0, 3)]);
+    }
+    // --- inside: deck plates per room
+    for (const zn of s.zones ?? []) {
+      const c = this.at((zn.x0 + zn.x1) / 2, (zn.z0 + zn.z1) / 2, 0.05);
+      add(p, new THREE.BoxGeometry(zn.x1 - zn.x0 - 0.6, 0.2, zn.z1 - zn.z0 - 0.6), deck, 'metal', c);
+    }
+    // bridge: consoles along the nose with screens, two seats, the captain's console with the log
+    for (const [x, z, yaw] of [[33, -6, 0.6], [33, 6, -0.6], [36, -3.5, 0.3], [36, 3.5, -0.3]]) {
+      const c = this.at(x, z);
+      add(p, new THREE.BoxGeometry(1.8, 1.1, 0.8), dark, 'metal', [c[0], c[1] + 0.55, c[2]], [0, yaw, 0]);
+      add(p, new THREE.BoxGeometry(1.5, 0.6, 0.05), r.chance(0.5) ? '#4ad8ff' : '#ff8a3a', true, [c[0], c[1] + 1.35, c[2]], [-0.4, yaw, 0], undefined, 1.2);
+    }
+    for (const z of [-2, 2]) {
+      const c = this.at(31, z);
+      add(p, new THREE.BoxGeometry(0.8, 0.9, 0.8), rust, false, [c[0], c[1] + 0.45, c[2]]);
+      add(p, new THREE.BoxGeometry(0.8, 1, 0.2), rust, false, [c[0] - 0.4, c[1] + 1.2, c[2]], [0, 0, -0.2]);
+    }
+    const lg = this.at(s.goal.x, s.goal.z);
+    add(p, new THREE.CylinderGeometry(0.6, 0.8, 1.1, 8), dark, 'metal', [lg[0], lg[1] + 0.55, lg[2]]);
+    add(p, new THREE.CylinderGeometry(0.5, 0.5, 0.05, 12), '#6af0ff', true, [lg[0], lg[1] + 1.15, lg[2]], undefined, undefined, 2);
+    this.light([lg[0], lg[1] + 1.6, lg[2]], new THREE.Color(0.5, 1.6, 2.2), 2.2, true);
+    // quarters: bunks and lockers
+    for (const [x, z] of [[13, 8], [19, 8], [13, -8], [24, -8]]) {
+      const c = this.at(x, z);
+      add(p, new THREE.BoxGeometry(3.4, 0.6, 1.4), inner, false, [c[0], c[1] + 0.5, c[2]]);
+      add(p, new THREE.BoxGeometry(3.4, 0.6, 1.4), inner, false, [c[0], c[1] + 2, c[2]]);
+    }
+    for (const [x, z] of [[24.8, 6], [24.8, 4], [11, -4]]) {
+      const c = this.at(x, z);
+      add(p, new THREE.BoxGeometry(0.6, 2.2, 1.1), rust, false, [c[0], c[1] + 1.1, c[2]], [0, 0, r.range(-0.15, 0.15)]);
+    }
+    // hold: containers (the solid low blocks) and a crane rail
+    for (const b of s.blocks.filter((x) => x.r > 0.8 && x.tall < 2)) {
+      const loc = this.local(b.dir, b.h, -0.2);
+      add(p, new THREE.BoxGeometry(2.2, 1.6, 1.7), r.pick(['#8a6a3a', '#5a6a4a', '#4a5a7a', rust]), false, [loc[0], loc[1] + 0.8, loc[2]], [0, r.range(-0.3, 0.3), 0]);
+    }
+    const cr0 = this.at(-15, 0), cr1 = this.at(9, 0);
+    this.beam(p, cr0, cr1, top - 0.6, 0.5, 0.6, dark);
+    // reactor: the cracked core, pipes, green glow
+    const rc = this.at(-26, 0, -0.5);
+    add(p, new THREE.CylinderGeometry(2.2, 2.4, 5.5, 10), dark, 'metal', [rc[0], rc[1] + 2.75, rc[2]]);
+    for (const y of [1.2, 2.6, 4]) add(p, new THREE.TorusGeometry(2.3, 0.18, 6, 14).rotateX(Math.PI / 2), '#7aff6a', true, [rc[0], rc[1] + y, rc[2]], undefined, undefined, 2.2);
+    add(p, new THREE.BoxGeometry(0.5, 3.4, 1.4), '#9aff6a', true, [rc[0] + 2.2, rc[1] + 2.6, rc[2] + 0.4], [0, 0, 0.1], undefined, 2.6);
+    for (const z of [-7, 7]) {
+      const a = this.at(-34, z), b = this.at(-18, z);
+      this.beam(p, a, b, a[1] + 3.6, 0.5, 0.5, rust);
+    }
+    this.light([rc[0], rc[1] + 3, rc[2]], new THREE.Color(0.8, 2.6, 0.6), 9);
+    // emergency strips along the corridor ceiling and sparking panels
+    for (let x = -14; x <= 30; x += 4) {
+      const c = this.at(x, 0);
+      add(p, new THREE.BoxGeometry(1.6, 0.12, 0.25), '#ff3030', true, [c[0], top - 0.35, c[2]], undefined, undefined, 1.6);
+    }
+    for (const [x, z] of [[8, -9.6], [-15.6, 6], [26, 3]]) {
+      const c = this.at(x, z);
+      this.light([c[0], c[1] + 2.4, c[2]], new THREE.Color(2.2, 1.8, 0.8), 1.4, true);
     }
   }
 

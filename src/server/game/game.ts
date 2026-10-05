@@ -1,5 +1,7 @@
 import { MAX_NAME, PROTOCOL_VERSION, SYSTEM_COUNT, TICK_RATE } from '../../shared/constants.ts';
-import { qlook, qrot, quat, v3, vdist, vnorm, vsub } from '../../shared/math/vec.ts';
+import { qlook, qrot, quat, v3, vdist, vnorm, vscale, vsub } from '../../shared/math/vec.ts';
+import { planetSites, siteDir } from '../../shared/planet/sites.ts';
+import { footHeight } from '../../shared/planet/terrain.ts';
 import {
   decodeInput, decodeJson, encodeJson, encodeShots, encodeSnapshot, MODE, MSG, type Action, type Welcome,
 } from '../../shared/net/protocol.ts';
@@ -255,6 +257,26 @@ export class Game implements GameContext {
         if (planet < 0) { s.msg('Нужно быть у планеты', 'warn'); break; }
         sys.weather.override(planet, kind, args[1] ? Number(args[1]) : 1, args[2] ? Number(args[2]) : 600);
         s.msg(`Погода: ${kind === 'clear' ? 'ясно' : WEATHER[kind].name}`);
+        break;
+      }
+      case 'inside': {
+        // dev: put the pilot on foot inside the nearest wreck (hold | bridge | quarters | rad)
+        const ch = s.char;
+        if (!ch) { s.msg('Выйдите из корабля', 'warn'); break; }
+        const pl = sys.def.planets[ch.planet];
+        const site = planetSites(pl).filter((x) => x.kind === 'wreck')
+          .sort((a, b) => vdist(ch.state.p, vscale(v3(), b.dir, pl.radius)) - vdist(ch.state.p, vscale(v3(), a.dir, pl.radius))).pop();
+        const zone = site?.zones?.find((z) => z.kind === (args[0] ?? 'hold'));
+        if (!site || !zone) { s.msg('Рядом нет обломков', 'warn'); break; }
+        const x = args[0] === 'bridge' ? site.goal.x - 2 : (zone.x0 + zone.x1) / 2, z = (zone.z0 + zone.z1) / 2 + (zone.kind === 'hold' ? 0 : 0.5);
+        const d = siteDir(pl, site, x, z);
+        ch.state.p = vscale(v3(), d, pl.radius + footHeight(pl, d.x, d.y, d.z) + 0.05);
+        ch.state.v = v3();
+        const e = siteDir(pl, site, x + 5, z);
+        const f = vsub(v3(), e, d);
+        const fu = f.x * d.x + f.y * d.y + f.z * d.z;
+        ch.state.f = vnorm(v3(), v3(f.x - d.x * fu, f.y - d.y * fu, f.z - d.z * fu));
+        s.resync();
         break;
       }
       case 'strike': {

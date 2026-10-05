@@ -1,6 +1,7 @@
 import type { PlanetDef } from '../galaxy/system-gen.ts';
 import { footHeight, heightAt, liquidOf } from '../planet/terrain.ts';
 import { collidersNear } from '../planet/prop-rules.ts';
+import { wreckAt } from '../planet/sites.ts';
 import { qlook, v3, vcross, vdot, vlen, vnorm, type Quat, type V3 } from '../math/vec.ts';
 import { DEFAULT_GEAR, type GearStats } from '../outfit.ts';
 
@@ -196,8 +197,22 @@ export function stepChar(c: CharState, inp: CharInput, pl: PlanetDef, dt: number
   }
 
   charUp(c, up);
-  const dist = vlen(c.p);
-  const ground = pl.radius + footHeight(pl, up.x, up.y, up.z);
+  let dist = vlen(c.p);
+  let ground = pl.radius + footHeight(pl, up.x, up.y, up.z);
+  // a wrecked hull: its roof is a ceiling from inside and a floor from on top
+  const hull = wreckAt(pl, c.p);
+  if (hull) {
+    if (dist >= hull.roof - 0.6) ground = Math.max(ground, hull.roof);
+    else {
+      const ceil = hull.roof - 2.0;
+      if (dist > ceil && ceil > ground) {
+        c.p.x = up.x * ceil; c.p.y = up.y * ceil; c.p.z = up.z * ceil;
+        dist = ceil;
+        const vu = vdot(c.v, up);
+        if (vu > 0) { c.v.x -= up.x * vu; c.v.y -= up.y * vu; c.v.z -= up.z * vu; }
+      }
+    }
+  }
   const alt = dist - ground;
   const falling = vdot(c.v, up) <= 0.01;
   if (alt <= 0 || (c.ground && alt < 0.7 && falling)) {

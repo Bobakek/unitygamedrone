@@ -4,7 +4,7 @@ import { footHeight, heightAt } from './planet/terrain.ts';
 import { DEFAULT_GEAR } from './outfit.ts';
 
 /** Body plans the client knows how to rig (fish and ray swim in the sea). */
-export type BodyPlan = 'quad' | 'hex' | 'biped' | 'fish' | 'ray';
+export type BodyPlan = 'quad' | 'hex' | 'biped' | 'fish' | 'ray' | 'drone';
 
 export interface Species {
   id: number;
@@ -31,6 +31,8 @@ export interface Species {
   aquatic?: boolean;
   /** Long, eel-like fish. */
   eel?: boolean;
+  /** A guard drone of a crashed ship: hovers, shoots instead of biting (`bite` = damage per shot), is salvaged. */
+  drone?: boolean;
 }
 
 export const SPECIES: Species[] = [
@@ -46,6 +48,7 @@ export const SPECIES: Species[] = [
   { id: 9, name: 'Пилозуб', plan: 'fish', predator: true, hp: 70, size: 1.45, walk: 2.2, run: 6.8, colors: ['#566676', '#e4e8ec', '#ff4a3a'], herd: [1, 1], bite: 12, samples: 2, aquatic: true },
   { id: 10, name: 'Светокрыл', plan: 'ray', predator: false, hp: 45, size: 1.35, walk: 1.6, run: 5.5, colors: ['#3a1a5a', '#ffb0f0', '#2ee6c9'], herd: [1, 3], bite: 0, samples: 2, tail: true, glow: true, aquatic: true },
   { id: 11, name: 'Угреглот', plan: 'fish', predator: true, hp: 60, size: 1.35, walk: 2.4, run: 7, colors: ['#1a3a2a', '#8affe8', '#b0ff4a'], herd: [1, 1], bite: 11, samples: 2, glow: true, eel: true, aquatic: true },
+  { id: 12, name: 'Страж', plan: 'drone', predator: true, hp: 50, size: 0.7, walk: 2.4, run: 5, colors: ['#3a3f46', '#1c1e22', '#ff3030'], herd: [1, 1], bite: 8, samples: 0, drone: true },
 ];
 
 /** [peaceful, predator] species per planet type; barren and lava worlds are lifeless. */

@@ -101,7 +101,7 @@ export function cannotTake(def: ContractDef, c: Career): string | null {
 // ---------------------------------------------------------------- board generation
 const tierPick = (rng: Rng) => { const x = rng.float(); return x < 0.5 ? 1 : x < 0.83 ? 2 : 3; };
 const living = (pls: readonly PlanetDef[]) => pls.filter((p) => FAUNA[p.type]);
-const sitesOf = (pls: readonly PlanetDef[], kind: 'ruin' | 'base') => pls.flatMap((p) => planetSites(p).filter((s) => s.kind === kind).map((s) => ({ pl: p, s })));
+const sitesOf = (pls: readonly PlanetDef[], kind: 'ruin' | 'base' | 'wreck') => pls.flatMap((p) => planetSites(p).filter((s) => s.kind === kind).map((s) => ({ pl: p, s })));
 const hostile = (p: PlanetDef) => p.type !== 'terran' && p.type !== 'ocean';
 
 type Maker = (rng: Rng, tier: number, id: string) => ContractDef | null;
@@ -172,6 +172,17 @@ function makers(sysId: number): Record<Exclude<ContractKind, 'intercept'>, Maker
       };
     },
     survey: (rng, tier, id) => {
+      // crashed ships (guarded, with a leaking reactor) from tier 2
+      const wrecks = tier >= 2 ? sitesOf(pls, 'wreck') : [];
+      if (wrecks.length && rng.chance(0.55)) {
+        const { pl, s } = rng.pick(wrecks);
+        return {
+          id, kind: 'survey', faction: 'guild', tier, system: sysId, planet: pl.index, site: s.id, need: 1,
+          title: `Разведка: ${s.name}`,
+          desc: `Корабль разбился на ${pl.name}. Проберитесь на мостик и снимите бортовой журнал. Внутри темно, работают дроны-охранники, реактор фонит.`,
+          reward: reward([0, 300, 480, 700][tier], tier),
+        };
+      }
       const all = sitesOf(pls, 'ruin');
       const pool = tier >= 2 ? all.filter((x) => hostile(x.pl)) : all;
       if (!pool.length) return null;

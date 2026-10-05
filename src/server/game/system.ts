@@ -13,7 +13,7 @@ import {
   aimByte, CFLAG, EFLAG, IFLAG, KIND, MODE, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
 } from '../../shared/net/protocol.ts';
 import { nodesNear, resourceNode } from '../../shared/planet/resources.ts';
-import { planetSites, SITE_NODE_BASE, siteDir, sitesNear } from '../../shared/planet/sites.ts';
+import { planetSites, SITE_NODE_BASE, siteDir, sitesNear, wreckAt, wreckZone } from '../../shared/planet/sites.ts';
 import { footHeight, heightAt, liquidOf, surfaceHeight } from '../../shared/planet/terrain.ts';
 import { charQuat, climbProgress, HEAD_UNDER, newChar, stepChar } from '../../shared/sim/character.ts';
 import type { SimEnv } from '../../shared/sim/env.ts';
@@ -48,6 +48,8 @@ export interface GameContext {
 const tmp = v3(), tmp2 = v3(), aim = v3(), rot = quat();
 const stepOut: StepOut = { impact: 0 };
 const charWeather: Weather = { kind: 'clear', k: 0, wind: v3() };
+/** Radiation per second in a wreck's reactor room. */
+const REACTOR_DOSE = 2.5;
 
 export class SystemInstance implements NpcWorld {
   readonly def: SystemDef;
@@ -84,13 +86,15 @@ export class SystemInstance implements NpcWorld {
   }
 
   /** Inside a derelict's hull (shelter from the weather). */
-  shelter(_planet: number, _p: V3): boolean {
-    return false;
+  shelter(planet: number, p: V3): boolean {
+    const w = wreckAt(this.def.planets[planet], p);
+    return !!w && Math.hypot(p.x, p.y, p.z) < w.roof && wreckZone(w.site, w.x, w.z) !== 'rad';
   }
 
   /** Radiation (per second) from derelict reactors at a body-frame point. */
-  reactorDose(_planet: number, _p: V3): number {
-    return 0;
+  reactorDose(planet: number, p: V3): number {
+    const w = wreckAt(this.def.planets[planet], p);
+    return w && Math.hypot(p.x, p.y, p.z) < w.roof && wreckZone(w.site, w.x, w.z) === 'rad' ? REACTOR_DOSE : 0;
   }
 
   nextId() { return this.ctx.nextId(); }
@@ -793,8 +797,8 @@ export class SystemInstance implements NpcWorld {
         aim = vnorm(v3(), v3(eve.x + toSun.x * 0.1, eve.y + toSun.y * 0.1, eve.z + toSun.z * 0.1));
       }
       let d = aim;
-      const site = /^(ruin|base)/.test(target) ? planetSites(pl).find((x) => target.startsWith(x.kind)) : undefined;
-      if (/^(ruin|base)/.test(target) && !site) return 'На планете нет такого объекта';
+      const site = /^(ruin|base|wreck)/.test(target) ? planetSites(pl).find((x) => target.startsWith(x.kind)) : undefined;
+      if (/^(ruin|base|wreck)/.test(target) && !site) return 'На планете нет такого объекта';
       if (site) {
         // land just outside the site, facing its centre
         d = siteDir(pl, site, 0, -(site.radius + 30));

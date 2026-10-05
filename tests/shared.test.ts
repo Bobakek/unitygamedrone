@@ -7,9 +7,9 @@ import {
   liquidOf, FLOAT_DEPTH, HEAD_UNDER, AIR_TIME, vscale,
   defaultOutfit, gearStats, DEFAULT_GEAR, lookCode, parseLook, validOutfit, type Outfit,
   generateBoard, objectiveText, FAUNA, FAUNA_SEA, rankOf, RANKS, repLevel, validCareer, newCareer, item, repOk,
-  weatherAt, forecast, STORM_OF, WINDOW,
+  weatherAt, forecast, STORM_OF, WINDOW, vsub,
 } from './helpers.ts';
-import { planetSites } from '../src/shared/planet/sites.ts';
+import { planetSites, siteDir, wreckAt, wreckZone } from '../src/shared/planet/sites.ts';
 
 const sys = getSystem(0);
 const env: SimEnv = { star: sys.star, planets: sys.planets, fields: sys.fields, station: sys.station, time: 0 };
@@ -616,7 +616,7 @@ describe('contracts', () => {
           if (o.planet !== undefined) {
             const pl = sys.planets[o.planet];
             if (o.kind === 'hunt') expect([FAUNA[pl.type]?.[1], FAUNA_SEA[pl.type]?.[1]]).toContain(o.species);
-            if (o.site !== undefined) expect(planetSites(pl)[o.site].kind).toBe(o.kind === 'survey' ? 'ruin' : 'base');
+            if (o.site !== undefined) expect(o.kind === 'survey' ? ['ruin', 'wreck'] : ['base']).toContain(planetSites(pl)[o.site].kind);
           }
         }
       }
@@ -704,5 +704,48 @@ describe('weather', () => {
     expect(parseLook(old).mod).toBe('mod-none');
     expect(parseLook(old).suit).toBe('suit-orange');
     expect(parseLook(lookCode({ ...defaultOutfit(), mod: 'mod-rad' })).mod).toBe('mod-rad');
+  });
+});
+
+describe('wrecks', () => {
+  const sys0 = getSystem(0);
+  it('every planet has a crashed ship, placed after the older sites', () => {
+    for (const pl of sys0.planets) {
+      const sites = planetSites(pl);
+      const first = sites.findIndex((s) => s.kind === 'wreck');
+      expect(first).toBeGreaterThan(0);
+      expect(sites.slice(first).every((s) => s.kind === 'wreck')).toBe(true);
+      for (const s of sites.slice(first)) {
+        expect(s.hull!.length).toBeGreaterThan(5);
+        expect(wreckZone(s, s.goal.x, s.goal.z)).toBe('bridge');
+        expect(s.caches.length).toBe(4);
+      }
+    }
+  });
+
+  it('walls hold, the roof is a ceiling inside and a floor on top', () => {
+    const pl = sys0.planets.find((p) => planetSites(p).some((s) => s.kind === 'wreck'))!;
+    const s = planetSites(pl).find((x) => x.kind === 'wreck')!;
+    const at = (x: number, z: number, lift = 0.05) => {
+      const d = siteDir(pl, s, x, z);
+      return vscale(v3(), d, pl.radius + footHeight(pl, d.x, d.y, d.z) + lift);
+    };
+    // walking north from the hold runs into the hull wall
+    const c = newChar(at(-4, 5), siteDir(pl, s, -4, 9));
+    const f = vnorm(v3(), vsub(v3(), at(-4, 20), c.p));
+    c.f = { ...f };
+    for (let i = 0; i < 90; i++) stepChar(c, { ...emptyCharInput(), mz: 1 }, pl, DT);
+    expect(wreckAt(pl, c.p)).toBeTruthy();
+    // jetpacking inside stops under the roof
+    const j = newChar(at(-4, 0), f);
+    for (let i = 0; i < 60; i++) stepChar(j, { ...emptyCharInput(), jump: true }, pl, DT);
+    const w = wreckAt(pl, j.p)!;
+    expect(vlen(j.p)).toBeLessThan(w.roof - 1.9);
+    // dropped onto the roof from above: stands on it
+    const r = newChar(vscale(v3(), vnorm(v3(), at(-4, 0)), w.roof + 1), f);
+    r.ground = 0;
+    for (let i = 0; i < 60; i++) stepChar(r, emptyCharInput(), pl, DT);
+    expect(vlen(r.p)).toBeCloseTo(w.roof, 1);
+    expect(r.ground).toBe(1);
   });
 });

@@ -242,6 +242,39 @@ try {
     await storm(1, 'desert', 'sandstorm', 'weather-sandstorm');
     await chat('/god');
   }
+  // a crashed ship: outside, in the dark hold with lamps and guard drones, and the bridge with its log
+  if (!only || only === 'wreck') {
+    if ((await page.evaluate(() => window.__game.sys.id)) !== 0) {
+      await chat('/system 0');
+      await page.waitForFunction(() => window.__game.sys.id === 0 && window.__game.pred.ready, null, { timeout: STEP_MS, polling: 250 });
+    }
+    const idx = await page.evaluate(() => window.__game.sys.planets.findIndex((p) => p.type === 'ice'));
+    await chat('/god');
+    await chat(`/tp wreck${idx}`);
+    await sleep(5000);
+    await page.keyboard.press('KeyG');
+    await mode(1);
+    await page.evaluate(() => { window.__game.ctrl.footPitch = 0.12; window.__game.ctrl.footDist = 7; });
+    await sleep(5000);
+    await page.screenshot({ path: `${OUT}/wreck-outside.png` });
+    await chat('/inside hold');
+    await page.evaluate(() => { window.__game.ctrl.footPitch = -0.02; window.__game.ctrl.footDist = 3.2; });
+    await sleep(6000);
+    await page.screenshot({ path: `${OUT}/wreck-hold.png` });
+    const st = await page.evaluate(() => ({ indoor: +window.__game.indoorK.toFixed(2), lamps: window.__game.myAstro?.lightsOn, drones: [...window.__game.remotes.values()].filter((r) => r.info?.species === 12).length }));
+    console.log('wreck hold', JSON.stringify(st));
+    if (st.indoor < 0.9 || !st.lamps) errors.push(`wreck: not dark inside (${JSON.stringify(st)})`);
+    await chat('/inside bridge');
+    await sleep(4000);
+    await page.keyboard.press('KeyF');
+    await sleep(1500);
+    await page.screenshot({ path: `${OUT}/wreck-log.png` });
+    const log = await page.evaluate(() => document.querySelector('#shiplog .log-title').textContent);
+    console.log('wreck log', log);
+    if (!log.includes('Бортовой журнал')) errors.push('wreck: no ship log on the bridge');
+    await page.evaluate(() => document.querySelector('#shiplog .log-close').click());
+    await chat('/god');
+  }
 } catch (e) {
   errors.push(String(e.stack || e));
 } finally {
