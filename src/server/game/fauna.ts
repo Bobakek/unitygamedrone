@@ -1,5 +1,5 @@
 import { CARGO_KEYS, cargoCount, combatStats } from '../../shared/economy.ts';
-import { BLASTER, FAUNA, FAUNA_SEA, moodByte, PILOT_HP, SAMPLE_RANGE, SPECIES, stepCreature, stepSwimmer, type CreatureState, type Mood, type Species } from '../../shared/fauna.ts';
+import { BLASTER, FAUNA, FAUNA_SEA, moodByte, SAMPLE_RANGE, SPECIES, stepCreature, stepSwimmer, type CreatureState, type Mood, type Species } from '../../shared/fauna.ts';
 import { hashInts, Rng } from '../../shared/math/rng.ts';
 import { qlook, quat, v3, vcross, vdist, vlen, vnorm, vscale, vsub, type V3 } from '../../shared/math/vec.ts';
 import { BLASTER_LEVEL, EFLAG, KIND, MODE, MSG, type EntityState } from '../../shared/net/protocol.ts';
@@ -214,7 +214,8 @@ export class Fauna {
         ch.drown += dt;
         if (ch.drown >= 1) { ch.drown -= 1; this.hurt(ch.session, DROWN_DMG, 0); }
       } else ch.drown = 0;
-      if (ch.hp < PILOT_HP && t - ch.hurtAt > 5) ch.hp = Math.min(PILOT_HP, ch.hp + 4 * dt);
+      const g = ch.session.gear();
+      if (ch.hp < ch.maxHp && t - ch.hurtAt > g.regenDelay) ch.hp = Math.min(ch.maxHp, ch.hp + g.regenRate * dt);
     }
 
     for (const c of [...this.creatures.values()]) {
@@ -449,7 +450,7 @@ export class Fauna {
     if (vdist(c.state.p, ch.state.p) > SAMPLE_RANGE + c.sp.size) return 'Подойдите ближе';
     const free = combatStats(s.pilot.upgrades).cargoCap - cargoCount(s.pilot.cargo);
     if (free <= 0) return 'Трюм полон';
-    const n = Math.min(free, c.sp.samples);
+    const n = Math.min(free, c.sp.samples + s.gear().samples);
     s.pilot.cargo.bio += n;
     s.sendPilot();
     this.remove(c);

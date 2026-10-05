@@ -2,6 +2,7 @@ import type { PlanetDef } from '../galaxy/system-gen.ts';
 import { footHeight, heightAt, liquidOf } from '../planet/terrain.ts';
 import { collidersNear } from '../planet/prop-rules.ts';
 import { qlook, v3, vcross, vdot, vlen, vnorm, type Quat, type V3 } from '../math/vec.ts';
+import { DEFAULT_GEAR, type GearStats } from '../outfit.ts';
 
 /** Pilot on foot. Always expressed in its planet's rotating body frame (planet centre = origin). */
 export interface CharState {
@@ -50,8 +51,10 @@ export const FLOAT_DEPTH = 1.2;
 export const HEAD_UNDER = FLOAT_DEPTH + 0.35;
 export const SWIM_SPEED = 2.6;
 export const SWIM_SPRINT = 4.2;
-/** Seconds of air in the suit. */
-export const AIR_TIME = 75;
+/** Seconds of air in the standard suit (gear can extend it). */
+export const AIR_TIME = DEFAULT_GEAR.airTime;
+/** The part of a pilot's gear the movement simulation needs. */
+export type CharGear = Pick<GearStats, 'airTime' | 'fuelDrain'>;
 
 /** Progress 0..1 of the current traversal. */
 export const climbProgress = (c: CharState) => (c.climbMode ? 1 - c.climb / (c.climbMode === 1 ? VAULT_TIME : CLIMB_TIME) : 0);
@@ -80,10 +83,13 @@ export function charQuat(c: CharState, out: Quat): Quat {
   return qlook(out, c.f, charUp(c, tmp));
 }
 
-/** On-foot movement over a spherical planet with gravity, a small jetpack and swimming. */
-export function stepChar(c: CharState, inp: CharInput, pl: PlanetDef, dt: number): void {
+/**
+ * On-foot movement over a spherical planet with gravity, a small jetpack and swimming.
+ * `gear` (air supply, jetpack consumption) comes from the pilot's outfit.
+ */
+export function stepChar(c: CharState, inp: CharInput, pl: PlanetDef, dt: number, gear: CharGear = DEFAULT_GEAR): void {
   // the suit's air drains while the head is under water and refills above it
-  c.air = c.swim === 2 ? Math.max(0, c.air - dt / AIR_TIME) : Math.min(1, c.air + 0.3 * dt);
+  c.air = c.swim === 2 ? Math.max(0, c.air - dt / gear.airTime) : Math.min(1, c.air + 0.3 * dt);
   charUp(c, up);
   // Turn heading about local up (positive yawDelta turns right).
   const th = -inp.yawDelta, cs = Math.cos(th), sn = Math.sin(th);
@@ -156,7 +162,7 @@ export function stepChar(c: CharState, inp: CharInput, pl: PlanetDef, dt: number
     nvr -= pl.gravity * dt;
     if (inp.jump && c.fuel > 0) {
       nvr += (pl.gravity + 8) * dt;
-      c.fuel = Math.max(0, c.fuel - 0.45 * dt);
+      c.fuel = Math.max(0, c.fuel - gear.fuelDrain * dt);
     }
   }
   c.v.x = tx + (wish.x - tx) * k + up.x * nvr;

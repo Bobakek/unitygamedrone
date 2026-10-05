@@ -5,6 +5,7 @@ import {
   noiseFor, qlook, quantizeInput, resourceNode, segmentSphere, SHIP_LAND_HEIGHT, stepChar, stepShip, surfaceHeight, v3, vdist, vlen, vnorm,
   type ShipInput, type SimEnv, Rng, DT, cloneShip, CRUISE_SPOOL, footHeight, copyChar, quat, newPose, planetRot, setFrame, toWorldPoint, worldPose,
   liquidOf, FLOAT_DEPTH, HEAD_UNDER, AIR_TIME, vscale,
+  defaultOutfit, gearStats, DEFAULT_GEAR, lookCode, parseLook, validOutfit, type Outfit,
 } from './helpers.ts';
 
 const sys = getSystem(0);
@@ -469,6 +470,55 @@ describe('swimming', () => {
       n++;
     }
     expect(n).toBeGreaterThan(0);
+  });
+});
+
+describe('outfits', () => {
+  it('gear stats follow what the pilot wears', () => {
+    const o = defaultOutfit();
+    expect(gearStats(o)).toEqual(DEFAULT_GEAR);
+    expect(gearStats({ ...o, pack: 'pack-o2' }).airTime).toBe(150);
+    expect(gearStats({ ...o, pack: 'pack-jet' }).fuelDrain).toBeLessThan(DEFAULT_GEAR.fuelDrain);
+    expect(gearStats({ ...o, chest: 'chest-plate', helmet: 'helmet-armored' }).hp).toBe(DEFAULT_GEAR.hp + 40);
+    expect(gearStats({ ...o, chest: 'chest-rig' }).samples).toBe(1);
+    expect(gearStats({ ...o, pack: 'pack-medic' }).regenRate).toBeGreaterThan(DEFAULT_GEAR.regenRate);
+  });
+
+  it('look codes round-trip and outfits only keep owned items in their own slots', () => {
+    const o: Outfit = { ...defaultOutfit(), suit: 'suit-orange', pack: 'pack-o2', lights: 'lights-eva', patch: 'patch-skull' };
+    expect(parseLook(lookCode(o))).toEqual(o);
+    expect(parseLook('garbage')).toEqual(defaultOutfit());
+    expect(parseLook(undefined)).toEqual(defaultOutfit());
+    // only the starter kit (patches are free) without purchases
+    expect(validOutfit(o, [])).toEqual({ ...defaultOutfit(), patch: 'patch-skull' });
+    expect(validOutfit(o, ['suit-orange', 'pack-o2', 'lights-eva'])).toEqual(o);
+    expect(validOutfit({ suit: 'pack-o2' }, ['pack-o2']).suit).toBe('suit-white');
+    expect(validOutfit(null, [])).toEqual(defaultOutfit());
+  });
+
+  it('gear changes air and jetpack fuel in the shared sim', () => {
+    const p = sys.planets[1];
+    const d = vnorm(v3(), v3(0.3, 0.8, -0.2));
+    const g = p.radius + surfaceHeight(p, d.x, d.y, d.z);
+    const a = newChar(v3(d.x * g, d.y * g, d.z * g), vnorm(v3(), v3(1, 0, 0)));
+    const b = cloneChar(a);
+    const jet = gearStats({ ...defaultOutfit(), pack: 'pack-jet' });
+    stepChar(a, { ...emptyCharInput(), jump: true }, p, DT);
+    stepChar(b, { ...emptyCharInput(), jump: true }, p, DT, jet);
+    for (let k = 0; k < 60; k++) {
+      stepChar(a, { ...emptyCharInput(), jump: true }, p, DT);
+      stepChar(b, { ...emptyCharInput(), jump: true }, p, DT, jet);
+    }
+    expect(b.fuel).toBeGreaterThan(a.fuel + 0.05);
+    // a head under water (forced) breathes the tanks twice as long
+    const c = cloneChar(a), e = cloneChar(a);
+    const tanks = gearStats({ ...defaultOutfit(), pack: 'pack-o2' });
+    for (let k = 0; k < 30; k++) {
+      c.swim = 2; e.swim = 2;
+      stepChar(c, emptyCharInput(), p, DT);
+      stepChar(e, emptyCharInput(), p, DT, tanks);
+    }
+    expect(1 - c.air).toBeCloseTo((1 - e.air) * 2, 6);
   });
 });
 

@@ -2,6 +2,7 @@ import type { CharInput, CharState } from '../sim/character.ts';
 import type { ShipInput, ShipState } from '../sim/ship.ts';
 import type { Blueprint } from '../ships/blueprint.ts';
 import type { Cargo, Upgrades } from '../economy.ts';
+import type { Outfit } from '../outfit.ts';
 import { Reader, Writer } from './buffer.ts';
 
 export const MSG = {
@@ -28,8 +29,11 @@ export type Mode = (typeof MODE)[keyof typeof MODE];
 export interface PilotInfo {
   name: string; credits: number; cargo: Cargo; cargoCap: number; upgrades: Upgrades;
   missiles: number; kills: number; deaths: number;
+  /** Bought suit parts and the outfit worn. */
+  items: string[]; outfit: Outfit;
 }
-export interface EntityInfo { id: number; kind: number; name: string; bp?: Blueprint; npc?: boolean; owner?: number; species?: number }
+/** `look` (pilots on foot): outfit code, see outfit.ts lookCode. */
+export interface EntityInfo { id: number; kind: number; name: string; bp?: Blueprint; npc?: boolean; owner?: number; species?: number; look?: string }
 export interface Harvested { planet: number; node: number; left: number }
 export interface Welcome {
   playerId: number; shipId: number; token: string; pilot: PilotInfo; system: number;
@@ -60,7 +64,8 @@ export type Action =
   | { a: 'harvest'; node: number }
   | { a: 'sell' } | { a: 'repair' } | { a: 'buyMissiles' } | { a: 'upgrade'; key: string }
   | { a: 'missile'; target: number } | { a: 'respawn' }
-  | { a: 'salvage'; id: number } | { a: 'sample'; id: number };
+  | { a: 'salvage'; id: number } | { a: 'sample'; id: number }
+  | { a: 'buyItem'; id: string } | { a: 'equip'; id: string };
 
 export function encodeJson(type: number, payload: unknown): Uint8Array {
   const body = new TextEncoder().encode(JSON.stringify(payload));
@@ -125,7 +130,7 @@ export interface SelfState {
   ship: ShipState;
   hull: number; maxHull: number; shield: number; maxShield: number; energy: number; missiles: number;
   charId: number; char: CharState | null; charPlanet: number;
-  /** Pilot suit integrity 0..100 (on foot). */
+  /** Pilot suit integrity in percent (on foot). */
   suit: number;
 }
 export interface EntityState {

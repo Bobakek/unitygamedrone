@@ -27,7 +27,7 @@ import { NpcBrain, npcThink, type NpcWorld } from './npc.ts';
 import { WorldEvents } from './world-events.ts';
 import { Outposts } from './outposts.ts';
 import { Fauna } from './fauna.ts';
-import { PILOT_HP } from '../../shared/fauna.ts';
+import { item, lookCode, owns, SLOT_NAMES } from '../../shared/outfit.ts';
 import type { Session } from './session.ts';
 
 export interface GameContext {
@@ -144,7 +144,7 @@ export class SystemInstance implements NpcWorld {
   allInfos(): EntityInfo[] {
     const out: EntityInfo[] = [];
     for (const s of this.ships.values()) out.push(this.shipInfo(s));
-    for (const c of this.chars.values()) out.push({ id: c.id, kind: KIND.CHAR, name: c.name, owner: c.session.id });
+    for (const c of this.chars.values()) out.push({ id: c.id, kind: KIND.CHAR, name: c.name, owner: c.session.id, look: lookCode(c.session.pilot.outfit) });
     for (const m of this.missiles.values()) out.push({ id: m.id, kind: KIND.MISSILE, name: '', owner: m.owner });
     for (const l of this.world.loot.values()) out.push({ id: l.id, kind: KIND.LOOT, name: 'Контейнер' });
     for (const c of this.fauna.creatures.values()) out.push(this.fauna.info(c));
@@ -376,7 +376,7 @@ export class SystemInstance implements NpcWorld {
         ship.fireCooldown -= DT;
         if (m.flags & 1) this.tryFire(ship);
       } else if (s.mode === MODE.FOOT && m.mode === MODE.FOOT && s.char) {
-        stepChar(s.char.state, m.char, this.def.planets[s.char.planet], DT);
+        stepChar(s.char.state, m.char, this.def.planets[s.char.planet], DT, s.gear());
         s.char.pitch = m.char.pitch;
         s.char.aim = !!(m.flags & IFLAG.AIM);
         if (m.flags & IFLAG.FIRE && !s.char.state.climbMode) this.fauna.shoot(s, m.char.pitch);
@@ -478,7 +478,7 @@ export class SystemInstance implements NpcWorld {
       const prog = climbProgress(cs);
       entities.push({
         id: c.id, kind: KIND.CHAR, flags, frame: c.planet + 1, px: cs.p.x, py: cs.p.y, pz: cs.p.z,
-        qx: q.x, qy: q.y, qz: q.z, qw: q.w, vx: cs.v.x, vy: cs.v.y, vz: cs.v.z, hull: c.hp / PILOT_HP, shield: aimByte(c.pitch),
+        qx: q.x, qy: q.y, qz: q.z, qw: q.w, vx: cs.v.x, vy: cs.v.y, vz: cs.v.z, hull: c.hp / c.maxHp, shield: aimByte(c.pitch),
         throttle: cs.climbMode === 2 ? 0.5 + prog * 0.5 : prog * 0.5,
       });
     }
@@ -499,17 +499,18 @@ export class SystemInstance implements NpcWorld {
         shipId: ship.id, mode: s.mode, teleport: s.teleport, ship: ship.state,
         hull: Math.max(0, ship.hull), maxHull: ship.combat.maxHull, shield: ship.shield, maxShield: ship.combat.maxShield,
         energy: ship.energy, missiles: s.pilot.missiles,
-        charId: s.char?.id ?? 0, char: s.char?.state ?? null, charPlanet: s.char?.planet ?? -1, suit: s.char?.hp ?? PILOT_HP,
+        charId: s.char?.id ?? 0, char: s.char?.state ?? null, charPlanet: s.char?.planet ?? -1, suit: s.char ? (s.char.hp / s.char.maxHp) * 100 : 100,
       },
     };
   }
 
   /** Puts the session's pilot on foot at body-frame `pos` facing tangent `f`. */
   private putOnFoot(s: Session, planet: number, pos: V3, f: V3): CharEntity {
-    const c: CharEntity = { id: this.ctx.nextId(), name: s.pilot.name, state: newChar(pos, f), planet, session: s, hp: PILOT_HP, hurtAt: -99, cool: 0, pitch: 0, aim: false, shotAt: -99, drown: 0 };
+    const hp = s.gear().hp;
+    const c: CharEntity = { id: this.ctx.nextId(), name: s.pilot.name, state: newChar(pos, f), planet, session: s, hp, maxHp: hp, hurtAt: -99, cool: 0, pitch: 0, aim: false, shotAt: -99, drown: 0 };
     s.char = c;
     this.chars.set(c.id, c);
-    this.infos.push({ id: c.id, kind: KIND.CHAR, name: s.pilot.name, owner: s.id });
+    this.infos.push({ id: c.id, kind: KIND.CHAR, name: s.pilot.name, owner: s.id, look: lookCode(s.pilot.outfit) });
     s.mode = MODE.FOOT;
     s.resync();
     return c;
@@ -592,6 +593,30 @@ export class SystemInstance implements NpcWorld {
         p.missiles += n;
         p.credits -= n * MISSILE_COST;
         s.sendPilot();
+        return null;
+      }
+      case 'buyItem': {
+        // suit parts from the station wardrobe: bought once, worn at once
+        if (s.mode !== MODE.DOCKED) return 'Нужно пристыковаться';
+        const it = item(String(act.id));
+        if (!it) return null;
+        if (owns(p.items, it.id)) return 'Уже куплено';
+        if (p.credits < it.price) return 'Недостаточно кредитов';
+        p.credits -= it.price;
+        p.items.push(it.id);
+        p.outfit[it.slot] = it.id;
+        s.sendPilot();
+        s.msg(`Куплено: ${it.name}`, 'good');
+        return null;
+      }
+      case 'equip': {
+        if (s.mode !== MODE.DOCKED) return 'Нужно пристыковаться';
+        const it = item(String(act.id));
+        if (!it) return null;
+        if (!owns(p.items, it.id)) return 'Сначала купите';
+        p.outfit[it.slot] = it.id;
+        s.sendPilot();
+        s.msg(`${SLOT_NAMES[it.slot]}: ${it.name}`);
         return null;
       }
       case 'upgrade': {

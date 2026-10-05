@@ -2,7 +2,8 @@ import { DT } from '../../shared/constants.ts';
 import type { PlanetDef } from '../../shared/galaxy/system-gen.ts';
 import { qslerp, v3, vcopy, vlerp, type Quat, type V3 } from '../../shared/math/vec.ts';
 import { MODE, type InputMsg, type Snapshot } from '../../shared/net/protocol.ts';
-import { copyChar, newChar, stepChar, type CharState } from '../../shared/sim/character.ts';
+import { copyChar, newChar, stepChar, type CharGear, type CharState } from '../../shared/sim/character.ts';
+import { DEFAULT_GEAR } from '../../shared/outfit.ts';
 import type { SimEnv } from '../../shared/sim/env.ts';
 import { cloneShip, copyShip, newShip, stepShip, type ShipState, type ShipStats } from '../../shared/sim/ship.ts';
 
@@ -24,7 +25,8 @@ export class Predictor {
   private smooth = v3();
   ready = false;
 
-  constructor(private env: () => SimEnv, private stats: () => ShipStats) {}
+  /** `gear`: the local pilot's outfit effects (air, jetpack), as the server applies them. */
+  constructor(private env: () => SimEnv, private stats: () => ShipStats, private gear: () => CharGear = () => DEFAULT_GEAR) {}
 
   get planets(): PlanetDef[] {
     return this.env().planets;
@@ -65,7 +67,7 @@ export class Predictor {
       env.time = m.t;
       stepShip(this.ship, m.ship, this.stats(), env, DT);
     }
-    else if (this.mode === MODE.FOOT && m.mode === MODE.FOOT && this.char && this.charPlanet >= 0) stepChar(this.char, m.char, this.planets[this.charPlanet], DT);
+    else if (this.mode === MODE.FOOT && m.mode === MODE.FOOT && this.char && this.charPlanet >= 0) stepChar(this.char, m.char, this.planets[this.charPlanet], DT, this.gear());
   }
 
   /** Called once per fixed tick with the (already quantised) input that was sent. */

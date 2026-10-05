@@ -27,6 +27,7 @@ import { AtmosphereView, EnvLighting, SkyDome } from './planet/atmosphere.ts';
 import { CloudLayer } from './planet/clouds.ts';
 import { Underwater } from './world/underwater.ts';
 import { SeaLife } from './planet/sealife.ts';
+import { DEFAULT_GEAR, gearStats, validOutfit, type GearStats } from '../shared/outfit.ts';
 import { PlanetView } from './planet/planet-view.ts';
 import { SurfaceProps } from './planet/props.ts';
 import { WorkerPool } from './planet/worker-pool.ts';
@@ -128,6 +129,8 @@ export class Game {
   private myAstro: AstronautView | null = null;
   private welcome: Welcome | null = null;
   private pilot: PilotInfo | null = null;
+  /** Effects of the local pilot's outfit (prediction must match the server). */
+  private gear: GearStats = DEFAULT_GEAR;
   private self: SelfState | null = null;
   private lastMode = -1;
   private harvested = new Map<string, number>();
@@ -181,7 +184,7 @@ export class Game {
     this.envLight = new EnvLighting(this.r.gl);
     this.input = new Input(canvas);
     this.ctrl = new Controller(this.input);
-    this.pred = new Predictor(() => this.env!, () => this.stats);
+    this.pred = new Predictor(() => this.env!, () => this.stats, () => this.gear);
     this.r.scene.add(this.world, this.sky.mesh);
     this.world.add(this.props.group, this.effects.group, this.underwater.group, this.sealife.group);
     this.sunLight = new THREE.DirectionalLight('#ffffff', 2.6);
@@ -367,6 +370,7 @@ export class Game {
   private setPilot(p: PilotInfo) {
     this.pilot = p;
     this.stats = flightStats(p.upgrades);
+    this.gear = gearStats(validOutfit(p.outfit, p.items));
     this.hud.setPilot(p, this.sys?.name ?? '');
     if (this.self && this.lastMode === MODE.DOCKED) this.hud.renderStation(p, { hull: this.self.hull, max: this.self.maxHull });
   }

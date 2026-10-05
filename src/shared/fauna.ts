@@ -1,6 +1,7 @@
 import type { PlanetDef, PlanetType } from './galaxy/system-gen.ts';
 import { vcross, vdot, vlen, vnorm, v3, type V3 } from './math/vec.ts';
 import { footHeight, heightAt } from './planet/terrain.ts';
+import { DEFAULT_GEAR } from './outfit.ts';
 
 /** Body plans the client knows how to rig (fish and ray swim in the sea). */
 export type BodyPlan = 'quad' | 'hex' | 'biped' | 'fish' | 'ray';
@@ -60,7 +61,8 @@ export type Mood = keyof typeof MOOD;
 export const moodByte = (m: Mood) => MOOD[m] / 8;
 export const moodOf = (b: number) => Math.round(b * 8);
 
-export const PILOT_HP = 100;
+/** Integrity of the standard suit (outfits can add armour, see outfit.ts). */
+export const PILOT_HP = DEFAULT_GEAR.hp;
 export const BLASTER = { damage: 14, cooldown: 0.24, range: 140, speed: 320 } as const;
 export const SAMPLE_RANGE = 4;
 

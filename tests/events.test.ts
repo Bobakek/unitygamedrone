@@ -4,8 +4,12 @@ import { Game } from '../src/server/game/game.ts';
 import type { Transport } from '../src/server/game/session.ts';
 import {
   ANOMALY_SCAN_TIME, BASE_BOUNTY, PILOT_HP, vnorm, vsub, CFLAG, aimByte, aimPitch, KIND, MOOD, moodOf, cargoCount, decodeJson, encodeJson, FWD, MSG, nodesNear, PROTOCOL_VERSION, qrot, resourceNode, TICK_RATE, v3, vdist,
-  type GameEvent, type Poi, getSystem, heightAt,
+  type GameEvent, type Poi, getSystem, heightAt, MODE, lookCode, defaultOutfit, type PilotInfo,
 } from '../src/shared/index.ts';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { collidersNear } from '../src/shared/planet/prop-rules.ts';
 import { inSite, planetSites, SITE_NODE_BASE } from '../src/shared/planet/sites.ts';
 
@@ -299,5 +303,81 @@ describe('the sea', () => {
     run(game, 3.5);
     expect(ch.hp).toBeLessThan(PILOT_HP - 16);
     expect(me.events().filter((e) => e.t === 'hurt').length - n0).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('wardrobe', () => {
+  const game = new Game({ store: new PilotStore(':memory:'), dev: true });
+  const me = pilot(game, 'Dandy');
+  const sys = me.s.system;
+  const pl = sys.def.planets.find((p) => p.type === 'terran')!;
+  const lastPilot = () => decodeJson<PilotInfo>(me.sent.filter((d) => d[0] === MSG.PILOT).pop()!);
+
+  it('sells suit parts only when docked and paid for, and wears them at once', () => {
+    me.s.pilot.credits = 5000;
+    expect(sys.handleAction(me.s, { a: 'buyItem', id: 'pack-o2' })).toBe('Нужно пристыковаться');
+    me.s.mode = MODE.DOCKED;
+    expect(sys.handleAction(me.s, { a: 'equip', id: 'pack-o2' })).toBe('Сначала купите');
+    expect(sys.handleAction(me.s, { a: 'buyItem', id: 'pack-o2' })).toBeNull();
+    expect(me.s.pilot.credits).toBe(5000 - 900);
+    expect(me.s.pilot.outfit.pack).toBe('pack-o2');
+    expect(lastPilot().outfit.pack).toBe('pack-o2');
+    expect(lastPilot().items).toContain('pack-o2');
+    expect(sys.handleAction(me.s, { a: 'buyItem', id: 'pack-o2' })).toBe('Уже куплено');
+    // the starter kit is always there; patches are free
+    expect(sys.handleAction(me.s, { a: 'equip', id: 'pack-plss' })).toBeNull();
+    expect(me.s.pilot.outfit.pack).toBe('pack-plss');
+    expect(sys.handleAction(me.s, { a: 'equip', id: 'patch-skull' })).toBeNull();
+    me.s.pilot.credits = 10;
+    expect(sys.handleAction(me.s, { a: 'buyItem', id: 'chest-plate' })).toBe('Недостаточно кредитов');
+    expect(me.s.pilot.outfit.chest).toBe('chest-dcm');
+  });
+
+  it('armour raises suit integrity, pouches add samples, other pilots see the outfit', () => {
+    me.s.pilot.credits = 5000;
+    expect(sys.handleAction(me.s, { a: 'buyItem', id: 'chest-plate' })).toBeNull();
+    expect(sys.handleAction(me.s, { a: 'buyItem', id: 'suit-orange' })).toBeNull();
+    me.s.mode = MODE.SHIP;
+    sys.devTeleport(me.s, `land${pl.index}`);
+    expect(sys.handleAction(me.s, { a: 'exit' })).toBeNull();
+    const ch = me.s.char!;
+    expect(ch.maxHp).toBe(130);
+    expect(ch.hp).toBe(130);
+    expect(sys.buildSnapshot(me.s).self.suit).toBeCloseTo(100, 5);
+    const info = sys.allInfos().find((i) => i.id === ch.id)!;
+    expect(info.look).toBe(lookCode(me.s.pilot.outfit));
+    expect(info.look).toContain('suit-orange');
+    // sample pouches: one more sample from a carcass
+    me.s.pilot.items.push('chest-rig');
+    me.s.pilot.outfit.chest = 'chest-rig';
+    const [beast] = sys.fauna.devSpawn(pl.index, ch.state.p, 0, 10);
+    sys.fauna.damage(beast, 999, me.s);
+    ch.state.p = { ...beast.state.p };
+    const bio = me.s.pilot.cargo.bio;
+    expect(sys.handleAction(me.s, { a: 'sample', id: beast.id })).toBeNull();
+    expect(me.s.pilot.cargo.bio).toBe(bio + beast.sp.samples + 1);
+  });
+
+  it('pilot stores keep items and outfits, and migrate databases from before the wardrobe', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'nova-')), 'old.db');
+    const old = new DatabaseSync(path);
+    old.exec(`CREATE TABLE pilots (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, token TEXT NOT NULL,
+      credits INTEGER NOT NULL DEFAULT 250, cargo TEXT NOT NULL, upgrades TEXT NOT NULL, missiles INTEGER NOT NULL,
+      kills INTEGER NOT NULL DEFAULT 0, deaths INTEGER NOT NULL DEFAULT 0, system INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, last_seen INTEGER NOT NULL)`);
+    old.prepare(`INSERT INTO pilots (name, token, cargo, upgrades, missiles, created, last_seen) VALUES ('Veteran', 't', '{}', '{}', 4, 0, 0)`).run();
+    old.close();
+    const store = new PilotStore(path);
+    const v = store.find('Veteran')!;
+    expect(v.items).toEqual([]);
+    expect(v.outfit).toEqual(defaultOutfit());
+    v.items.push('suit-tan', 'lights-eva');
+    v.outfit.suit = 'suit-tan';
+    v.outfit.lights = 'lights-eva';
+    store.save(v);
+    store.close();
+    const again = new PilotStore(path).find('Veteran')!;
+    expect(again.items).toEqual(['suit-tan', 'lights-eva']);
+    expect(again.outfit.suit).toBe('suit-tan');
+    expect(again.outfit.lights).toBe('lights-eva');
   });
 });

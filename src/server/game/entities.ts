@@ -44,8 +44,9 @@ export interface CharEntity {
   state: CharState;
   planet: number;
   session: Session;
-  /** Suit integrity, time of the last injury and blaster cooldown. */
+  /** Suit integrity (of `maxHp`, set by the outfit), time of the last injury and blaster cooldown. */
   hp: number;
+  maxHp: number;
   hurtAt: number;
   cool: number;
   /** Last aim pitch, aim button and time of the last blaster shot (for remote animation). */

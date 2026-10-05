@@ -1,6 +1,7 @@
 import type { WebSocket } from 'ws';
 import { encodeJson, MSG, MODE, type InputMsg, type Mode, type PilotInfo } from '../../shared/net/protocol.ts';
 import { combatStats } from '../../shared/economy.ts';
+import { gearStats, type GearStats } from '../../shared/outfit.ts';
 import type { PilotRecord } from '../storage.ts';
 import type { CharEntity, ShipEntity } from './entities.ts';
 import type { SystemInstance } from './system.ts';
@@ -54,7 +55,13 @@ export class Session {
     return {
       name: p.name, credits: Math.floor(p.credits), cargo: { ...p.cargo }, cargoCap: combatStats(p.upgrades).cargoCap,
       upgrades: { ...p.upgrades }, missiles: p.missiles, kills: p.kills, deaths: p.deaths,
+      items: [...p.items], outfit: { ...p.outfit },
     };
+  }
+
+  /** Gameplay effect of the outfit the pilot wears. */
+  gear(): GearStats {
+    return gearStats(this.pilot.outfit);
   }
 
   sendPilot() {
