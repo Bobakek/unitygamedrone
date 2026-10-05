@@ -188,7 +188,7 @@ export class Game implements GameContext {
     const sys = s.system;
     switch (cmd) {
       case 'help':
-        s.msg('Команды: /who, /help' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|station|dock|field|gate|open> [dusk|night], /land <n> [dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-11>, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /cargo <вид> <n>' : ''));
+        s.msg('Команды: /who, /help' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|gate|open> [dusk|night], /land <n> [dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|window|ramp>, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /cargo <вид> <n>' : ''));
         return;
       case 'who':
         s.msg(`Онлайн (${this.sessions.size}): ${[...this.sessions.values()].map((o) => o.pilot.name).join(', ')}`);
