@@ -141,6 +141,13 @@ button:disabled { opacity: 0.4; cursor: default; }
 .upg { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
 .upg button { width: auto !important; padding: 4px 10px; font-size: 12px; }
 .st-card > .primary { margin-top: 16px; width: 100%; }
+.st-actions { display: flex; gap: 8px; margin-top: 16px; }
+.st-actions button { flex: 1; }
+.st-close { display: none; }
+#station.deck .st-close { display: block; }
+#station.deck .st-disembark { display: none; }
+.label .lb-bubble { display: block; margin: 0 auto 4px; max-width: 220px; white-space: normal; padding: 4px 8px; border-radius: 10px; background: rgba(240, 246, 255, 0.92); color: #10161f; font-size: 12px; text-shadow: none; }
+.label .lb-bubble:empty { display: none; }
 
 .help-card { width: 720px; font-size: 14px; }
 .help-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }

@@ -91,7 +91,7 @@ export class Fauna {
 
   /** Where a session is on a planet surface (body frame), if anywhere. */
   private presence(s: Session): { planet: number; p: V3 } | null {
-    if (s.char) return { planet: s.char.planet, p: s.char.state.p };
+    if (s.char) return s.char.planet >= 0 ? { planet: s.char.planet, p: s.char.state.p } : null;
     const st = s.ship.state;
     if (s.mode !== MODE.SHIP || !st.frame) return null;
     const pl = this.sys.def.planets[st.frame - 1];

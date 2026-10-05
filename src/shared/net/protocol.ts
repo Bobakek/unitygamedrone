@@ -26,7 +26,12 @@ export const CFLAG = { SCRAMBLE: 1, CLIMB: 2, AIR: 4, SWIM: 8, UNDER: 16, AIM: 1
 export const aimByte = (pitch: number) => Math.max(0, Math.min(1, pitch / 2.6 + 0.5));
 export const aimPitch = (b: number) => (b - 0.5) * 2.6;
 export const IFLAG = { FIRE: 1, BOOST: 2, CRUISE: 4, JUMP: 8, SPRINT: 16, AIM: 32, DIVE: 64 } as const;
-export const MODE = { SHIP: 0, FOOT: 1, DOCKED: 2, DEAD: 3 } as const;
+/** DECK: walking about the inside of the station (docked). */
+export const MODE = { SHIP: 0, FOOT: 1, DOCKED: 2, DEAD: 3, DECK: 4 } as const;
+/** EntityState.frame of pilots walking on a station deck (deck coordinates, see station/deck.ts). */
+export const DECK_FRAME = 255;
+/** SelfState.charPlanet of the local pilot on the deck. */
+export const DECK_PLANET = -2;
 export type Mode = (typeof MODE)[keyof typeof MODE];
 
 // ---------------------------------------------------------------- JSON messages
@@ -78,7 +83,8 @@ export type Action =
   | { a: 'missile'; target: number } | { a: 'respawn' }
   | { a: 'salvage'; id: number } | { a: 'sample'; id: number }
   | { a: 'buyItem'; id: string } | { a: 'equip'; id: string }
-  | { a: 'takeContract'; id: string } | { a: 'dropContract'; id: string };
+  | { a: 'takeContract'; id: string } | { a: 'dropContract'; id: string }
+  | { a: 'disembark' };
 
 export function encodeJson(type: number, payload: unknown): Uint8Array {
   const body = new TextEncoder().encode(JSON.stringify(payload));
@@ -104,7 +110,7 @@ const d8 = (v: number) => v / 127;
 export function encodeInput(m: InputMsg): Uint8Array {
   const w = new Writer(32);
   w.u8(MSG.INPUT).u32(m.seq).u8(m.mode).u16(m.flags).f64(m.t);
-  if (m.mode === MODE.FOOT) {
+  if (m.mode === MODE.FOOT || m.mode === MODE.DECK) {
     w.i8(q8(m.char.mx)).i8(q8(m.char.mz)).f32(m.char.yawDelta).i8(q8(m.char.pitch / 1.3));
   } else {
     const s = m.ship;
@@ -120,7 +126,7 @@ export function decodeInput(data: Uint8Array): InputMsg {
   const tt = r.f64(), t = Number.isFinite(tt) ? tt : 0;
   const ship: ShipInput = { yaw: 0, pitch: 0, roll: 0, throttle: 0, strafeX: 0, strafeY: 0, boost: !!(flags & IFLAG.BOOST), cruise: !!(flags & IFLAG.CRUISE) };
   const char: CharInput = { mx: 0, mz: 0, yawDelta: 0, pitch: 0, jump: !!(flags & IFLAG.JUMP), sprint: !!(flags & IFLAG.SPRINT), dive: !!(flags & IFLAG.DIVE) };
-  if (mode === MODE.FOOT) {
+  if (mode === MODE.FOOT || mode === MODE.DECK) {
     char.mx = d8(r.i8()); char.mz = d8(r.i8());
     const yd = r.f32();
     char.yawDelta = Number.isFinite(yd) ? Math.max(-0.5, Math.min(0.5, yd)) : 0;

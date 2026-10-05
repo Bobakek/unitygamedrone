@@ -69,6 +69,14 @@ export class CameraRig {
     this.lag.copy(this.quat);
   }
 
+  /** A fixed camera at `pos` looking at `target` with `up` as up. */
+  look(pos: V3, target: V3, up: V3) {
+    this.pos.x = pos.x; this.pos.y = pos.y; this.pos.z = pos.z;
+    qlook(_q, v3(target.x - pos.x, target.y - pos.y, target.z - pos.z), up);
+    this.quat.set(_q.x, _q.y, _q.z, _q.w);
+    this.lag.copy(this.quat);
+  }
+
   /** Keeps the camera's distance from `center` within [lo, hi]. */
   clampRadius(center: V3, lo: number, hi: number) {
     const dx = this.pos.x - center.x, dy = this.pos.y - center.y, dz = this.pos.z - center.z;

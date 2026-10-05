@@ -23,6 +23,8 @@ function meshes(parts: ReturnType<typeof newParts>): THREE.Object3D[] {
 export class StationView {
   readonly group = new THREE.Group();
   private ring = new THREE.Group();
+  /** The hull (not the ring): hidden while the camera is inside, so the windows look out into space. */
+  private core: THREE.Object3D[] = [];
 
   constructor(public def: StationDef, facing: THREE.Vector3) {
     const p = newParts();
@@ -39,7 +41,7 @@ export class StationView {
     }
     add(p, new THREE.CylinderGeometry(2, 2, 90, 5).rotateX(Math.PI / 2), '#9aa0a8', false, [0, 0, 160]);
     add(p, new THREE.SphereGeometry(3, 5, 3), '#ff3040', true, [0, 0, 206]);
-    for (const o of meshes(p)) this.group.add(o);
+    for (const o of meshes(p)) { this.group.add(o); this.core.push(o); }
 
     const r = newParts();
     add(r, new THREE.TorusGeometry(155, 16, 6, 24), '#e6e1d4', false);
@@ -59,6 +61,11 @@ export class StationView {
 
   update(dt: number) {
     this.ring.rotation.z += dt * 0.06;
+  }
+
+  /** The camera is inside the station: hide the hull around it. */
+  setInside(on: boolean) {
+    for (const o of this.core) o.visible = !on;
   }
 }
 

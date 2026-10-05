@@ -4,6 +4,7 @@ import { qslerp, v3, vcopy, vlerp, type Quat, type V3 } from '../../shared/math/
 import { MODE, type InputMsg, type Snapshot } from '../../shared/net/protocol.ts';
 import { copyChar, newChar, stepChar, type CharEnv, type CharGear, type CharState } from '../../shared/sim/character.ts';
 import { DEFAULT_GEAR } from '../../shared/outfit.ts';
+import { stepDeck } from '../../shared/station/deck.ts';
 import type { SimEnv } from '../../shared/sim/env.ts';
 import { cloneShip, copyShip, newShip, stepShip, type ShipState, type ShipStats } from '../../shared/sim/ship.ts';
 
@@ -55,12 +56,13 @@ export class Predictor {
       this.ready = true;
       return;
     }
-    const before = this.mode === MODE.FOOT && this.char ? { ...this.char.p } : { ...this.ship.p };
+    const onFoot = (this.mode === MODE.FOOT || this.mode === MODE.DECK) && this.char;
+    const before = onFoot ? { ...this.char!.p } : { ...this.ship.p };
     const frameBefore = this.ship.frame;
     copyShip(this.ship, me.ship);
     if (me.char && this.char) copyChar(this.char, me.char);
     for (const m of this.pending) this.apply(m);
-    const after = this.mode === MODE.FOOT && this.char ? this.char.p : this.ship.p;
+    const after = onFoot ? this.char!.p : this.ship.p;
     const ex = before.x - after.x, ey = before.y - after.y, ez = before.z - after.z;
     // The correction offset lives in the ship's frame; drop it if the frame changed.
     if (ex * ex + ey * ey + ez * ez > 60 * 60 || frameBefore !== this.ship.frame) this.smooth = v3();
@@ -73,6 +75,7 @@ export class Predictor {
       env.time = m.t;
       stepShip(this.ship, m.ship, this.stats(), env, DT);
     }
+    else if (this.mode === MODE.DECK && m.mode === MODE.DECK && this.char) stepDeck(this.char, m.char, DT);
     else if (this.mode === MODE.FOOT && m.mode === MODE.FOOT && this.char && this.charPlanet >= 0) stepChar(this.char, m.char, this.planets[this.charPlanet], DT, this.gear(), this.weather(this.charPlanet, m.t));
   }
 
@@ -81,7 +84,7 @@ export class Predictor {
     if (!this.ready) return;
     copyShip(this.prevShip, this.ship);
     if (this.char && this.prevChar) copyChar(this.prevChar, this.char);
-    if (this.mode !== MODE.SHIP && this.mode !== MODE.FOOT) return;
+    if (this.mode !== MODE.SHIP && this.mode !== MODE.FOOT && this.mode !== MODE.DECK) return;
     this.pending.push(m);
     if (this.pending.length > 120) this.pending.shift();
     this.apply(m);

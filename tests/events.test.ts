@@ -6,8 +6,9 @@ import {
   ANOMALY_SCAN_TIME, BASE_BOUNTY, PILOT_HP, vnorm, vsub, CFLAG, aimByte, aimPitch, KIND, MOOD, moodOf, cargoCount, decodeJson, encodeJson, FWD, MSG, nodesNear, PROTOCOL_VERSION, qrot, resourceNode, TICK_RATE, v3, vdist,
   type GameEvent, type Poi, getSystem, heightAt, MODE, lookCode, defaultOutfit, type PilotInfo,
   BOARD_EPOCH_MS, BOUNTY, newCareer, generateBoard, WANTED_BOUNTY, type BoardMsg, type ContractDef, type ContractKind,
-  planetRot, toBodyDir,
+  planetRot, toBodyDir, DECK_FRAME, DECK_PLANET,
 } from '../src/shared/index.ts';
+import { RAMP } from '../src/shared/station/deck.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -763,5 +764,66 @@ describe('wrecks', () => {
     onFootAt(site.goal.x - 1, 0);
     run(game, 0.6);
     expect(me.s.pilot.career.done).toContain('test-wreck');
+  });
+});
+
+describe('station deck', () => {
+  const game = new Game({ store: new PilotStore(':memory:'), dev: true });
+  const me = pilot(game, 'Walker');
+  const other = pilot(game, 'Watcher');
+  const sys = me.s.system;
+  let seq = 1000;
+  const walk = (s: typeof me.s, mx: number, mz: number, seconds: number, yaw = 0) => {
+    for (let i = 0; i < seconds * TICK_RATE; i++) {
+      s.inputs.push({ seq: seq++, mode: MODE.DECK, flags: 0, t: sys.time, ship: { yaw: 0, pitch: 0, roll: 0, throttle: 0, strafeX: 0, strafeY: 0, boost: false, cruise: false }, char: { mx, mz, yawDelta: i === 0 ? yaw : 0, pitch: 0, jump: false, sprint: false, dive: false } });
+      game.step();
+    }
+  };
+  const dock = (s: typeof me.s) => { sys.devTeleport(s, 'dock'); expect(sys.handleAction(s, { a: 'dock' })).toBeNull(); };
+
+  it('pilots walk out of the ship into the hangar and back, only next to it', () => {
+    expect(sys.handleAction(me.s, { a: 'disembark' })).toBeNull();
+    expect(me.s.mode).toBe(MODE.SHIP);
+    dock(me.s);
+    sys.handleAction(me.s, { a: 'disembark' });
+    expect(me.s.mode).toBe(MODE.DECK);
+    expect(me.s.char!.planet).toBe(-1);
+    const snap = sys.buildSnapshot(me.s);
+    expect(snap.self.charPlanet).toBe(DECK_PLANET);
+    // walk forward (+z) towards the airlock: the char moves on the deck
+    const z0 = me.s.char!.state.p.z;
+    walk(me.s, 0, 1, 2);
+    expect(me.s.char!.state.p.z).toBeGreaterThan(z0 + 5);
+    expect(me.s.char!.state.p.y).toBe(0);
+    // too far from the ship to board
+    expect(sys.handleAction(me.s, { a: 'board' })).toBe('Подойдите к кораблю');
+    me.s.char!.state.p = { x: RAMP.x, y: 0, z: RAMP.z };
+    expect(sys.handleAction(me.s, { a: 'board' })).toBeNull();
+    expect(me.s.mode).toBe(MODE.DOCKED);
+    expect(me.s.char).toBeNull();
+  });
+
+  it('station services work from the deck, undocking takes the pilot back aboard', () => {
+    sys.handleAction(me.s, { a: 'disembark' });
+    me.s.pilot.cargo.ore = 3;
+    const credits = me.s.pilot.credits;
+    expect(sys.handleAction(me.s, { a: 'sell' })).toBeNull();
+    expect(me.s.pilot.credits).toBeGreaterThan(credits);
+    expect(sys.handleAction(me.s, { a: 'undock' })).toBeNull();
+    expect(me.s.mode).toBe(MODE.SHIP);
+    expect(me.s.char).toBeNull();
+  });
+
+  it('pilots on the deck are seen from inside the station only', () => {
+    dock(me.s);
+    sys.handleAction(me.s, { a: 'disembark' });
+    const id = me.s.char!.id;
+    other.s.mode = MODE.SHIP;
+    sys.devTeleport(other.s, 'dock');
+    expect(sys.buildSnapshot(other.s).entities.some((e) => e.id === id)).toBe(false);
+    expect(sys.handleAction(other.s, { a: 'dock' })).toBeNull();
+    const e = sys.buildSnapshot(other.s).entities.find((x) => x.id === id)!;
+    expect(e).toBeTruthy();
+    expect(e.frame).toBe(DECK_FRAME);
   });
 });

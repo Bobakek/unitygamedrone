@@ -6,7 +6,7 @@ import { FACTION_COLORS, objectiveText, RANKS, rankOf } from '../../shared/contr
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
 
-export interface LabelData { id: number; x: number; y: number; text: string; sub: string; npc: boolean; hull: number; site?: boolean; goal?: boolean }
+export interface LabelData { id: number; x: number; y: number; text: string; sub: string; npc: boolean; hull: number; site?: boolean; goal?: boolean; bubble?: string }
 export interface TargetBox { x: number; y: number; size: number; name: string; info: string; shield: number; hull: number; lock: 0 | 1 | 2 }
 export interface FlightData { speed: number; throttle: number; boost: number; energy: number; shield: number; hull: number; mode: string }
 
@@ -52,7 +52,8 @@ export class Hud {
       const b = (e.target as HTMLElement).closest('button');
       if (!b) return;
       const act = b.dataset.act;
-      if (act === 'wardrobe') this.onWardrobe();
+      if (act === 'close-station') this.showStation(false);
+      else if (act === 'wardrobe') this.onWardrobe();
       else if (act === 'contracts') this.onContracts();
       else if (act === 'upgrade') this.onAction({ a: 'upgrade', key: b.dataset.key! });
       else if (act) this.onAction({ a: act } as Action);
@@ -210,7 +211,7 @@ export class Hud {
       if (!el) {
         el = document.createElement('div');
         el.className = 'label';
-        el.innerHTML = '<span class="lb-t"></span><small></small><div class="lb-bar"><i></i></div>';
+        el.innerHTML = '<div class="lb-bubble"></div><span class="lb-t"></span><small></small><div class="lb-bar"><i></i></div>';
         this.labelLayer.appendChild(el);
         this.labels.set(l.id, el);
       }
@@ -220,6 +221,7 @@ export class Hud {
       el.style.left = `${l.x}px`;
       el.style.top = `${l.y}px`;
       (el.querySelector('.lb-t') as HTMLElement).textContent = l.text;
+      (el.querySelector('.lb-bubble') as HTMLElement).textContent = l.bubble ?? '';
       (el.querySelector('small') as HTMLElement).textContent = l.sub;
       (el.querySelector('.lb-bar i') as HTMLElement).style.width = `${l.hull * 100}%`;
     }
@@ -254,9 +256,11 @@ export class Hud {
     if (html) this.promptEl.innerHTML = html;
   }
 
-  showStation(open: boolean, name = '') {
+  /** `deck`: opened from a terminal on the station deck (closable, no "walk out" button). */
+  showStation(open: boolean, name = '', deck = false) {
     const was = !this.station.classList.contains('hidden');
     this.station.classList.toggle('hidden', !open);
+    this.station.classList.toggle('deck', deck);
     if (open && !was) {
       $('.st-title').textContent = name;
       if (this.lastPilot) this.renderStation(this.lastPilot);

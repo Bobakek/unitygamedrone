@@ -1,6 +1,7 @@
 import { MAX_NAME, PROTOCOL_VERSION, SYSTEM_COUNT, TICK_RATE } from '../../shared/constants.ts';
 import { qlook, qrot, quat, v3, vdist, vnorm, vscale, vsub } from '../../shared/math/vec.ts';
 import { planetSites, siteDir } from '../../shared/planet/sites.ts';
+import { RAMP, TERMINALS } from '../../shared/station/deck.ts';
 import { footHeight } from '../../shared/planet/terrain.ts';
 import {
   decodeInput, decodeJson, encodeJson, encodeShots, encodeSnapshot, MODE, MSG, type Action, type Welcome,
@@ -259,10 +260,22 @@ export class Game implements GameContext {
         s.msg(`Погода: ${kind === 'clear' ? 'ясно' : WEATHER[kind].name}`);
         break;
       }
+      case 'deck': {
+        // dev: on the station deck, step next to a terminal (or the ramp)
+        const ch = s.char;
+        if (!ch || ch.planet >= 0) { s.msg('Сначала выйдите на станцию', 'warn'); break; }
+        const t = TERMINALS.find((x) => x.kind === args[0]);
+        const to = t ? { x: t.x + (t.x < 0 ? 1.8 : -1.8), z: t.z } : RAMP;
+        ch.state.p = v3(to.x, 0, to.z);
+        ch.state.v = v3();
+        if (t) ch.state.f = vnorm(v3(), v3(t.x - to.x, 0, 0));
+        s.resync();
+        break;
+      }
       case 'inside': {
         // dev: put the pilot on foot inside the nearest wreck (hold | bridge | quarters | rad)
         const ch = s.char;
-        if (!ch) { s.msg('Выйдите из корабля', 'warn'); break; }
+        if (!ch || ch.planet < 0) { s.msg('Выйдите из корабля', 'warn'); break; }
         const pl = sys.def.planets[ch.planet];
         const site = planetSites(pl).filter((x) => x.kind === 'wreck')
           .sort((a, b) => vdist(ch.state.p, vscale(v3(), b.dir, pl.radius)) - vdist(ch.state.p, vscale(v3(), a.dir, pl.radius))).pop();
@@ -280,13 +293,13 @@ export class Game implements GameContext {
         break;
       }
       case 'strike': {
-        if (!s.char) { s.msg('Выйдите из корабля', 'warn'); break; }
+        if (!s.char || s.char.planet < 0) { s.msg('Выйдите из корабля', 'warn'); break; }
         const p = s.char.state.p, d = Number(args[0]) || 0;
         sys.weather.strike(s.char.planet, s, d ? undefined : { ...p });
         break;
       }
       case 'fauna': {
-        if (!s.char) { s.msg('Выйдите из корабля', 'warn'); break; }
+        if (!s.char || s.char.planet < 0) { s.msg('Выйдите из корабля', 'warn'); break; }
         const n = sys.fauna.devSpawn(s.char.planet, s.char.state.p, Math.max(0, Math.min(SPECIES.length - 1, Number(args[0]) || 0)), Number(args[1]) || 40).length;
         s.msg(n ? `Появилось существ: ${n}` : 'Не удалось');
         break;

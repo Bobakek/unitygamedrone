@@ -10,6 +10,7 @@ import {
   weatherAt, forecast, STORM_OF, WINDOW, vsub,
 } from './helpers.ts';
 import { planetSites, siteDir, wreckAt, wreckZone } from '../src/shared/planet/sites.ts';
+import { DECK_POSTS, DECK_WALLS, RAMP, roomAt, stepDeck, TERMINAL_REACH, TERMINALS } from '../src/shared/station/deck.ts';
 
 const sys = getSystem(0);
 const env: SimEnv = { star: sys.star, planets: sys.planets, fields: sys.fields, station: sys.station, time: 0 };
@@ -747,5 +748,42 @@ describe('wrecks', () => {
     for (let i = 0; i < 60; i++) stepChar(r, emptyCharInput(), pl, DT);
     expect(vlen(r.p)).toBeCloseTo(w.roof, 1);
     expect(r.ground).toBe(1);
+  });
+});
+
+describe('station deck', () => {
+  it('walls hold and every terminal can be reached on foot from the ramp', () => {
+    // walk into the hangar's side wall
+    const c = newChar(v3(RAMP.x, 0, RAMP.z), v3(1, 0, 0));
+    for (let i = 0; i < 200; i++) stepDeck(c, { ...emptyCharInput(), mz: 1, sprint: true }, DT);
+    expect(c.p.x).toBeLessThan(30);
+    expect(c.p.x).toBeGreaterThan(29);
+    // a flood fill over free floor cells from the ramp reaches all terminals
+    const R = 0.5, step = 0.5;
+    const free = (x: number, z: number) => {
+      if (!roomAt(x, z)) return false;
+      for (const o of DECK_POSTS) if (Math.hypot(x - o.x, z - o.z) < o.r + R) return false;
+      for (const [x0, z0, x1, z1] of DECK_WALLS) {
+        const ex = x1 - x0, ez = z1 - z0, t = Math.max(0, Math.min(1, ((x - x0) * ex + (z - z0) * ez) / (ex * ex + ez * ez)));
+        if (Math.hypot(x - x0 - ex * t, z - z0 - ez * t) < R) return false;
+      }
+      return true;
+    };
+    const key = (x: number, z: number) => `${Math.round(x / step)},${Math.round(z / step)}`;
+    const seen = new Set([key(RAMP.x, RAMP.z)]);
+    const q: [number, number][] = [[RAMP.x, RAMP.z]];
+    while (q.length) {
+      const [x, z] = q.pop()!;
+      for (const [dx, dz] of [[step, 0], [-step, 0], [0, step], [0, -step]]) {
+        const nx = x + dx, nz = z + dz, k = key(nx, nz);
+        if (seen.has(k) || !free(nx, nz)) continue;
+        seen.add(k);
+        q.push([nx, nz]);
+      }
+    }
+    for (const t of TERMINALS) {
+      const near = [...seen].some((k) => { const [i, j] = k.split(',').map(Number); return Math.hypot(i * step - t.x, j * step - t.z) < TERMINAL_REACH - 0.3; });
+      expect(near, t.kind).toBe(true);
+    }
   });
 });

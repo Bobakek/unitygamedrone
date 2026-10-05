@@ -10,7 +10,7 @@ import {
   FWD, qlook, qrot, quat, v3, vcross, vdist, vdistSq, vdot, vlen, vnorm, vscale, vsub, type Quat, type V3,
 } from '../../shared/math/vec.ts';
 import {
-  aimByte, CFLAG, EFLAG, IFLAG, KIND, MODE, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
+  aimByte, CFLAG, DECK_FRAME, DECK_PLANET, EFLAG, IFLAG, KIND, MODE, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
 } from '../../shared/net/protocol.ts';
 import { nodesNear, resourceNode } from '../../shared/planet/resources.ts';
 import { planetSites, SITE_NODE_BASE, siteDir, sitesNear, wreckAt, wreckZone } from '../../shared/planet/sites.ts';
@@ -30,6 +30,7 @@ import { Fauna } from './fauna.ts';
 import { item, lookCode, owns, repNeedText, repOk, SLOT_NAMES } from '../../shared/outfit.ts';
 import { isPirateFriend, isWanted, WANTED_BOUNTY } from '../../shared/contracts.ts';
 import { ContractDesk } from './contracts.ts';
+import { BOARD_REACH, PAD, RAMP, stepDeck } from '../../shared/station/deck.ts';
 import { WeatherDesk } from './weather.ts';
 import type { Weather } from '../../shared/weather.ts';
 import type { Session } from './session.ts';
@@ -48,6 +49,9 @@ export interface GameContext {
 const tmp = v3(), tmp2 = v3(), aim = v3(), rot = quat();
 const stepOut: StepOut = { impact: 0 };
 const charWeather: Weather = { kind: 'clear', k: 0, wind: v3() };
+const DECK_UP = v3(0, 1, 0);
+/** Docked, in the cockpit or walking about the station. */
+const atStation = (s: Session) => s.mode === MODE.DOCKED || s.mode === MODE.DECK;
 /** Radiation per second in a wreck's reactor room. */
 const REACTOR_DOSE = 2.5;
 
@@ -124,8 +128,9 @@ export class SystemInstance implements NpcWorld {
     worldPose(ship.state, this.def.planets, this.time, ship.world);
   }
 
-  /** World position of a pilot on foot. */
+  /** World position of a pilot on foot (on the deck: the station). */
   charWorld(c: CharEntity, out: V3 = v3()): V3 {
+    if (c.planet < 0) return Object.assign(out, this.def.station.pos);
     const pl = this.def.planets[c.planet];
     return toWorldPoint(pl, planetRot(pl, this.time, rot), c.state.p, out);
   }
@@ -422,6 +427,10 @@ export class SystemInstance implements NpcWorld {
         if (stepOut.impact > 40) this.damage(ship, (stepOut.impact - 40) * 1.2, 0);
         ship.fireCooldown -= DT;
         if (m.flags & 1) this.tryFire(ship);
+      } else if (s.mode === MODE.DECK && m.mode === MODE.DECK && s.char) {
+        stepDeck(s.char.state, m.char, DT);
+        s.char.pitch = m.char.pitch;
+        s.char.aim = false;
       } else if (s.mode === MODE.FOOT && m.mode === MODE.FOOT && s.char) {
         // the client stamps inputs with server time: the same wind as its prediction
         const wt = Math.max(this.time - 2, Math.min(this.time + 1, m.t));
@@ -518,15 +527,19 @@ export class SystemInstance implements NpcWorld {
       });
     }
     const q = quat();
+    const docked = s.mode === MODE.DOCKED || s.mode === MODE.DECK;
     for (const c of this.chars.values()) {
       if (c.session === s || vdistSq(this.charWorld(c, cw), focus) > r2) continue;
-      charQuat(c.state, q);
+      // pilots on the station deck are seen only from inside the station
+      const deck = c.planet < 0;
+      if (deck !== docked) continue;
+      if (deck) qlook(q, c.state.f, DECK_UP); else charQuat(c.state, q);
       const cs = c.state;
       const flags = (cs.ground || cs.swim ? 0 : CFLAG.AIR) | (cs.climbMode ? CFLAG.CLIMB : 0) | (cs.scramble ? CFLAG.SCRAMBLE : 0)
         | (cs.swim ? CFLAG.SWIM : 0) | (cs.swim === 2 ? CFLAG.UNDER : 0) | (c.aim || this.time - c.shotAt < 1.5 ? CFLAG.AIM : 0);
       const prog = climbProgress(cs);
       entities.push({
-        id: c.id, kind: KIND.CHAR, flags, frame: c.planet + 1, px: cs.p.x, py: cs.p.y, pz: cs.p.z,
+        id: c.id, kind: KIND.CHAR, flags, frame: deck ? DECK_FRAME : c.planet + 1, px: cs.p.x, py: cs.p.y, pz: cs.p.z,
         qx: q.x, qy: q.y, qz: q.z, qw: q.w, vx: cs.v.x, vy: cs.v.y, vz: cs.v.z, hull: c.hp / c.maxHp, shield: aimByte(c.pitch),
         throttle: cs.climbMode === 2 ? 0.5 + prog * 0.5 : prog * 0.5,
       });
@@ -548,9 +561,22 @@ export class SystemInstance implements NpcWorld {
         shipId: ship.id, mode: s.mode, teleport: s.teleport, ship: ship.state,
         hull: Math.max(0, ship.hull), maxHull: ship.combat.maxHull, shield: ship.shield, maxShield: ship.combat.maxShield,
         energy: ship.energy, missiles: s.pilot.missiles,
-        charId: s.char?.id ?? 0, char: s.char?.state ?? null, charPlanet: s.char?.planet ?? -1, suit: s.char ? (s.char.hp / s.char.maxHp) * 100 : 100,
+        charId: s.char?.id ?? 0, char: s.char?.state ?? null, charPlanet: s.char ? (s.char.planet < 0 ? DECK_PLANET : s.char.planet) : -1, suit: s.char ? (s.char.hp / s.char.maxHp) * 100 : 100,
       },
     };
+  }
+
+  /** Walks the docked pilot out of the ship onto the hangar deck. */
+  putOnDeck(s: Session): CharEntity {
+    const hp = s.gear().hp;
+    const f = vnorm(v3(), v3(0, 0, 1));
+    const c: CharEntity = { id: this.ctx.nextId(), name: s.pilot.name, state: newChar(v3(RAMP.x, 0, RAMP.z), f), planet: -1, session: s, hp, maxHp: hp, hurtAt: -99, cool: 0, pitch: 0, aim: false, shotAt: -99, drown: 0 };
+    s.char = c;
+    this.chars.set(c.id, c);
+    this.infos.push({ id: c.id, kind: KIND.CHAR, name: s.pilot.name, owner: s.id, look: lookCode(s.pilot.outfit) });
+    s.mode = MODE.DECK;
+    s.resync();
+    return c;
   }
 
   /** Puts the session's pilot on foot at body-frame `pos` facing tangent `f`. */
@@ -586,7 +612,20 @@ export class SystemInstance implements NpcWorld {
         this.putOnFoot(s, pl.index, pos, f);
         return null;
       }
+      case 'disembark': {
+        // out of the ship onto the hangar deck, by the ramp
+        if (s.mode !== MODE.DOCKED) return null;
+        this.putOnDeck(s);
+        return null;
+      }
       case 'board': {
+        if (s.mode === MODE.DECK && s.char) {
+          if (Math.hypot(s.char.state.p.x - PAD.x, s.char.state.p.z - PAD.z) > BOARD_REACH) return 'Подойдите к кораблю';
+          this.recallPilot(s);
+          s.mode = MODE.DOCKED;
+          s.sendPilot();
+          return null;
+        }
         if (s.mode !== MODE.FOOT || !s.char) return null;
         const near = ship.state.frame === s.char.planet + 1 && vdist(s.char.state.p, ship.state.p) <= EXIT_RANGE + 6;
         if (!near) return 'Подойдите ближе к кораблю';
@@ -606,6 +645,7 @@ export class SystemInstance implements NpcWorld {
         return null;
       }
       case 'undock': {
+        if (s.mode === MODE.DECK) { this.recallPilot(s); s.mode = MODE.DOCKED; }
         if (s.mode !== MODE.DOCKED) return null;
         const st = this.def.station.pos;
         const away = vnorm(v3(), vsub(v3(), this.def.spawn, st));
@@ -617,7 +657,7 @@ export class SystemInstance implements NpcWorld {
         return null;
       }
       case 'sell': {
-        if (s.mode !== MODE.DOCKED) return 'Нужно пристыковаться';
+        if (!atStation(s)) return 'Нужно пристыковаться';
         const sum = cargoValue(p.cargo);
         if (!sum) return 'Трюм пуст';
         p.credits += sum;
@@ -627,7 +667,7 @@ export class SystemInstance implements NpcWorld {
         return null;
       }
       case 'repair': {
-        if (s.mode !== MODE.DOCKED) return 'Нужно пристыковаться';
+        if (!atStation(s)) return 'Нужно пристыковаться';
         const missing = ship.combat.maxHull - ship.hull;
         if (missing <= 0.5) return 'Корпус цел';
         const hp = Math.min(missing, Math.floor(p.credits / REPAIR_COST_PER_HP));
@@ -638,7 +678,7 @@ export class SystemInstance implements NpcWorld {
         return null;
       }
       case 'buyMissiles': {
-        if (s.mode !== MODE.DOCKED) return 'Нужно пристыковаться';
+        if (!atStation(s)) return 'Нужно пристыковаться';
         const n = Math.min(MAX_MISSILES - p.missiles, Math.floor(p.credits / MISSILE_COST));
         if (n <= 0) return p.missiles >= MAX_MISSILES ? 'Ракетный отсек полон' : 'Недостаточно кредитов';
         p.missiles += n;
@@ -648,7 +688,7 @@ export class SystemInstance implements NpcWorld {
       }
       case 'buyItem': {
         // suit parts from the station wardrobe: bought once, worn at once
-        if (s.mode !== MODE.DOCKED) return 'Нужно пристыковаться';
+        if (!atStation(s)) return 'Нужно пристыковаться';
         const it = item(String(act.id));
         if (!it) return null;
         if (owns(p.items, it.id)) return 'Уже куплено';
@@ -662,7 +702,7 @@ export class SystemInstance implements NpcWorld {
         return null;
       }
       case 'equip': {
-        if (s.mode !== MODE.DOCKED) return 'Нужно пристыковаться';
+        if (!atStation(s)) return 'Нужно пристыковаться';
         const it = item(String(act.id));
         if (!it) return null;
         if (!owns(p.items, it.id)) return 'Сначала купите';
@@ -672,7 +712,7 @@ export class SystemInstance implements NpcWorld {
         return null;
       }
       case 'upgrade': {
-        if (s.mode !== MODE.DOCKED) return 'Нужно пристыковаться';
+        if (!atStation(s)) return 'Нужно пристыковаться';
         const key = act.key as UpgradeKey;
         if (!UPGRADE_KEYS.includes(key)) return null;
         const lvl = p.upgrades[key];
