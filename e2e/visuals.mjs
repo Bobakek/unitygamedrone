@@ -3,6 +3,8 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, rmSync } from 'node:fs';
 import { chromium } from 'playwright';
+// E2E_GPU=1 renders on the real GPU (a local machine), otherwise software WebGL (CI, containers); E2E_HEADED=1 shows the window.
+const LAUNCH = { headless: !process.env.E2E_HEADED, args: process.env.E2E_GPU ? ['--ignore-gpu-blocklist', '--enable-gpu'] : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] };
 
 const PORT = 8092;
 const OUT = new URL('./out/visuals/', import.meta.url).pathname;
@@ -22,7 +24,7 @@ for (let i = 0; i < 100; i++) {
   await sleep(200);
 }
 const errors = [];
-const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+const browser = await chromium.launch(LAUNCH);
 try {
   const page = await browser.newPage({ viewport: { width: VW, height: VH } });
   page.setDefaultTimeout(STEP_MS);
