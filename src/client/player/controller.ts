@@ -39,7 +39,7 @@ export class Controller {
       if (i.wheel) this.throttle = Math.max(-0.3, Math.min(1, this.throttle - i.wheel * 0.1));
       if (i.hit('KeyJ')) this.cruiseOn = !this.cruiseOn;
       i.consumeMouse();
-    } else if (mode === MODE.FOOT || mode === MODE.DECK) {
+    } else if (mode === MODE.FOOT || mode === MODE.DECK || mode === MODE.BOARD) {
       const m = i.consumeMouse();
       if (i.wheel) this.footDist = Math.max(1.6, Math.min(8, this.footDist + i.wheel * 0.5));
       if (i.locked) {
@@ -71,7 +71,7 @@ export class Controller {
     const ship = emptyInput();
     const char = emptyCharInput();
     let flags = 0;
-    const m = mode === MODE.FOOT || mode === MODE.DECK || mode === MODE.ROVER ? mode : MODE.SHIP;
+    const m = mode === MODE.FOOT || mode === MODE.DECK || mode === MODE.ROVER || mode === MODE.BOARD ? mode : MODE.SHIP;
     if (m === MODE.SHIP) {
       ship.yaw = shape(i.vx);
       ship.pitch = -shape(i.vy);

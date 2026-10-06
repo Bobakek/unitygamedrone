@@ -724,6 +724,7 @@ export class SystemInstance implements NpcWorld {
       if (isCruising(sh.state)) flags |= EFLAG.CRUISE;
       if (sh.boosting) flags |= EFLAG.BOOST;
       if (sh.npc) flags |= EFLAG.NPC;
+      if (sh.disabled) flags |= EFLAG.DISABLED;
       if (this.inSafeZone(sh.world.p)) flags |= EFLAG.SAFE;
       // Ships inside a planet frame are sent in body coordinates so they stay glued to the ground.
       const st = sh.state;

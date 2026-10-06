@@ -29,6 +29,10 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #03040b; col
 .label .lb-bar i { display: block; height: 100%; background: var(--hull); }
 
 #crosshair { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; border: 2px solid rgba(143, 248, 255, 0.8); border-radius: 50%; }
+#aimdot { position: absolute; left: 0; top: 0; width: 14px; height: 14px; margin: -7px 0 0 -7px; border: 2px solid rgba(255, 196, 120, 0.85); border-radius: 50%; pointer-events: none; }
+#aimdot::after { content: ''; position: absolute; left: 50%; top: 50%; width: 2px; height: 2px; margin: -1px; background: #ffc478; border-radius: 50%; }
+.yard-prizes h4 { margin: 10px 0 6px; color: var(--cyan); }
+.yard-prizes .prize { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 4px 0; }
 #crosshair::after { content: ''; position: absolute; left: 50%; top: 50%; width: 3px; height: 3px; margin: -1.5px; background: var(--cyan); border-radius: 50%; }
 #cursor { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border: 2px solid rgba(255, 255, 255, 0.75); transform: rotate(45deg); }
 #lead { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border: 2px solid var(--orange); border-radius: 50%; display: none; }

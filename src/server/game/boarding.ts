@@ -468,12 +468,12 @@ export class Boarding {
   }
 
   // ------------------------------------------------------------------ dev
-  /** Dev: a disabled pirate (or freighter) 120 m ahead of the pilot's ship, ready to board. */
+  /** Dev: a disabled pirate (or freighter) 110 m ahead of the pilot's ship, ready to board. */
   devSpawn(s: Session, freighter: boolean): string {
     const ship = s.ship;
     if (s.mode !== MODE.SHIP) return 'Сядьте в корабль';
     const f = qrot(tmp, ship.world.q, v3(0, 0, -1));
-    const p = v3(ship.world.p.x + f.x * 160, ship.world.p.y + f.y * 160, ship.world.p.z + f.z * 160);
+    const p = v3(ship.world.p.x + f.x * 110, ship.world.p.y + f.y * 110, ship.world.p.z + f.z * 110);
     const npc = freighter ? this.sys.world.devFreighter(p) : this.sys.spawnPirate(p);
     npc.transient = true;
     npc.hull = npc.combat.maxHull * DISABLE_HULL * 0.9;

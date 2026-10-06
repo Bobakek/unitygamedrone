@@ -70,6 +70,7 @@ export class Hud {
       else if (act === 'contracts') this.onContracts();
       else if (act === 'upgrade') this.onAction({ a: 'upgrade', key: b.dataset.key! });
       else if (act === 'ship') this.onAction({ a: b.dataset.op === 'buy' ? 'buyShip' : 'setShip', ship: b.dataset.key as HullKey });
+      else if (act === 'prize') this.onAction({ a: 'sellPrize', id: b.dataset.key! });
       else if (act === 'trade') {
         const key = b.dataset.key as CargoKey, n = b.dataset.n === 'all' ? undefined : Number(b.dataset.n);
         this.onAction(b.dataset.op === 'buy' ? { a: 'buy', key, n: n ?? 999 } : { a: 'sell', key, n });
@@ -186,6 +187,13 @@ export class Hud {
     $('#flight-panel').style.display = v ? '' : 'none';
     this.cross.style.display = v ? '' : 'none';
     this.cursor.style.display = v ? '' : 'none';
+  }
+
+  /** The on-foot blaster reticle aboard a boarded ship (null hides it). */
+  aimCross(p: { x: number; y: number } | null) {
+    const el = $('#aimdot');
+    el.style.display = p ? '' : 'none';
+    if (p) el.style.transform = `translate(${p.x}px, ${p.y}px)`;
   }
 
   crosshair(x: number, y: number) {
@@ -365,6 +373,10 @@ export class Hud {
         `<li><span>Урон лазера</span> ${c.laserDamage.toFixed(1)}</li><li><span>Скорость</span> ${Math.round(f.maxSpeed)} (форсаж ${Math.round(f.boostSpeed)})</li>` +
         (h.mining ? '<li><span>Бурение астероидов</span> да</li>' : '') + `</ul>${btn}</div>`;
     }).join('');
+    // captured ships waiting to be sold
+    $('.yard-prizes').innerHTML = p.prizes.length
+      ? `<h4>Призы</h4>` + p.prizes.map((z) => `<div class="prize"><span>${esc(z.name)}</span><button class="buy" data-act="prize" data-key="${esc(z.id)}">Продать — ${z.value} кр</button></div>`).join('')
+      : '';
   }
 
   setDead(dead: boolean) {
