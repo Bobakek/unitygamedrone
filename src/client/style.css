@@ -56,6 +56,11 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #03040b; col
 .pp-task b { display: block; font-weight: 600; color: var(--ink); }
 .pp-task span { color: var(--dim); }
 .pp-task.full span { color: #6dff9c; }
+.pp-task .ct-due { display: block; }
+.ct-due { color: #ffd050; font-variant-numeric: tabular-nums; }
+.ct-due.late { color: #ff5a6a; }
+.ct-freight { font-size: 12px; color: var(--dim); margin-top: 4px; }
+.ct-freight b { color: #ff9a50; }
 
 #nav-panel { right: 16px; top: 16px; width: 230px; font-size: 12px; }
 .np-title { color: var(--dim); margin-bottom: 4px; }
@@ -355,6 +360,17 @@ button.ghost:hover { color: var(--ink); border-color: var(--cyan); }
 .tr-item button { flex: none; padding: 4px 10px; font-size: 12px; }
 .tr-empty { color: var(--dim); font-size: 13px; line-height: 1.5; }
 .tr-close { margin-top: 14px; width: 100%; }
+
+.gx-range { fill: rgba(143, 248, 255, 0.04); stroke: rgba(143, 248, 255, 0.45); stroke-width: 0.25; stroke-dasharray: 1 0.8; pointer-events: none; }
+.gx-dim { color: var(--dim); font-size: 12px; }
+.gx-bad { color: #ff5a6a; }
+.gx-label { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; font-size: 12px; color: var(--dim); }
+.gx-arrive { font: inherit; background: rgba(8, 14, 30, 0.9); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 5px; }
+#jump-charge { position: fixed; left: 50%; top: 31%; transform: translateX(-50%); width: min(420px, 80vw); text-align: center; background: rgba(8, 14, 30, 0.82); border: 1px solid var(--line); border-radius: 12px; padding: 10px 16px; pointer-events: none; }
+#jump-charge .jc-text { font-weight: 600; color: var(--cyan); margin-bottom: 6px; }
+#jump-charge .jc-bar { height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
+#jump-charge .jc-bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #2b6cd8, #8ff8ff); }
+#jump-charge .jc-hint { font-size: 11px; color: var(--dim); margin-top: 6px; }
 
 /* station smelter */
 .st-refinery { margin-top: 14px; }

@@ -61,6 +61,7 @@ import { wreckLog } from '../shared/planet/wreck-log.ts';
 import { POI_LABEL, SALVAGE_MAX_SPEED, SALVAGE_RANGE, type Poi } from '../shared/events.ts';
 import { getGalaxy, route, SECURITY_NAMES } from '../shared/galaxy/galaxy.ts';
 import { GalaxyMap } from './ui/galaxy-map.ts';
+import { fuelPrice } from '../shared/jump.ts';
 
 interface Remote {
   info: EntityInfo | null;
@@ -110,6 +111,9 @@ export class Game {
   private galaxyMap = new GalaxyMap();
   /** Destination system picked on the galaxy map (its next gate is a navigation point). */
   private routeTo: number | null = null;
+  /** The jump drive charging (performance.now() ms when it jumps). */
+  private charge: { system: number; end: number; total: number } | null = null;
+  private chargeEl = document.getElementById('jump-charge')!;
   private radar = new Radar(document.getElementById('radar') as HTMLCanvasElement);
   private sfx = new Sfx();
   private conn: NetClient;
@@ -270,6 +274,8 @@ export class Game {
     this.hud.onContracts = () => { if (this.pilot) this.contracts.show(this.pilot); };
     this.contracts.onAction = (a) => { this.conn.action(a); this.sfx.beep(); };
     this.galaxyMap.onRoute = (to) => this.setRoute(to);
+    this.galaxyMap.onJump = (system, target) => this.conn.action({ a: 'jumpDrive', system, target });
+    this.galaxyMap.onCancelJump = () => this.conn.action({ a: 'jumpCancel' });
     this.hud.onTyping = (t) => { this.input.typing = t; };
     this.hud.onGroup = (w) => {
       this.conn.action(w === 'leave' ? { a: 'groupLeave' } : { a: 'groupAnswer', yes: w === 'yes' });
@@ -349,6 +355,7 @@ export class Game {
     } catch { /* storage unavailable */ }
     const arrived = this.routeTo === w.system;
     if (arrived) this.routeTo = null;
+    this.charge = null;
     if (!this.sys || this.sys.id !== w.system) this.buildSystem(w.system);
     for (const id of [...this.remotes.keys()]) this.removeRemote(id);
     this.infos.clear();
@@ -388,6 +395,7 @@ export class Game {
 
     const sys = getSystem(id);
     this.sys = sys;
+    this.hud.fuelCost = fuelPrice(sys.id);
     this.env = { star: sys.star, planets: sys.planets, fields: sys.fields, station: sys.station, time: 0 };
     this.rots = sys.planets.map(() => quat());
     this.backdrop = new SpaceBackdrop(this.r.gl, sys.seed, this.r.low ? 512 : 1024);
@@ -464,8 +472,19 @@ export class Game {
     this.syncMap();
   }
 
+  /** The jump drive's charge banner. */
+  private updateCharge() {
+    const c = this.charge;
+    this.chargeEl.classList.toggle('hidden', !c);
+    if (!c) return;
+    const left = Math.max(0, (c.end - performance.now()) / 1000);
+    this.chargeEl.querySelector('.jc-text')!.textContent = `Прыжок в ${getGalaxy().stars[c.system].name} через ${left.toFixed(1)} с`;
+    (this.chargeEl.querySelector('.jc-bar i') as HTMLElement).style.width = `${Math.min(100, (1 - left / c.total) * 100)}%`;
+  }
+
   private syncMap() {
     if (this.sys) this.galaxyMap.update(this.sys.id, this.routeTo, (this.pilot?.career.active ?? []).map((c) => c.system));
+    if (this.pilot) this.galaxyMap.setDrive(this.pilot.fuel, this.pilot.fuelTank, this.charge?.system ?? null);
   }
 
   /** Navigation points for the map route and the targets of active contracts (another system: the next gate there). */
@@ -760,6 +779,11 @@ export class Game {
         case 'kill': this.hud.feed(`${e.killer} ✕ ${e.victim}`); break;
         case 'chat': this.hud.chat(e.from, e.text); this.bubbles.set(e.from, { text: e.text, until: this.time + 6 }); break;
         case 'msg': this.hud.toast(e.text, e.kind); this.hud.chat(null, e.text); break;
+        case 'charge':
+          this.charge = e.left > 0 ? { system: e.system, end: performance.now() + e.left * 1000, total: e.left } : null;
+          if (this.charge) { this.galaxyMap.close(); this.sfx.beep(); }
+          this.syncMap();
+          break;
         case 'mine': {
           // a mining laser hit an asteroid
           const pos = v3(e.pos[0], e.pos[1], e.pos[2]);
@@ -1990,6 +2014,7 @@ export class Game {
     }
     const items = this.navItems.map((n) => ({ name: n.name, dist: this.fmtDist(Math.max(0, vdist(n.pos, me) - (n.kind === 'planet' || n.kind === 'goal' ? n.radius : 0))) }));
     this.hud.navList(items, this.navIndex);
+    this.updateCharge();
     const nav = this.navItems[this.navIndex];
     if (nav && mode !== MODE.DOCKED && mode !== MODE.DECK) {
       const sp = this.project(nav.pos);

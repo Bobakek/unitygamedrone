@@ -1,5 +1,5 @@
-import { CARGO_KEYS, CARGO_NAMES, cargoCount, combatStats, emptyCargo, type CargoKey } from '../../shared/economy.ts';
-import { boardEpoch, BOARD_EPOCH_MS } from '../../shared/contracts.ts';
+import { CARGO_KEYS, CARGO_NAMES, emptyCargo, type CargoKey } from '../../shared/economy.ts';
+import { boardEpoch, BOARD_EPOCH_MS, holdRoom } from '../../shared/contracts.ts';
 import { MARKET_HALF_LIFE, marketQuote, type MarketMsg, type MarketQuote } from '../../shared/market.ts';
 import { MSG } from '../../shared/net/protocol.ts';
 import type { Session } from './session.ts';
@@ -66,7 +66,7 @@ export class StationMarket {
   buy(s: Session, key: CargoKey, n: number): string | null {
     const p = s.pilot;
     if (!this.quote().goods[key].buy) return 'Станция это не продаёт';
-    const room = combatStats(p.upgrades, p.ship).cargoCap - cargoCount(p.cargo);
+    const room = holdRoom(p);
     if (room <= 0) return 'Трюм полон';
     const want = Math.min(room, Math.max(1, Math.floor(n) || 1), MAX_LOT);
     let cost = 0, got = 0;
