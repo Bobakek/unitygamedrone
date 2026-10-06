@@ -50,6 +50,8 @@ export type Mode = (typeof MODE)[keyof typeof MODE];
 export interface PilotInfo {
   name: string; credits: number; cargo: Cargo; cargoCap: number; upgrades: Upgrades;
   missiles: number; kills: number; deaths: number;
+  /** Jump drive fuel cells and the tank of the ship flown. */
+  fuel: number; fuelTank: number;
   /** Bought suit parts and the outfit worn. */
   items: string[]; outfit: Outfit;
   /** Experience, reputation and contracts. */
@@ -84,6 +86,8 @@ export type GameEvent =
   | { t: 'kill'; killer: string; victim: string }
   | { t: 'chat'; from: string; text: string }
   | { t: 'msg'; text: string; kind?: 'info' | 'warn' | 'good' }
+  /** The pilot's jump drive charges for a jump to `system` (`left` s); left 0 = stopped or done. */
+  | { t: 'charge'; left: number; system: number }
   | { t: 'harvest'; planet: number; node: number; left: number; by: number }
   | { t: 'missile'; id: number; target: number }
   /** Big centred banner for world events. */
@@ -110,7 +114,7 @@ export type Action =
   | { a: 'exit' } | { a: 'board' } | { a: 'dock' } | { a: 'undock' } | { a: 'jump' }
   | { a: 'harvest'; node: number }
   /** Sell `n` of `key` (all of it without `n`, the whole hold without `key`), buy `n` of `key`. */
-  | { a: 'sell'; key?: CargoKey; n?: number } | { a: 'buy'; key: CargoKey; n: number } | { a: 'repair' } | { a: 'buyMissiles' } | { a: 'upgrade'; key: string }
+  | { a: 'sell'; key?: CargoKey; n?: number } | { a: 'buy'; key: CargoKey; n: number } | { a: 'repair' } | { a: 'buyMissiles' } | { a: 'buyFuel'; n?: number } | { a: 'upgrade'; key: string }
   | { a: 'missile'; target: number } | { a: 'respawn' }
   | { a: 'salvage'; id: number } | { a: 'sample'; id: number }
   | { a: 'buyItem'; id: string } | { a: 'equip'; id: string }
@@ -126,7 +130,9 @@ export type Action =
   /** The pilot on foot read the ship's log on a wreck's bridge (a trophy for the cabin). */
   | { a: 'readLog' }
   /** Shipyard (docked): buy a ship class, switch to an owned one. */
-  | { a: 'buyShip'; ship: HullKey } | { a: 'setShip'; ship: HullKey };
+  | { a: 'buyShip'; ship: HullKey } | { a: 'setShip'; ship: HullKey }
+  /** Jump drive: charge for a jump to `system`, coming out at its station (-1) or planet `target`. */
+  | { a: 'jumpDrive'; system: number; target: number } | { a: 'jumpCancel' };
 
 export function encodeJson(type: number, payload: unknown): Uint8Array {
   const body = new TextEncoder().encode(JSON.stringify(payload));

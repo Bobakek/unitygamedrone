@@ -40,6 +40,7 @@ import type { MarketQuote } from '../../shared/market.ts';
 import { BOARD_REACH, inCabin, PAD, RAMP, stepDeck } from '../../shared/station/deck.ts';
 import { awardTrophy } from './trophies.ts';
 import { WeatherDesk } from './weather.ts';
+import { fuelPrice, tankOf } from '../../shared/jump.ts';
 import type { Weather } from '../../shared/weather.ts';
 import type { Session } from './session.ts';
 
@@ -960,6 +961,17 @@ export class SystemInstance implements NpcWorld {
         if (n <= 0) return p.missiles >= MAX_MISSILES ? 'Ракетный отсек полон' : 'Недостаточно кредитов';
         p.missiles += n;
         p.credits -= n * MISSILE_COST;
+        s.sendPilot();
+        return null;
+      }
+      case 'buyFuel': {
+        if (!atStation(s)) return 'Нужно пристыковаться';
+        const price = fuelPrice(this.def.id), room = tankOf(p.ship) - p.fuel;
+        const want = act.n === undefined ? room : Math.max(0, Math.floor(Number(act.n)) || 0);
+        const n = Math.min(room, want, Math.floor(p.credits / price));
+        if (n <= 0) return room <= 0 ? 'Топливный бак полон' : 'Недостаточно кредитов';
+        p.fuel += n;
+        p.credits -= n * price;
         s.sendPilot();
         return null;
       }

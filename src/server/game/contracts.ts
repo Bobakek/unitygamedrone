@@ -284,7 +284,7 @@ export class ContractDesk {
       if (!this.exposed(s)) continue;
       if (h.raidAt >= 0 && t >= h.raidAt) {
         h.raidAt = -1;
-        this.raid(s, h, 'Пираты ждали у врат: ваш груз засекли');
+        this.raid(s, h, 'Пираты поджидали конвой на выходе из прыжка');
       } else if (t >= h.next) {
         h.next = t + FREIGHT_CHECK;
         if (this.rng.float() < FREIGHT_RAID_RISK[this.sys.def.security]) this.raid(s, h, 'Перехват! Пиратские налётчики идут на ваш груз');

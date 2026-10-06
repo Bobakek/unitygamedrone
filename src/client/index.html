@@ -23,6 +23,7 @@
         <div class="pp-row"><span>Трюм</span><b class="pp-cargo"></b></div>
         <div class="pp-row pp-bed-row hidden"><span>Кузов ровера</span><b class="pp-bed"></b></div>
         <div class="pp-row"><span>Ракеты</span><b class="pp-missiles"></b></div>
+        <div class="pp-row"><span>Топливо</span><b class="pp-fuel"></b></div>
         <div class="pp-row"><span>Система</span><b class="pp-system"></b></div>
         <div class="pp-row pp-clock hidden"><span class="pp-where"></span><b class="pp-time"></b></div>
         <div class="pp-row pp-sky hidden"><span>Погода</span><b class="pp-forecast"></b></div>
@@ -128,6 +129,8 @@
       </div>
     </div>
 
+    <div id="jump-charge" class="hidden"><div class="jc-text"></div><div class="jc-bar"><i></i></div><div class="jc-hint"><kbd>M</kbd> карта · отмена — кнопкой на карте</div></div>
+
     <div id="galaxy" class="modal hidden">
       <div class="gx-card">
         <div class="gx-top"><h2>Карта галактики</h2><span class="gx-legend"><i style="--c:#6dff9c"></i>Ядро <i style="--c:#ffd050"></i>Пограничье <i style="--c:#ff5a6a"></i>Дальний рубеж</span></div>
@@ -135,7 +138,7 @@
           <svg class="gx-map" preserveAspectRatio="xMidYMid meet"></svg>
           <div class="gx-side"><div class="gx-info"></div><button class="primary gx-close">Закрыть</button></div>
         </div>
-        <p class="gx-hint">Врата ведут только к соседним звёздам. Чем дальше от ядра, тем больше пиратов и ресурсов. Выберите звезду и проложите маршрут — следующие врата появятся в навигации (<kbd>Tab</kbd>).</p>
+        <p class="gx-hint">Врата ведут только к соседним звёздам. Чем дальше от ядра, тем больше пиратов и ресурсов. Выберите звезду и проложите маршрут — следующие врата появятся в навигации (<kbd>Tab</kbd>). Пунктирный круг — дальность прыжкового двигателя: туда можно прыгнуть напрямую, без врат, если хватает топлива.</p>
       </div>
     </div>
 
@@ -185,7 +188,7 @@
             <p><kbd>Q</kbd>/<kbd>E</kbd> крен</p>
             <p><kbd>Shift</kbd> форсаж, <kbd>J</kbd> круиз</p>
             <p><kbd>ЛКМ</kbd> лазеры, <kbd>ПКМ</kbd> держать — захват ракеты</p>
-            <p><kbd>T</kbd> цель, <kbd>Tab</kbd> навигация, <kbd>M</kbd> карта галактики</p>
+            <p><kbd>T</kbd> цель, <kbd>Tab</kbd> навигация, <kbd>M</kbd> карта галактики и прыжковый двигатель (топливо — на станции)</p>
             <p><kbd>P</kbd> позвать пилота-цель (или того, кто рядом) в группу; <kbd>Y</kbd>/<kbd>N</kbd> ответить на приглашение</p>
             <p><kbd>F</kbd> стыковка / прыжок во вратах / разбор обломков</p>
           </div>

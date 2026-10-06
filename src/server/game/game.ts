@@ -18,7 +18,12 @@ import { Session, type Transport } from './session.ts';
 import { SystemInstance, type GameContext } from './system.ts';
 import { Groups } from './groups.ts';
 import { marketQuote, type MarketQuote } from '../../shared/market.ts';
-import type { V3 } from '../../shared/math/vec.ts';
+import { AMBUSH_CHANCE, ARRIVAL_RANGE, JUMP_CHARGE, jumpCost, type JumpTarget } from '../../shared/jump.ts';
+import { getGalaxy } from '../../shared/galaxy/galaxy.ts';
+import { SAFE_ZONE_RADIUS } from '../../shared/constants.ts';
+import { NpcBrain } from './npc.ts';
+import { Rng } from '../../shared/math/rng.ts';
+import type { V3, Quat } from '../../shared/math/vec.ts';
 
 export interface GameOptions {
   store: PilotStorage;
@@ -218,6 +223,8 @@ export class Game implements GameContext {
       case MSG.ACTION: {
         const act = decodeJson<Action>(data);
         if (act.a === 'jump') { this.jump(s); break; }
+        if (act.a === 'jumpDrive') { const err = this.chargeDrive(s, Number(act.system), Number(act.target)); if (err) s.msg(err, 'warn'); break; }
+        if (act.a === 'jumpCancel') { if (s.charge) this.stopCharge(s, 'Прыжок отменён'); break; }
         const err = act.a.startsWith('group') ? this.groupAction(s, act) : s.system.handleAction(s, act);
         if (err) s.msg(err, 'warn');
         break;
@@ -437,16 +444,96 @@ export class Game implements GameContext {
     this.transfer(s, gate.target);
   }
 
-  transfer(s: Session, target: number) {
+  /** Why the pilot's ship cannot start the jump drive right now (null: it can). */
+  private driveBlocked(s: Session): string | null {
+    const ship = s.ship, d = s.system.def;
+    if (s.mode !== MODE.SHIP || ship.docked) return 'Прыжок возможен только в полёте';
+    if (ship.dead) return 'Корабль уничтожен';
+    const p = ship.world.p;
+    if (vdist(p, d.station.pos) < SAFE_ZONE_RADIUS) return 'Отлетите из зоны станции';
+    for (const pl of d.planets) if (vdist(p, pl.center) < pl.radius * 2.5) return `Слишком близко к планете ${pl.name}`;
+    if (vdist(p, d.star.pos) < d.star.radius * 3) return 'Слишком близко к звезде';
+    return null;
+  }
+
+  /** Starts charging the jump drive for a jump to `system`, coming out at its station (-1) or planet `target`. */
+  chargeDrive(s: Session, system: number, target: JumpTarget): string | null {
+    if (!Number.isInteger(system) || system < 0 || system >= SYSTEM_COUNT) return null;
+    if (system === s.system.def.id) return 'Вы уже в этой системе';
+    const cost = jumpCost(s.system.def.id, system);
+    if (cost < 0) return 'Слишком далеко для прыжкового двигателя';
+    if (s.pilot.fuel < cost) return `Не хватает топлива: нужно ${cost}, есть ${s.pilot.fuel}`;
+    const planets = this.system(system).def.planets.length;
+    if (!Number.isInteger(target) || target < -1 || target >= planets) target = -1;
+    const blocked = this.driveBlocked(s);
+    if (blocked) return blocked;
+    s.charge = { system, target, at: this.time, until: this.time + JUMP_CHARGE };
+    s.sendJson(MSG.EVENTS, { ev: [{ t: 'charge', left: JUMP_CHARGE, system }] });
+    s.msg(`Прыжковый двигатель заряжается: ${getGalaxy().stars[system].name}, ${cost} топл.`);
+    return null;
+  }
+
+  private stopCharge(s: Session, why: string) {
+    const system = s.charge?.system ?? 0;
+    s.charge = null;
+    s.sendJson(MSG.EVENTS, { ev: [{ t: 'charge', left: 0, system }] });
+    s.msg(why, 'warn');
+  }
+
+  private stepCharge(s: Session) {
+    const c = s.charge!;
+    if (s.ship.lastHit > c.at) { this.stopCharge(s, 'Попадание сбило зарядку прыжкового двигателя'); return; }
+    const blocked = this.driveBlocked(s);
+    if (blocked) { this.stopCharge(s, `Прыжок прерван: ${blocked.toLowerCase()}`); return; }
+    if (this.time < c.until) return;
+    const cost = jumpCost(s.system.def.id, c.system);
+    if (cost < 0 || s.pilot.fuel < cost) { this.stopCharge(s, 'Не хватает топлива'); return; }
+    s.charge = null;
+    s.pilot.fuel -= cost;
+    s.sendJson(MSG.EVENTS, { ev: [{ t: 'charge', left: 0, system: c.system }] });
+    const to = this.system(c.system);
+    const at = this.arrival(to, c.target);
+    this.transfer(s, c.system, at);
+    // the far rim: a pirate patrol may pick up the jump flash
+    if (to.def.security === 'frontier' && Math.random() < AMBUSH_CHANCE) {
+      const rng = new Rng((Math.random() * 2 ** 31) | 0);
+      for (let i = 0; i < 2; i++) {
+        const pos = v3(at.p.x + rng.range(-900, 900), at.p.y + rng.range(-300, 300), at.p.z + rng.range(-900, 900));
+        const pirate = to.spawnPirate(pos);
+        pirate.transient = true;
+        pirate.npc = new NpcBrain(pos, 2500, rng);
+      }
+      s.msg('Выход из прыжка засекли пираты!', 'warn');
+    }
+  }
+
+  /** A point a few kilometres from the station or a planet of `sys`, facing it. */
+  private arrival(sys: SystemInstance, target: JumpTarget): { p: V3; q: Quat } {
+    const d = sys.def, pl = target >= 0 ? d.planets[target] : undefined;
+    const center = pl ? pl.center : d.station.pos;
+    const base = pl ? pl.radius * 1.6 : 0;
+    for (let tries = 0; ; tries++) {
+      const dir = vnorm(v3(), v3(Math.random() * 2 - 1, (Math.random() * 2 - 1) * 0.3, Math.random() * 2 - 1));
+      const r = base + ARRIVAL_RANGE[0] + Math.random() * (ARRIVAL_RANGE[1] - ARRIVAL_RANGE[0]);
+      const p = v3(center.x + dir.x * r, center.y + dir.y * r, center.z + dir.z * r);
+      const clear = d.planets.every((o) => o === pl || vdist(p, o.center) > o.radius * 2) && vdist(p, d.star.pos) > d.star.radius * 3;
+      if (clear || tries > 30) return { p, q: qlook(quat(), vscale(v3(), dir, -1), v3(0, 1, 0)) };
+    }
+  }
+
+  transfer(s: Session, target: number, at?: { p: V3; q: Quat }) {
     if (target < 0 || target >= SYSTEM_COUNT || target === s.system.def.id) return;
     const from = s.system.def.id;
+    s.charge = null;
     s.system.removeSession(s);
     const to = this.system(target);
-    const gate = to.def.gates.find((g) => g.target === from) ?? to.def.gates[0];
-    const away = vnorm(v3(), vsub(v3(), to.def.station.pos, gate.pos));
-    const p = v3(gate.pos.x + away.x * 600, gate.pos.y + away.y * 600, gate.pos.z + away.z * 600);
+    if (!at) {
+      const gate = to.def.gates.find((g) => g.target === from) ?? to.def.gates[0];
+      const away = vnorm(v3(), vsub(v3(), to.def.station.pos, gate.pos));
+      at = { p: v3(gate.pos.x + away.x * 600, gate.pos.y + away.y * 600, gate.pos.z + away.z * 600), q: qlook(quat(), away, v3(0, 1, 0)) };
+    }
     s.ship.state.v = v3();
-    to.addSession(s, { p, q: qlook(quat(), away, v3(0, 1, 0)) });
+    to.addSession(s, at);
     to.contracts.onArrive(s);
     s.resync();
     this.sendWelcome(s);
@@ -464,6 +551,7 @@ export class Game implements GameContext {
     for (const sys of this.instances.values()) this.flush(sys);
     if (this.tick % TICK_RATE === 0) this.groups.step();
     for (const s of this.sessions.values()) {
+      if (s.charge) this.stepCharge(s);
       if (this.time - s.lastSave > 30) { s.lastSave = this.time; this.store.save(s.pilot); }
     }
   }
