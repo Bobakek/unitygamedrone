@@ -1,5 +1,6 @@
 import { SAFE_ZONE_RADIUS } from '../../shared/constants.ts';
-import { cargoCount, combatStats, FREIGHTER_COMBAT, FREIGHTER_FLIGHT, type Cargo } from '../../shared/economy.ts';
+import { holdRoom } from '../../shared/contracts.ts';
+import { FREIGHTER_COMBAT, FREIGHTER_FLIGHT, type Cargo } from '../../shared/economy.ts';
 import {
   ANOMALY_SCAN_TIME, describeLoot, EVENT_REWARD, SALVAGE_MAX_SPEED, SALVAGE_RANGE, type LootContents, type Poi, type PoiKind,
 } from '../../shared/events.ts';
@@ -227,8 +228,7 @@ export class WorldEvents {
   // ------------------------------------------------------------------ rewards
   /** Gives as much of `c` as fits; returns what was actually taken (null if nothing). */
   private grant(s: Session, c: LootContents): LootContents | null {
-    const cap = combatStats(s.pilot.upgrades, s.pilot.ship).cargoCap;
-    let free = cap - cargoCount(s.pilot.cargo);
+    let free = holdRoom(s.pilot);
     const got: LootContents = { credits: c.credits, cargo: {} };
     for (const k of ['relic', 'crystal', 'ore'] as const) {
       const n = Math.min(free, c.cargo[k] ?? 0);

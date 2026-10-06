@@ -3,7 +3,7 @@ import { PilotStore } from '../src/server/db.ts';
 import { Game } from '../src/server/game/game.ts';
 import type { Transport } from '../src/server/game/session.ts';
 import {
-  CARGO_KEYS, encodeJson, decodeJson, EVENT_SLOT_MS, eventOffers, eventPriceMods, galaxyEventsAt, generateBoard, getGalaxy,
+  CARGO_KEYS, encodeJson, decodeJson, EVENT_SLOT_MS, eventOffers, eventPriceMods, galaxyEventsAt, generateBoard, getGalaxy, jumpsFrom,
   marketQuote, MODE, MSG, PROTOCOL_VERSION, SYSTEM_COUNT, TICK_RATE, upcomingEvents, type GameEvent, type GalaxyEvent,
 } from '../src/shared/index.ts';
 
@@ -84,6 +84,9 @@ describe('what events change', () => {
     expect(there[0]).toMatchObject({ kind: 'deliver', cargo: 'crystal', system: 3, event: 'shortage' });
     expect(eventOffers(7, [raid])[0]).toMatchObject({ kind: 'pirates', system: 7, event: 'raid' });
     expect(eventOffers(getGalaxy().links[7][0], [raid])[0]).toMatchObject({ kind: 'deliver', system: 7, cargo: 'ore' });
+    // farther out: urgent freight for the guild's sealed containers
+    const far = getGalaxy().stars.map((s) => s.id).find((i) => jumpsFrom(i)[7] === 2)!;
+    expect(eventOffers(far, [raid])[0]).toMatchObject({ kind: 'freight', system: 7, urgent: true, event: 'raid', origin: far });
     expect(eventOffers(5, [storm])[0]).toMatchObject({ kind: 'supply', cargo: 'ore', event: 'storm' });
     // they ride along with the normal board, with stable ids
     const board = generateBoard(3, 4, [], [shortage]);
@@ -128,7 +131,7 @@ describe('events on the server', () => {
     const plain = sys.market.quote().goods.crystal.sell;
     pilotSay('/gevent shortage crystal');
     expect(sys.market.quote().goods.crystal.sell).toBeGreaterThan(plain * 1.8);
-    const offer = sys.contracts.board().offers.find((o) => o.event === 'shortage');
+    const offer = sys.contracts.board().offers.find((o) => o.event === 'shortage' && o.kind === 'supply');
     expect(offer).toMatchObject({ kind: 'supply', cargo: 'crystal' });
     // the neighbours' prices seen from another station follow too
     const nb = getGalaxy().links[0][0];

@@ -3,11 +3,12 @@
  * generated deterministically per system and 10-minute epoch; what a pilot
  * has taken, their reputation and experience live in their `Career`.
  */
-import { CARGO_KEYS, CARGO_NAMES, PRICES, type CargoKey } from './economy.ts';
+import { CARGO_KEYS, CARGO_NAMES, cargoCount, combatStats, PRICES, type Cargo, type CargoKey, type Upgrades } from './economy.ts';
+import type { HullKey } from './ships/hulls.ts';
 import type { Poi } from './events.ts';
 import { FAUNA, FAUNA_SEA, SPECIES } from './fauna.ts';
 import { getSystem, type PlanetDef } from './galaxy/system-gen.ts';
-import { jumpsFrom } from './galaxy/galaxy.ts';
+import { getGalaxy, jumpsFrom, SECURITY_NAMES, type Security } from './galaxy/galaxy.ts';
 import { SYSTEM_COUNT } from './constants.ts';
 import { hashInts, Rng } from './math/rng.ts';
 import { planetSites } from './planet/sites.ts';
@@ -35,11 +36,11 @@ export function rankOf(xp: number): number {
 export const rankForTier = (tier: number) => RANKS.findIndex((r) => r.tier >= tier);
 
 // ---------------------------------------------------------------- contracts
-export type ContractKind = 'hunt' | 'pirates' | 'clear' | 'intercept' | 'supply' | 'deliver' | 'survey' | 'smuggle';
-export const CONTRACT_KINDS: readonly ContractKind[] = ['hunt', 'pirates', 'clear', 'intercept', 'supply', 'deliver', 'survey', 'smuggle'];
+export type ContractKind = 'hunt' | 'pirates' | 'clear' | 'intercept' | 'supply' | 'deliver' | 'survey' | 'smuggle' | 'freight';
+export const CONTRACT_KINDS: readonly ContractKind[] = ['hunt', 'pirates', 'clear', 'intercept', 'supply', 'deliver', 'survey', 'smuggle', 'freight'];
 export const KIND_NAMES: Record<ContractKind, string> = {
   hunt: 'Охота', pirates: 'Пираты', clear: 'Зачистка', intercept: 'Перехват',
-  supply: 'Поставка', deliver: 'Доставка', survey: 'Разведка', smuggle: 'Контрабанда',
+  supply: 'Поставка', deliver: 'Доставка', survey: 'Разведка', smuggle: 'Контрабанда', freight: 'Грузоперевозка',
 };
 
 export interface ContractReward { credits: number; xp: number; rep: number }
@@ -65,8 +66,20 @@ export interface ContractDef {
   side?: Partial<Record<Faction, number>>;
   /** Put on the board by a galaxy event (urgent, better paid). */
   event?: GalaxyEventKind;
+  /** Freight: sealed containers loaded at `origin` and carried in the hold. */
+  origin?: number;
+  /** Freight: ms allowed from taking the contract to delivery. */
+  time?: number;
+  /** Freight: collateral paid when taken, returned on delivery, lost on failure. */
+  deposit?: number;
+  /** Urgent offers (galaxy events) pay more and give less time. */
+  urgent?: boolean;
 }
-export interface ActiveContract extends ContractDef { have: number }
+export interface ActiveContract extends ContractDef {
+  have: number;
+  /** Freight: server time (ms) the cargo must be delivered by. */
+  due?: number;
+}
 
 export interface Career {
   xp: number;
@@ -88,6 +101,67 @@ const XP = [0, 60, 140, 260];
 const REP_GAIN = [0, 6, 9, 12];
 const round10 = (v: number) => Math.round(v / 10) * 10;
 
+// ---------------------------------------------------------------- freight
+/** Containers per tier: tier 1 fits an upgraded fighter, the rest need a hauler. */
+export const FREIGHT_SIZE = [0, 16, 32, 50];
+/** Jumps to the destination per tier. */
+export const FREIGHT_JUMPS: readonly [number, number][] = [[0, 0], [2, 3], [3, 4], [4, 6]];
+/** Time allowed: a base plus this much per jump (ms). */
+export const FREIGHT_TIME_BASE = 4 * 60_000;
+export const FREIGHT_TIME_JUMP = 2.5 * 60_000;
+/** Share of the reward paid back as a bonus for delivering with over half the time left. */
+export const FREIGHT_FAST_BONUS = 0.2;
+/** Share of the reward each group mate escorting the convoy gets on delivery. */
+export const FREIGHT_ESCORT_SHARE = 0.15;
+/** Standing lost with the Guild when freight is lost or late. */
+export const FREIGHT_FAIL_REP = 8;
+/** Chance of pirates waiting at the gate when a pilot with freight arrives, by zone of the system. */
+export const FREIGHT_ARRIVAL_RISK: Record<Security, number> = { core: 0.12, mid: 0.4, frontier: 0.65 };
+/** Chance per check (every FREIGHT_CHECK s in open space) of a raid on a pilot with freight. */
+export const FREIGHT_RAID_RISK: Record<Security, number> = { core: 0.04, mid: 0.12, frontier: 0.22 };
+export const FREIGHT_CHECK = 45;
+
+/** Containers of contracted freight in a hold. */
+export const freightLoad = (c: Career) => c.active.reduce((n, a) => n + (a.kind === 'freight' ? a.need - a.have : 0), 0);
+
+/** What a hold needs to know: the ship's capacity, loose cargo and contracted freight. */
+export interface Holder { cargo: Cargo; career: Career; upgrades: Upgrades; ship: HullKey }
+/** Units used in the hold (loose cargo plus freight containers). */
+export const holdUsed = (p: Holder) => cargoCount(p.cargo) + freightLoad(p.career);
+/** Free room in the hold of the ship flown (`ship` to ask about another class). */
+export const holdRoom = (p: Holder, ship: HullKey = p.ship) => combatStats(p.upgrades, ship).cargoCap - holdUsed(p);
+
+/** "12:05" or "1:02:05" for a span of ms. */
+export function clockText(ms: number): string {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+}
+
+/**
+ * A long-haul freight offer from `from` to `target`: sealed containers that take hold
+ * room, a deadline and a deposit. Galaxy events may make urgent ones (more pay, less time).
+ */
+export function freightOffer(from: number, target: number, tier: number, id: string, opts: { urgent?: boolean; reason?: string } = {}): ContractDef {
+  const jumps = Math.max(1, jumpsFrom(from)[target]);
+  const src = getSystem(from), dest = getSystem(target);
+  const need = FREIGHT_SIZE[tier];
+  const danger = getGalaxy().stars[target].security;
+  const risk = danger === 'frontier' ? 1.35 : danger === 'mid' ? 1.15 : 1;
+  const urgent = !!opts.urgent;
+  const credits = round10((need * 26 + 200) * (1 + 0.45 * (jumps - 1)) * risk * (urgent ? 1.5 : 1));
+  const time = Math.round((FREIGHT_TIME_BASE + FREIGHT_TIME_JUMP * jumps) * (urgent ? 0.7 : 1) / 1000) * 1000;
+  const what = ['медикаменты', 'запчасти реакторов', 'продовольствие', 'оборудование шахт', 'почта и посылки', 'приборы связи'][hashInts(src.seed, target, tier) % 6];
+  return {
+    id, kind: 'freight', faction: 'guild', tier, system: target, origin: from, need, time, urgent: urgent || undefined,
+    deposit: round10(credits * 0.3),
+    title: `${urgent ? 'Срочный груз' : 'Грузоперевозка'}: ${dest.name}`,
+    desc: `${opts.reason ? `${opts.reason} ` : ''}Опломбированные контейнеры (${what}) ×${need} — на станцию ${dest.station.name}, ${jumps} ${jumps < 5 ? 'прыжка' : 'прыжков'} (${SECURITY_NAMES[danger].toLowerCase()}), срок ${clockText(time)}. `
+      + `Груз занимает трюм${need > 22 ? ', нужен «Тягач»' : ''}. Пираты охотятся за конвоями: берите группу в сопровождение. Залог возвращается при доставке.`,
+    reward: { credits, xp: XP[tier] + 40 * (jumps - 1), rep: REP_GAIN[tier] + 2 },
+  };
+}
+
 export const isWanted = (c: Career) => c.rep.fed < WANTED_BELOW;
 export const isPirateFriend = (c: Career) => c.rep.pirate >= PIRATE_FRIENDLY;
 
@@ -99,6 +173,15 @@ export function cannotTake(def: ContractDef, c: Career): string | null {
   if (c.active.some((a) => a.id === def.id)) return 'Уже взят';
   if (c.done.includes(def.id)) return 'Уже выполнен';
   if (c.active.length >= RANKS[rank].slots) return `Не больше ${RANKS[rank].slots} контрактов на ранге ${RANKS[rank].name}`;
+  return null;
+}
+
+/** Freight also needs hold room for the containers and credits for the deposit. */
+export function cannotLoad(def: ContractDef, p: Holder & { credits: number }): string | null {
+  if (def.kind !== 'freight') return null;
+  const room = holdRoom(p);
+  if (room < def.need) return `Нужно ${def.need} мест в трюме, свободно ${Math.max(0, room)}`;
+  if (p.credits < (def.deposit ?? 0)) return `Нужен залог ${def.deposit} кр`;
   return null;
 }
 
@@ -201,6 +284,18 @@ function makers(sysId: number): Record<Exclude<ContractKind, 'intercept'>, Maker
         reward: reward([0, 200, 340, 500][tier], tier),
       };
     },
+    freight: (rng, tier, id) => {
+      // far away: a few jumps for cadets, the other end of the map for captains
+      const hops = jumpsFrom(sysId);
+      const [lo, hi] = FREIGHT_JUMPS[tier];
+      let pool = hops.map((h, i) => (h >= lo && h <= hi ? i : -1)).filter((i) => i >= 0);
+      if (!pool.length) {
+        const far = Math.max(...hops);
+        pool = hops.map((h, i) => (h === far && h > 0 ? i : -1)).filter((i) => i >= 0);
+      }
+      if (!pool.length) return null;
+      return freightOffer(sysId, pool[rng.int(0, pool.length - 1)], tier, id);
+    },
     smuggle: (rng, tier, id) => {
       const pool = sitesOf(pls, 'base');
       if (!pool.length) return null;
@@ -241,15 +336,20 @@ export function generateBoard(sysId: number, epoch: number, pois: readonly Poi[]
   if (rng.chance(0.6)) plan.push(['guild', ['hunt', 'supply', 'deliver', 'survey']]);
   if (rng.chance(0.5)) plan.push(['fed', ['pirates', 'clear']]);
   if (rng.chance(0.5)) plan.push(['pirate', ['smuggle']]);
+  // long-haul freight for haulers: one always, a second one often
+  const freightAt = plan.length;
+  plan.push(['guild', ['freight']]);
+  if (rng.chance(0.5)) plan.push(['guild', ['freight']]);
   const out: ContractDef[] = [];
   const seen = new Set<string>();
   plan.forEach(([, kinds], k) => {
     // the first offer of each faction is entry level so cadets always have work
-    const tier = k === 0 || k === 2 || k === 4 ? 1 : tierPick(rng);
+    // (and the first freight run is one a fighter with a bigger hold can manage)
+    const tier = k === 0 || k === 2 || k === 4 || k === freightAt ? 1 : tierPick(rng);
     for (let tries = 0; tries < 6; tries++) {
       const def = make[rng.pick(kinds)](rng, tier, `${sysId}-${epoch}-${k}`);
       if (!def) continue;
-      const key = `${def.kind}:${def.planet ?? ''}:${def.site ?? ''}:${def.species ?? ''}:${def.cargo ?? ''}:${def.system}`;
+      const key = `${def.kind}:${def.planet ?? ''}:${def.site ?? ''}:${def.species ?? ''}:${def.cargo ?? ''}:${def.system}${def.kind === 'freight' ? `:${def.tier}` : ''}`;
       if (seen.has(key)) continue;
       seen.add(key);
       out.push(def);
@@ -276,6 +376,7 @@ export function objectiveText(c: ContractDef, have = (c as ActiveContract).have 
     case 'supply': case 'deliver': return `${CARGO_NAMES[c.cargo ?? 'ore']} ${n} → ${sys.station.name}`;
     case 'survey': return `${site?.name ?? ''} · ${pl?.name ?? ''}`;
     case 'smuggle': return `${CARGO_NAMES[c.cargo ?? 'relic']} ×${c.need} → ${site?.name ?? ''}, ${pl?.name ?? ''}`;
+    case 'freight': return `Контейнеры ×${c.need} → ${sys.station.name} · ${jumpsFrom(c.origin ?? c.system)[c.system]} прыж.`;
   }
 }
 
@@ -298,6 +399,8 @@ function validActive(x: unknown): x is ActiveContract {
     && optInt(c.planet, 0, 15) && optInt(c.species, 0, SPECIES.length - 1) && optInt(c.site, 0, 15) && optInt(c.poi, 0, 2 ** 31)
     && (c.cargo === undefined || CARGO_KEYS.includes(c.cargo as CargoKey))
     && isInt(c.need, 1, 999) && isInt(c.have, 0, 999)
+    && optInt(c.origin, 0, SYSTEM_COUNT - 1) && optInt(c.time, 0, 1e8) && optInt(c.deposit, 0, 1e6) && optInt(c.due, 0, Number.MAX_SAFE_INTEGER)
+    && (c.urgent === undefined || typeof c.urgent === 'boolean')
     && !!r && isInt(r.credits, 0, 1e6) && isInt(r.xp, 0, 1e5) && isInt(r.rep, 0, 100);
 }
 

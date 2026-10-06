@@ -7,6 +7,8 @@ import {
   type GameEvent, type Poi, getSystem, heightAt, MODE, lookCode, defaultOutfit, type PilotInfo,
   BOARD_EPOCH_MS, BOUNTY, newCareer, generateBoard, WANTED_BOUNTY, type BoardMsg, type ContractDef, type ContractKind,
   planetRot, toBodyDir, DECK_FRAME, DECK_PLANET,
+  getGalaxy, jumpCost, tankOf, fuelPrice, START_FUEL, JUMP_CHARGE, ARRIVAL_RANGE,
+  galaxyEventsAt,
 } from '../src/shared/index.ts';
 import { RAMP } from '../src/shared/station/deck.ts';
 import { DatabaseSync } from 'node:sqlite';
@@ -419,7 +421,7 @@ describe('contracts', () => {
   it('the board is the same for everyone in an epoch, changes with time and is sent on docking', () => {
     const a = desk.board().offers;
     expect(a.length).toBeGreaterThanOrEqual(5);
-    expect(generateBoard(sys.def.id, Math.floor(clock / BOARD_EPOCH_MS))).toEqual(a);
+    expect(generateBoard(sys.def.id, Math.floor(clock / BOARD_EPOCH_MS), [], galaxyEventsAt(clock))).toEqual(a);
     expect(new Set(a.map((o) => o.faction))).toEqual(new Set(['fed', 'guild', 'pirate']));
     expect(a.some((o) => o.tier === 1 && o.faction === 'guild') && a.some((o) => o.tier === 1 && o.faction === 'fed')).toBe(true);
     sys.devTeleport(me.s, 'dock');
@@ -854,5 +856,55 @@ describe('galaxy', () => {
     // and wakes up when a pilot comes back
     game.transfer(me.s, home.def.id);
     expect(game.asleep(home)).toBe(false);
+  });
+});
+
+describe('jump drive', () => {
+  it('jumps from the map with fuel, after a charge a hit can break', () => {
+    const game = new Game({ store: new PilotStore(':memory:'), dev: true });
+    const me = pilot(game, 'Jumper');
+    const home = me.s.system.def.id;
+    const g = getGalaxy();
+    // a star in range that is not a gate neighbour: the drive skips the lanes
+    const to = g.stars.map((s) => s.id).find((i) => jumpCost(home, i) > 0 && !g.links[home].includes(i))!;
+    const cost = jumpCost(home, to);
+    expect(cost).toBeGreaterThan(0);
+    // fuel is bought at the station, up to the tank
+    me.s.system.devTeleport(me.s, 'dock');
+    me.s.system.handleAction(me.s, { a: 'dock' });
+    me.s.pilot.credits = 10000;
+    expect(me.s.system.handleAction(me.s, { a: 'buyFuel' })).toBeNull();
+    expect(me.s.pilot.fuel).toBe(tankOf(me.s.pilot.ship));
+    expect(me.s.pilot.credits).toBe(10000 - (tankOf(me.s.pilot.ship) - START_FUEL) * fuelPrice(home));
+    // not from the station's zone
+    me.s.system.devTeleport(me.s, 'station');
+    expect(game.chargeDrive(me.s, to, -1)).toMatch(/станции/);
+    me.s.system.devTeleport(me.s, 'open');
+    run(game, 0.2);
+    // a hit while charging breaks the charge
+    expect(game.chargeDrive(me.s, to, 0)).toBeNull();
+    run(game, 2);
+    me.s.ship.lastHit = game.time;
+    run(game, 0.2);
+    expect(me.s.charge).toBeNull();
+    expect(me.s.system.def.id).toBe(home);
+    // a clean charge jumps and burns the fuel; the ship comes out near the planet chosen
+    const fuel = me.s.pilot.fuel;
+    expect(game.chargeDrive(me.s, to, 0)).toBeNull();
+    run(game, JUMP_CHARGE - 1);
+    expect(me.s.system.def.id).toBe(home);
+    run(game, 1.5);
+    expect(me.s.system.def.id).toBe(to);
+    expect(me.s.pilot.fuel).toBe(fuel - cost);
+    const pl = me.s.system.def.planets[0];
+    const d = vdist(me.s.ship.world.p, pl.center) - pl.radius;
+    expect(d).toBeGreaterThan(ARRIVAL_RANGE[0]);
+    expect(d).toBeLessThan(pl.radius + ARRIVAL_RANGE[1] + 10);
+    // out of range or out of fuel: no
+    const far = g.stars.map((s) => s.id).find((i) => jumpCost(to, i) < 0 && i !== to)!;
+    expect(game.chargeDrive(me.s, far, -1)).toMatch(/далеко/);
+    me.s.pilot.fuel = 0;
+    const near = g.stars.map((s) => s.id).find((i) => jumpCost(to, i) > 0)!;
+    expect(game.chargeDrive(me.s, near, -1)).toMatch(/топлива/);
   });
 });

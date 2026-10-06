@@ -30,7 +30,7 @@ import { WorldEvents } from './world-events.ts';
 import { Outposts } from './outposts.ts';
 import { Fauna } from './fauna.ts';
 import { item, lookCode, owns, repNeedText, repOk, SLOT_NAMES } from '../../shared/outfit.ts';
-import { isPirateFriend, isWanted, WANTED_BOUNTY } from '../../shared/contracts.ts';
+import { holdRoom, holdUsed, isPirateFriend, isWanted, WANTED_BOUNTY } from '../../shared/contracts.ts';
 import { ContractDesk } from './contracts.ts';
 import { StationMarket } from './market.ts';
 import { AsteroidMining } from './mining.ts';
@@ -42,6 +42,7 @@ import { awardTrophy } from './trophies.ts';
 import { WeatherDesk } from './weather.ts';
 import { GalaxyEffects } from './galaxy-effects.ts';
 import type { GalaxyEvent } from '../../shared/galaxy-events.ts';
+import { fuelPrice, tankOf } from '../../shared/jump.ts';
 import type { Weather } from '../../shared/weather.ts';
 import type { Session } from './session.ts';
 
@@ -238,6 +239,7 @@ export class SystemInstance implements NpcWorld {
   removeSession(s: Session) {
     this.sessions.delete(s);
     this.mining.forget(s);
+    this.contracts.forget(s);
     this.removeRover(s);
     if (s.char) {
       this.chars.delete(s.char.id);
@@ -335,6 +337,7 @@ export class SystemInstance implements NpcWorld {
     if (target.session) {
       const s = target.session;
       s.pilot.deaths++;
+      this.contracts.onShipLost(s);
       const lost = cargoCount(s.pilot.cargo);
       s.pilot.cargo = emptyCargo();
       target.respawnAt = this.time + this.ctx.respawnDelay;
@@ -454,6 +457,7 @@ export class SystemInstance implements NpcWorld {
       // a fresh board (new epoch, a convoy came or went) goes to everyone docked
       if (this.contracts.board().changed) for (const s of this.sessions) if (s.mode === MODE.DOCKED) this.contracts.sendBoard(s);
       for (const s of this.sessions) this.contracts.expire(s);
+      this.contracts.stepFreight();
       // prices drift each epoch and recover from trade: docked pilots see them move
       if (this.market.changed()) this.broadcastMarket();
       this.galaxy.step(this.galaxyEvents());
@@ -577,7 +581,7 @@ export class SystemInstance implements NpcWorld {
     if (!s.rover) return;
     this.removeRover(s);
     const bed = s.pilot.roverBed, hold = s.pilot.cargo;
-    let room = combatStats(s.pilot.upgrades, s.pilot.ship).cargoCap - cargoCount(hold);
+    let room = holdRoom(s.pilot);
     const moved: Partial<Record<CargoKey, number>> = {};
     for (const k of CARGO_KEYS) {
       const n = Math.min(room, bed[k]);
@@ -968,6 +972,17 @@ export class SystemInstance implements NpcWorld {
         s.sendPilot();
         return null;
       }
+      case 'buyFuel': {
+        if (!atStation(s)) return 'Нужно пристыковаться';
+        const price = fuelPrice(this.def.id), room = tankOf(p.ship) - p.fuel;
+        const want = act.n === undefined ? room : Math.max(0, Math.floor(Number(act.n)) || 0);
+        const n = Math.min(room, want, Math.floor(p.credits / price));
+        if (n <= 0) return room <= 0 ? 'Топливный бак полон' : 'Недостаточно кредитов';
+        p.fuel += n;
+        p.credits -= n * price;
+        s.sendPilot();
+        return null;
+      }
       case 'buyItem': {
         // suit parts from the station wardrobe: bought once, worn at once
         if (!atStation(s)) return 'Нужно пристыковаться';
@@ -1038,7 +1053,7 @@ export class SystemInstance implements NpcWorld {
         if ((this.harvested.get(key) ?? 0) > this.time) return 'Ресурс уже собран';
         const np = vscale(v3(), node.dir, pl.radius + node.h);
         if (vdist(np, s.char.state.p) > HARVEST_RANGE + 1.5) return 'Слишком далеко';
-        if (cargoCount(p.cargo) >= combatStats(p.upgrades, p.ship).cargoCap) return 'Трюм полон';
+        if (holdRoom(p) <= 0) return 'Трюм полон';
         p.cargo[node.type]++;
         this.harvested.set(key, this.time + NODE_RESPAWN);
         this.events.push({ t: 'harvest', planet: pl.index, node: node.id, left: NODE_RESPAWN, by: s.id });
@@ -1106,7 +1121,7 @@ export class SystemInstance implements NpcWorld {
   setShip(s: Session, key: HullKey): string | null {
     const p = s.pilot;
     const cap = combatStats(p.upgrades, key).cargoCap;
-    if (cargoCount(p.cargo) > cap) return `Груз не поместится: в трюме ${cargoCount(p.cargo)}, а у этого корабля ${cap}`;
+    if (holdRoom(p, key) < 0) return `Груз не поместится: в трюме ${holdUsed(p)}, а у этого корабля ${cap}`;
     // the ship left in the hangar is serviced there, the one taken out keeps the damage share
     const wear = s.ship.hull / s.ship.combat.maxHull;
     p.ship = key;

@@ -1,4 +1,5 @@
-import { CARGO_KEYS, cargoCount, combatStats } from '../../shared/economy.ts';
+import { holdRoom } from '../../shared/contracts.ts';
+import { CARGO_KEYS } from '../../shared/economy.ts';
 import { BLASTER, FAUNA, FAUNA_SEA, moodByte, SAMPLE_RANGE, SPECIES, stepCreature, stepSwimmer, type CreatureState, type Mood, type Species } from '../../shared/fauna.ts';
 import { hashInts, Rng } from '../../shared/math/rng.ts';
 import { qlook, quat, v3, vcross, vdist, vlen, vnorm, vscale, vsub, type V3 } from '../../shared/math/vec.ts';
@@ -586,7 +587,7 @@ export class Fauna {
     const c = this.creatures.get(id);
     if (!ch || !c || !c.dead || c.planet !== ch.planet) return 'Здесь нечего брать';
     if (vdist(c.state.p, ch.state.p) > SAMPLE_RANGE + c.sp.size) return 'Подойдите ближе';
-    const free = combatStats(s.pilot.upgrades, s.pilot.ship).cargoCap - cargoCount(s.pilot.cargo);
+    const free = holdRoom(s.pilot);
     if (c.sp.drone) {
       // a downed drone is stripped for crystals and saleable parts
       const n = Math.min(free, this.rng.int(1, 2)), credits = this.rng.int(30, 60);

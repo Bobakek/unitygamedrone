@@ -1,4 +1,5 @@
-import { CARGO_NAMES, cargoCount, combatStats } from '../../shared/economy.ts';
+import { holdRoom } from '../../shared/contracts.ts';
+import { CARGO_NAMES } from '../../shared/economy.ts';
 import type { V3 } from '../../shared/math/vec.ts';
 import { segmentSphere } from '../../shared/sim/weapons.ts';
 import { MINE_WORK, ROCK_REGEN, rockGood, rockUnits } from '../../shared/ships/hulls.ts';
@@ -64,7 +65,7 @@ export class AsteroidMining {
     const ev = { t: 'mine' as const, pos: [pos.x, pos.y, pos.z] as [number, number, number], by: s.ship.id, good: undefined as typeof good | undefined };
     this.sys.events.push(ev);
     const p = s.pilot;
-    if (cargoCount(p.cargo) >= combatStats(p.upgrades, p.ship).cargoCap) return this.tell(s, 'Трюм полон — пора на станцию');
+    if (holdRoom(p) <= 0) return this.tell(s, 'Трюм полон — пора на станцию');
     if (this.left(hit.field, hit.rock) <= 0) return this.tell(s, 'Астероид выработан, ищите другой');
     let w = this.work.get(s);
     if (!w || w.key !== key) { w = { key, w: 0 }; this.work.set(s, w); }

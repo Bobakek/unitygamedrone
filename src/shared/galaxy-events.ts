@@ -3,7 +3,7 @@ import { CARGO_KEYS, CARGO_NAMES, PRICES, type CargoKey } from './economy.ts';
 import { getGalaxy, jumpsFrom } from './galaxy/galaxy.ts';
 import { getSystem } from './galaxy/system-gen.ts';
 import { hashInts, Rng } from './math/rng.ts';
-import type { ContractDef } from './contracts.ts';
+import { freightOffer, type ContractDef } from './contracts.ts';
 
 /**
  * Galaxy events: a pirate raid on a station, a meteor storm, a shortage of a good. They are
@@ -147,6 +147,9 @@ export function eventOffers(sysId: number, events: readonly GalaxyEvent[]): Cont
           desc: `Пираты атакуют станцию ${here.station.name}. Собьите 4 налётчика у станции или где угодно в системе. Федерация платит втрое.`,
           reward: { credits: 950, xp: 160, rep: 10 }, side: { pirate: -6 },
         });
+      } else if (jumps === 2 || jumps === 3) {
+        // farther away the guild sends urgent freight: spare parts for the station
+        out.push({ ...freightOffer(sysId, e.system, 2, id('frt'), { urgent: true, reason: `Станцию ${at.station.name} громят пираты, ей срочно нужны запчасти.` }), event: 'raid' });
       } else if (jumps === 1) {
         out.push({
           id: id('fix'), kind: 'deliver', faction: 'guild', tier: 1, system: e.system, cargo: 'ore', need: 8, event: 'raid',
@@ -179,6 +182,8 @@ export function eventOffers(sysId: number, events: readonly GalaxyEvent[]): Cont
           desc: `На станции ${at.station.name} (${jumps === 1 ? 'соседняя система' : '2 прыжка'}) кончились ${name}. Довезите ×${need}, маршрут на карте M.`,
           reward: { credits: round10((need * PRICES[g] * 3 + 150) * (1 + 0.5 * (jumps - 1))), xp: 160, rep: 10 },
         });
+      } else if (jumps === 3 || jumps === 4) {
+        out.push({ ...freightOffer(sysId, e.system, 2, id('frt'), { urgent: true, reason: `На станции ${at.station.name} кончились ${name}, гильдия везёт замену.` }), event: 'shortage' });
       }
     }
   }

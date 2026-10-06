@@ -1,6 +1,7 @@
 import { getGalaxy, jumpsFrom, route, SECURITY_COLORS, SECURITY_NAMES } from '../../shared/galaxy/galaxy.ts';
 import { getSystem } from '../../shared/galaxy/system-gen.ts';
 import { EVENT_ICONS, eventText, eventTitle, type GalaxyEventInfo } from '../../shared/galaxy-events.ts';
+import { JUMP_RANGE, jumpCost, jumpDistance } from '../../shared/jump.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
 const SVG = 'http://www.w3.org/2000/svg';
@@ -11,7 +12,8 @@ const jumpsText = (n: number) => (n === 1 ? '1 прыжок' : n >= 2 && n <= 4 
 /**
  * Galaxy map (M): stars, jump lanes, the security zones, where the pilot is and
  * their contract targets. Clicking a star selects it; "Проложить маршрут" makes
- * the next gate of the route a navigation point.
+ * the next gate of the route a navigation point; a star within the dashed circle
+ * can be jumped to directly with the jump drive, coming out at its station or a planet.
  */
 export class GalaxyMap {
   private el = $('#galaxy');
@@ -23,7 +25,15 @@ export class GalaxyMap {
   private goals = new Set<number>();
   private events: GalaxyEventInfo[] = [];
   private eventsAt = 0;
+  private fuel = 0;
+  private tank = 0;
+  /** System the drive is charging for (null: idle). */
+  private charging: number | null = null;
+  /** Where to come out of a jump: the station (-1) or a planet index. */
+  private arrive = -1;
   onRoute: (to: number | null) => void = () => {};
+  onJump: (system: number, target: number) => void = () => {};
+  onCancelJump: () => void = () => {};
 
   constructor() {
     const g = getGalaxy();
@@ -34,11 +44,26 @@ export class GalaxyMap {
     this.el.addEventListener('click', (e) => {
       const t = e.target as Element;
       const star = t.closest('[data-star]');
-      if (star) { this.selected = Number(star.getAttribute('data-star')); this.render(); return; }
+      if (star) { this.selected = Number(star.getAttribute('data-star')); this.arrive = -1; this.render(); return; }
       const b = t.closest<HTMLElement>('button');
+      if (b?.dataset.jump === 'go' && this.selected >= 0) { this.onJump(this.selected, this.arrive); return; }
+      if (b?.dataset.jump === 'cancel') { this.onCancelJump(); return; }
       if (b?.dataset.route === 'set' && this.selected >= 0) { this.routeTo = this.selected === this.here ? null : this.selected; this.onRoute(this.routeTo); this.render(); }
       else if (b?.dataset.route === 'clear') { this.routeTo = null; this.onRoute(null); this.render(); }
     });
+    this.el.addEventListener('change', (e) => {
+      const t = e.target as HTMLSelectElement;
+      if (t.classList.contains('gx-arrive')) this.arrive = Number(t.value);
+    });
+  }
+
+  /** Fuel in the tank, the tank size and the jump being charged. */
+  setDrive(fuel: number, tank: number, charging: number | null) {
+    if (fuel === this.fuel && tank === this.tank && charging === this.charging) return;
+    this.fuel = fuel;
+    this.tank = tank;
+    this.charging = charging;
+    if (this.open) this.render();
   }
 
   get open(): boolean {
@@ -91,6 +116,8 @@ export class GalaxyMap {
       parent.appendChild(e);
       return e;
     };
+    const me = g.stars[this.here];
+    el('circle', { cx: me.x, cy: me.y, r: JUMP_RANGE, class: 'gx-range' });
     for (const [a, b] of g.lanes) {
       const A = g.stars[a], B = g.stars[b], hot = onPath.has(`${a}-${b}`);
       el('line', { x1: A.x, y1: A.y, x2: B.x, y2: B.y, class: hot ? 'gx-lane hot' : 'gx-lane' });
@@ -135,6 +162,24 @@ export class GalaxyMap {
     const news = this.events.length
       ? `<div class="gx-news"><b>События в галактике</b>${this.events.map((e) => `<p>${EVENT_ICONS[e.kind]} ${eventTitle(e)}: ${g.stars[e.system].name} · ${jumpsText(jumpsFrom(this.here)[e.system]).replace(/^0 прыжков$/, 'здесь')}</p>`).join('')}</div>`
       : '';
-    this.info.innerHTML = lines.join('') + `<div class="gx-buttons">${buttons.join('')}</div>` + news;
+    this.info.innerHTML = lines.join('') + `<div class="gx-buttons">${buttons.join('')}</div>` + this.driveHtml(id) + news;
+  }
+
+  /** The jump drive part of the side panel for the selected star. */
+  private driveHtml(id: number): string {
+    const head = `<h3>Прыжковый двигатель</h3><p>Топливо: ${this.fuel}/${this.tank}</p>`;
+    if (this.charging !== null) {
+      return `${head}<p class="gx-route">Заряжается: прыжок в ${getGalaxy().stars[this.charging].name}</p><div class="gx-buttons"><button data-jump="cancel">Отменить прыжок</button></div>`;
+    }
+    if (id === this.here) return `${head}<p class="gx-dim">Выберите звезду внутри пунктирного круга.</p>`;
+    const ly = jumpDistance(this.here, id), cost = jumpCost(this.here, id);
+    if (cost < 0) return `${head}<p class="gx-dim">${ly.toFixed(1)} св. лет — дальше, чем ${JUMP_RANGE}: только через врата.</p>`;
+    const sys = getSystem(id);
+    const options = [`<option value="-1">Станция ${sys.station.name}</option>`, ...sys.planets.map((p) => `<option value="${p.index}"${p.index === this.arrive ? ' selected' : ''}>Планета ${p.name}</option>`)];
+    const short = this.fuel < cost;
+    return `${head}<p>${ly.toFixed(1)} св. лет · нужно топлива: <b${short ? ' class="gx-bad"' : ''}>${cost}</b></p>` +
+      `<label class="gx-label">Выход у <select class="gx-arrive">${options.join('')}</select></label>` +
+      `<div class="gx-buttons"><button class="primary" data-jump="go" ${short ? 'disabled' : ''}>${short ? 'Не хватает топлива' : 'Прыгнуть'}</button></div>` +
+      `<p class="gx-dim">Зарядка 10 с в открытом космосе, попадание её сбивает. Выход в 3–6 км от цели.</p>`;
   }
 }
