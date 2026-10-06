@@ -1,7 +1,7 @@
 import type { CharInput, CharState } from '../sim/character.ts';
 import type { ShipInput, ShipState } from '../sim/ship.ts';
 import type { Blueprint } from '../ships/blueprint.ts';
-import type { Cargo, Upgrades } from '../economy.ts';
+import type { Cargo, CargoKey, Upgrades } from '../economy.ts';
 import type { Outfit } from '../outfit.ts';
 import type { Career, ContractDef } from '../contracts.ts';
 import type { WeatherKind } from '../weather.ts';
@@ -9,7 +9,7 @@ import { Reader, Writer } from './buffer.ts';
 
 export const MSG = {
   HELLO: 1, INPUT: 2, ACTION: 3, CHAT: 4, PING: 5,
-  WELCOME: 20, SNAPSHOT: 21, INFO: 22, GONE: 23, SHOTS: 24, EVENTS: 25, PILOT: 26, PONG: 27, ERROR: 28, WORLD: 29, BOARD: 30,
+  WELCOME: 20, SNAPSHOT: 21, INFO: 22, GONE: 23, SHOTS: 24, EVENTS: 25, PILOT: 26, PONG: 27, ERROR: 28, WORLD: 29, BOARD: 30, MARKET: 31, GROUP: 32,
 } as const;
 
 export const KIND = { SHIP: 1, CHAR: 2, MISSILE: 3, LOOT: 4, CREATURE: 5 } as const;
@@ -43,6 +43,12 @@ export interface PilotInfo {
   /** Experience, reputation and contracts. */
   career: Career;
 }
+/** A member of the pilot's group; `pos` (world) only for members in the same system. */
+export interface GroupMember {
+  id: number; name: string; system: number; mode: number; hull: number; leader: boolean; pos?: [number, number, number];
+}
+/** The pilot's group (`members` is empty when not in one) and a pending invitation. */
+export interface GroupMsg { members: GroupMember[]; invite?: { from: string } }
 /** The station contract board (sent while docked); `next` = ms until it is refreshed. */
 export interface BoardMsg { system: number; offers: ContractDef[]; next: number }
 /** `look` (pilots on foot): outfit code, see outfit.ts lookCode; `wanted`: a player ship wanted by the Federation. */
@@ -79,12 +85,16 @@ export type GameEvent =
 export type Action =
   | { a: 'exit' } | { a: 'board' } | { a: 'dock' } | { a: 'undock' } | { a: 'jump' }
   | { a: 'harvest'; node: number }
-  | { a: 'sell' } | { a: 'repair' } | { a: 'buyMissiles' } | { a: 'upgrade'; key: string }
+  /** Sell `n` of `key` (all of it without `n`, the whole hold without `key`), buy `n` of `key`. */
+  | { a: 'sell'; key?: CargoKey; n?: number } | { a: 'buy'; key: CargoKey; n: number } | { a: 'repair' } | { a: 'buyMissiles' } | { a: 'upgrade'; key: string }
   | { a: 'missile'; target: number } | { a: 'respawn' }
   | { a: 'salvage'; id: number } | { a: 'sample'; id: number }
   | { a: 'buyItem'; id: string } | { a: 'equip'; id: string }
   | { a: 'takeContract'; id: string } | { a: 'dropContract'; id: string }
-  | { a: 'disembark' };
+  | { a: 'disembark' }
+  /** Groups: invite a pilot (by name or by the id of their ship / pilot entity), answer, leave, expel. */
+  | { a: 'groupInvite'; name?: string; entity?: number } | { a: 'groupAnswer'; yes: boolean }
+  | { a: 'groupLeave' } | { a: 'groupKick'; name: string };
 
 export function encodeJson(type: number, payload: unknown): Uint8Array {
   const body = new TextEncoder().encode(JSON.stringify(payload));

@@ -4,7 +4,7 @@ import { defaultUpgrades, flightStats } from '../shared/economy.ts';
 import { getSystem, type PlanetDef, type SystemDef } from '../shared/galaxy/system-gen.ts';
 import { FWD, qlook, qrot, quat, v3, vcross, vdist, vlen, vnorm, vsub, type Quat, type V3 } from '../shared/math/vec.ts';
 import {
-  aimPitch, BLASTER_LEVEL, DRONE_LEVEL, DECK_FRAME, CFLAG, EFLAG, IFLAG, KIND, MODE, type EntityInfo, type EntityState, type GameEvent, type PilotInfo, type SelfState, type Shot, type Snapshot, type Welcome,
+  aimPitch, BLASTER_LEVEL, DRONE_LEVEL, DECK_FRAME, CFLAG, EFLAG, IFLAG, KIND, MODE, type EntityInfo, type EntityState, type GameEvent, type GroupMsg, type PilotInfo, type SelfState, type Shot, type Snapshot, type Welcome,
 } from '../shared/net/protocol.ts';
 import { heightAt, liquidOf, surfaceHeight, waterColors } from '../shared/planet/terrain.ts';
 import { resourceNode } from '../shared/planet/resources.ts';
@@ -76,7 +76,7 @@ interface Remote {
 }
 
 /** `site`: a point on a planet (body frame) the marker follows as the planet turns. */
-interface NavItem { name: string; pos: V3; kind: 'planet' | 'station' | 'gate' | 'event' | 'goal'; radius: number; ship?: number; site?: { planet: number; p: V3 } }
+interface NavItem { name: string; pos: V3; kind: 'planet' | 'station' | 'gate' | 'event' | 'goal' | 'ally'; radius: number; ship?: number; site?: { planet: number; p: V3 } }
 
 const RESOURCE_NAMES = { ore: 'руда', crystal: 'кристалл', relic: 'реликт' } as const;
 const DUST: Record<string, string> = { terran: '#9a8a6a', ocean: '#b0a080', alien: '#c090d0', desert: '#d9a060', ice: '#e8f4ff', lava: '#5a4a4a', barren: '#9a948e' };
@@ -168,6 +168,9 @@ export class Game {
   private locked = false;
   private navIndex = 0;
   private navItems: NavItem[] = [];
+  /** The pilot's group and the session ids of the other members. */
+  private group: GroupMsg = { members: [] };
+  private allies = new Set<number>();
   private baseNav: NavItem[] = [];
   /** Active world events (convoys, wrecks, anomalies) and their scene views. */
   private pois: Poi[] = [];
@@ -233,6 +236,10 @@ export class Game {
     this.hud.onContracts = () => { if (this.pilot) this.contracts.show(this.pilot); };
     this.contracts.onAction = (a) => { this.conn.action(a); this.sfx.beep(); };
     this.hud.onTyping = (t) => { this.input.typing = t; };
+    this.hud.onGroup = (w) => {
+      this.conn.action(w === 'leave' ? { a: 'groupLeave' } : { a: 'groupAnswer', yes: w === 'yes' });
+      this.sfx.beep();
+    };
 
     const handlers: NetHandlers = {
       welcome: (w) => this.onWelcome(w),
@@ -244,6 +251,8 @@ export class Game {
       pilot: (p) => this.setPilot(p),
       world: (p) => this.onWorld(p),
       board: (b) => this.contracts.setBoard(b),
+      market: (m) => this.hud.setMarket(m),
+      group: (g) => this.onGroup(g),
       error: (m) => this.onFatal(m),
       closed: () => this.onFatal('Соединение с сервером потеряно'),
     };
@@ -382,6 +391,11 @@ export class Game {
       ...this.pois.map((p) => ({ name: p.kind === 'convoy' ? p.name : `${POI_LABEL[p.kind]}: ${p.name.replace(/^(Обломки|Аномалия) /, '')}`, pos: v3(p.pos[0], p.pos[1], p.pos[2]), kind: 'event' as const, radius: 0, ship: p.ship })),
     ];
     this.navItems.push(...this.goalNav());
+    // group mates in this system
+    for (const m of this.group.members) {
+      if (m.id === this.welcome?.playerId || !m.pos || m.system !== this.sys?.id) continue;
+      this.navItems.push({ name: `Группа: ${m.name}`, pos: v3(m.pos[0], m.pos[1], m.pos[2]), kind: 'ally', radius: 0 });
+    }
     const i = this.navItems.findIndex((n) => n.name === cur);
     this.navIndex = i >= 0 ? i : Math.min(this.navIndex, this.navItems.length - 1);
   }
@@ -410,6 +424,45 @@ export class Game {
       else if (c.kind === 'supply' || c.kind === 'deliver') out.push({ name: `${name}${sys.station.name}`, pos: sys.station.pos, kind: 'goal', radius: 0 });
     }
     return out;
+  }
+
+  private onGroup(g: GroupMsg) {
+    const was = this.group.members.length;
+    this.group = g;
+    const me = this.welcome?.playerId;
+    this.allies = new Set(g.members.filter((m) => m.id !== me).map((m) => m.id));
+    if (!was && g.members.length) this.hud.toast('Вы в группе: союзники отмечены зелёным, награды делятся', 'good');
+    this.rebuildNav();
+    this.renderGroup();
+  }
+
+  /** The group panel: each member's whereabouts and hull. */
+  private renderGroup() {
+    const me = this.welcome?.playerId;
+    const here = this.shipW.p;
+    const where = (m: GroupMsg['members'][number]) => {
+      if (m.system !== this.sys?.id) return getSystem(m.system).name;
+      if (m.mode === MODE.DEAD) return 'сбит';
+      if (m.mode === MODE.DOCKED || m.mode === MODE.DECK) return 'на станции';
+      if (m.id === me || !m.pos) return m.mode === MODE.FOOT ? 'пешком' : '';
+      return this.fmtDist(vdist(v3(m.pos[0], m.pos[1], m.pos[2]), this.lastMode === MODE.FOOT ? this.charPos : here));
+    };
+    this.hud.group(this.group.members.map((m) => ({ name: m.id === me ? `${m.name} (вы)` : m.name, leader: m.leader, where: where(m), hull: m.hull })), this.group.invite?.from ?? null);
+  }
+
+  /** Invites the targeted pilot, or the one standing next to us. */
+  private inviteNearby() {
+    const t = this.targetId ? this.remotes.get(this.targetId) : undefined;
+    if (t?.info && !t.info.npc && t.info.kind === KIND.SHIP && t.info.owner) { this.conn.action({ a: 'groupInvite', entity: this.targetId }); return; }
+    const me = this.lastMode === MODE.FOOT || this.lastMode === MODE.DECK ? this.charPos : this.shipW.p;
+    let best = 0, bd = 40;
+    for (const [id, r] of this.remotes) {
+      if (!r.visible || !r.info || r.info.npc || !r.info.owner || (r.info.kind !== KIND.CHAR && r.info.kind !== KIND.SHIP)) continue;
+      const d = vdist(r.p, me);
+      if (d < bd) { bd = d; best = id; }
+    }
+    if (best) this.conn.action({ a: 'groupInvite', entity: best });
+    else this.hud.toast('Выберите пилота целью (T) или подойдите к нему. Можно и в чате: /invite имя', 'warn');
   }
 
   private onWorld(list: Poi[]) {
@@ -865,6 +918,13 @@ export class Game {
     }
     if (i.hit('Tab')) this.navIndex = (this.navIndex + 1) % Math.max(1, this.navItems.length);
     if (i.hit('KeyT')) this.pickTarget();
+    if (i.hit('KeyP')) this.inviteNearby();
+    const yes = i.hit('KeyY'), no = i.hit('KeyN');
+    if (this.group.invite && (yes || no)) {
+      this.conn.action({ a: 'groupAnswer', yes });
+      this.group.invite = undefined;
+      this.renderGroup();
+    }
     if (i.hit('KeyG')) {
       if (mode === MODE.SHIP && this.pred.ship.landed) this.conn.action({ a: 'exit' });
       else if (mode === MODE.FOOT || mode === MODE.DECK) this.conn.action({ a: 'board' });
@@ -1685,6 +1745,7 @@ export class Game {
     const labels: LabelData[] = [];
     const blips: Blip[] = [];
     const rel = (p: V3) => tv.set(p.x - me.x, p.y - me.y, p.z - me.z).applyQuaternion(invCam);
+    const seenAllies = new Set<number>();
     for (const [id, r] of this.remotes) {
       if (!r.visible || !r.info) continue;
       const d = vdist(r.p, me);
@@ -1701,13 +1762,21 @@ export class Game {
         }
         continue;
       }
-      blips.push({ x: c.x, y: c.y, z: c.z, kind: r.info.npc ? 'npc' : 'player', sel: id === this.targetId });
+      const ally = !!r.info.owner && this.allies.has(r.info.owner);
+      if (ally) seenAllies.add(r.info.owner!);
+      blips.push({ x: c.x, y: c.y, z: c.z, kind: r.info.npc ? 'npc' : ally ? 'ally' : 'player', sel: id === this.targetId });
       if (d < 4000 && (mode !== MODE.DOCKED || r.info.kind === KIND.CHAR)) {
         const sp = this.project(v3(r.p.x, r.p.y, r.p.z));
         const said = r.info.kind === KIND.CHAR ? this.bubbles.get(r.info.name) : undefined;
         const bubble = said && said.until > this.time && d < 60 ? said.text : undefined;
-        if (!sp.behind) labels.push({ id, x: sp.x, y: sp.y - (r.info.kind === KIND.CHAR ? 46 : 18), text: r.info.wanted ? `${r.info.name} · РАЗЫСКИВАЕТСЯ` : r.info.name, sub: this.fmtDist(d), npc: !!r.info.npc || !!r.info.wanted, hull: r.state?.hull ?? 1, bubble });
+        if (!sp.behind) labels.push({ id, x: sp.x, y: sp.y - (r.info.kind === KIND.CHAR ? 46 : 18), text: r.info.wanted ? `${r.info.name} · РАЗЫСКИВАЕТСЯ` : r.info.name, sub: this.fmtDist(d), npc: !ally && (!!r.info.npc || !!r.info.wanted), hull: r.state?.hull ?? 1, bubble, ally });
       }
+    }
+    // group mates out of view: where the server last saw them
+    for (const m of this.group.members) {
+      if (!this.allies.has(m.id) || seenAllies.has(m.id) || !m.pos || m.system !== sys.id) continue;
+      const ac = rel(v3(m.pos[0], m.pos[1], m.pos[2]));
+      blips.push({ x: ac.x, y: ac.y, z: ac.z, kind: 'ally' });
     }
     for (const p of this.pois) { const pc = rel(v3(p.pos[0], p.pos[1], p.pos[2])); blips.push({ x: pc.x, y: pc.y, z: pc.z, kind: 'poi' }); }
     for (const n of this.navItems) if (n.kind === 'goal') { const gc = rel(n.pos); blips.push({ x: gc.x, y: gc.y, z: gc.z, kind: 'goal' }); }

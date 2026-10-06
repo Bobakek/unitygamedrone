@@ -20,3 +20,4 @@ export * from './sim/character.ts';
 export * from './sim/weapons.ts';
 export * from './ships/blueprint.ts';
 export * from './net/protocol.ts';
+export * from './market.ts';

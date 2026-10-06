@@ -27,6 +27,12 @@
         <div class="pp-row pp-sky hidden"><span>Погода</span><b class="pp-forecast"></b></div>
         <div class="pp-row"><span>Звание</span><b class="pp-rank"></b></div>
         <div class="pp-tasks"></div>
+        <div id="group-panel" class="hidden">
+          <div class="gp-title">Группа <small>/g — чат группы</small></div>
+          <div class="gp-list"></div>
+          <div class="gp-invite hidden"><span></span><button data-g="yes">Принять <kbd>Y</kbd></button><button data-g="no" class="ghost">Нет <kbd>N</kbd></button></div>
+          <button class="gp-leave ghost" data-g="leave">Выйти из группы</button>
+        </div>
       </div>
 
       <div id="nav-panel" class="panel"><div class="np-title">Навигация <small>Tab</small></div><div class="np-list"></div></div>
@@ -64,7 +70,7 @@
           <section>
             <h3>Торговля</h3>
             <div class="st-cargo"></div>
-            <button data-act="sell">Продать груз</button>
+            <button data-act="sell">Продать весь груз</button>
             <button data-act="repair">Ремонт корпуса</button>
             <button data-act="buyMissiles">Докупить ракеты</button>
             <button data-act="contracts" class="st-contracts">Контракты</button>
@@ -75,6 +81,11 @@
             <div class="st-upgrades"></div>
           </section>
         </div>
+        <section class="st-market">
+          <h3>Рынок <small class="mk-next"></small></h3>
+          <div class="mk-table"></div>
+          <p class="mk-hint">Каждая система платит за товар по-своему: где его много — дёшево, где мало — дорого. Станция продаёт то, чем богата её система. Продажа сбивает цену, покупка поднимает; со временем цены возвращаются.</p>
+        </section>
         <div class="st-actions">
           <button data-act="disembark" class="st-disembark">Выйти на станцию <kbd>G</kbd></button>
           <button data-act="close-station" class="st-close">Закрыть</button>
@@ -150,6 +161,7 @@
             <p><kbd>Shift</kbd> форсаж, <kbd>J</kbd> круиз</p>
             <p><kbd>ЛКМ</kbd> лазеры, <kbd>ПКМ</kbd> держать — захват ракеты</p>
             <p><kbd>T</kbd> цель, <kbd>Tab</kbd> навигация</p>
+            <p><kbd>P</kbd> позвать пилота-цель (или того, кто рядом) в группу; <kbd>Y</kbd>/<kbd>N</kbd> ответить на приглашение</p>
             <p><kbd>F</kbd> стыковка / прыжок во вратах / разбор обломков</p>
           </div>
           <div>
@@ -167,6 +179,7 @@
             <p><kbd>F</kbd> собрать ресурс / тайник / биообразцы</p>
             <h3>Прочее</h3>
             <p><kbd>Enter</kbd> чат, <kbd>H</kbd> эта справка, <kbd>O</kbd> настройки, <kbd>Z</kbd> освободить мышь</p>
+            <p>Группа: <kbd>/invite имя</kbd>, <kbd>/leave</kbd>, <kbd>/kick имя</kbd>, <kbd>/g текст</kbd>. В группе нет урона по своим, награды и зачёт контрактов за убийства делятся с теми, кто рядом (+15 % за каждого)</p>
           </div>
         </div>
         <p class="help-hint">Продавайте ресурсы и получайте награды за пиратов на станции, покупайте улучшения. Контракты дают опыт (звания) и репутацию у Федерации, Гильдии старателей и Синдиката — она открывает снаряжение в гардеробе.</p>
