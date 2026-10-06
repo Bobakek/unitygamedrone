@@ -19,6 +19,8 @@ import { SystemInstance, type GameContext } from './system.ts';
 import { Groups } from './groups.ts';
 import { marketQuote, type MarketQuote } from '../../shared/market.ts';
 import type { V3 } from '../../shared/math/vec.ts';
+import { CARGO_KEYS, type CargoKey } from '../../shared/economy.ts';
+import { eventInfo, eventPriceMods, galaxyEventsAt, GALAXY_EVENT_KINDS, type GalaxyEvent, type GalaxyEventKind } from '../../shared/galaxy-events.ts';
 
 export interface GameOptions {
   store: PilotStorage;
@@ -55,6 +57,10 @@ export class Game implements GameContext {
   private log: (m: string) => void;
   readonly now: () => number;
   readonly groups = new Groups(this);
+  /** Events started by the dev command, on top of the scheduled ones. */
+  private forced: GalaxyEvent[] = [];
+  private eventsKey = '';
+  private eventsCache: { at: number; list: GalaxyEvent[] } = { at: -1, list: [] };
 
   constructor(opts: GameOptions) {
     this.store = opts.store;
@@ -95,10 +101,39 @@ export class Game implements GameContext {
     return !!p && p.kind === 'convoy' && !!p.ship;
   }
 
+  /** Galaxy events going on now (scheduled from the wall clock, plus dev ones). */
+  galaxyEvents(): GalaxyEvent[] {
+    const now = this.now();
+    // the schedule is pure but not free: work it out at most twice a second
+    const at = Math.floor(now / 500);
+    if (this.eventsCache.at !== at) {
+      this.forced = this.forced.filter((e) => e.end > now);
+      const list = galaxyEventsAt(now).filter((e) => !this.forced.some((f) => f.system === e.system));
+      this.eventsCache = { at, list: [...list, ...this.forced] };
+    }
+    return this.eventsCache.list;
+  }
+
+  private galaxyMsg(fresh?: number[]) {
+    const now = this.now();
+    return { t: 'galaxy' as const, list: this.galaxyEvents().map((e) => eventInfo(e, now)), fresh };
+  }
+
+  /** Tells every pilot when events begin or end. */
+  private stepGalaxy() {
+    const list = this.galaxyEvents();
+    const key = list.map((e) => e.id).join(',');
+    if (key === this.eventsKey) return;
+    const old = new Set(this.eventsKey.split(',').filter(Boolean).map(Number));
+    this.eventsKey = key;
+    const data = encodeJson(MSG.EVENTS, { ev: [this.galaxyMsg(list.filter((e) => !old.has(e.id)).map((e) => e.id))] });
+    for (const s of this.sessions.values()) s.send(data);
+  }
+
   quotes(systems: number[]): MarketQuote[] {
     // a system without a running instance has seen no trade: its plain prices
     return systems.filter((i) => i >= 0 && i < SYSTEM_COUNT)
-      .map((i) => this.systems.find((x) => x.def.id === i)?.market.quote() ?? marketQuote(i, boardEpoch(this.now())));
+      .map((i) => this.systems.find((x) => x.def.id === i)?.market.quote() ?? marketQuote(i, boardEpoch(this.now()), {}, eventPriceMods(i, this.galaxyEvents())));
   }
 
   crew(s: Session, at: V3, range: number): Session[] {
@@ -188,6 +223,7 @@ export class Game implements GameContext {
     s.sendJson(MSG.WELCOME, w);
     s.sendJson(MSG.INFO, { list: s.system.allInfos() });
     s.sendJson(MSG.WORLD, { pois: s.system.world.list() });
+    s.sendJson(MSG.EVENTS, { ev: [this.galaxyMsg()] });
     const ov = s.system.weather.activeOverrides();
     if (ov.length) s.sendJson(MSG.EVENTS, { ev: ov.map((o) => ({ t: 'weather', ...o })) });
   }
@@ -266,7 +302,7 @@ export class Game implements GameContext {
       case 'group': s.msg(this.groups.list(s)); return;
       case 'g': case 'p': { const t = args.join(' ').trim(); if (t) this.groups.say(s, t); return; }
       case 'help':
-        s.msg('Команды: /who, /help, группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|rock|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|cabin|shelf|window|ramp>, /trophies, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /cargo <вид> <n>, /ship <fighter|hauler|miner>' : ''));
+        s.msg('Команды: /who, /help, группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|rock|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /gevent <raid|storm|shortage|end> [товар] [мин], /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|cabin|shelf|window|ramp>, /trophies, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /cargo <вид> <n>, /ship <fighter|hauler|miner>' : ''));
         return;
       case 'who':
         s.msg(`Онлайн (${this.sessions.size}): ${[...this.sessions.values()].map((o) => o.pilot.name).join(', ')}`);
@@ -420,8 +456,25 @@ export class Game implements GameContext {
         s.msg(sys.world.devSpawn(kind, s.ship));
         break;
       }
+      case 'gevent': s.msg(this.devGalaxyEvent(sys.def.id, args)); break;
       default: s.msg('Неизвестная команда', 'warn');
     }
+  }
+
+  /** Dev: starts a galaxy event in a system right now (or ends the dev ones there). */
+  devGalaxyEvent(system: number, args: string[]): string {
+    const kind = args[0] as GalaxyEventKind | 'end';
+    const now = this.now();
+    this.eventsCache.at = -1;
+    if (kind === 'end') { this.forced = this.forced.filter((e) => e.system !== system); return 'События сняты'; }
+    if (!GALAXY_EVENT_KINDS.includes(kind)) return `/gevent ${GALAXY_EVENT_KINDS.join('|')}|end [${CARGO_KEYS.join('|')}] [минут]`;
+    const good = CARGO_KEYS.includes(args[1] as CargoKey) ? args[1] as CargoKey : undefined;
+    const minutes = Number(args[good ? 2 : 1]) || 10;
+    this.forced = this.forced.filter((e) => e.system !== system);
+    const e: GalaxyEvent = { id: -this.nextId(), kind, system, start: now, end: now + minutes * 60000 };
+    if (kind === 'shortage') e.good = good ?? 'crystal';
+    this.forced.push(e);
+    return `Событие запущено на ${minutes} мин`;
   }
 
   private jump(s: Session) {
@@ -455,7 +508,7 @@ export class Game implements GameContext {
       if (!this.asleep(sys)) sys.step();
     }
     for (const sys of this.instances.values()) this.flush(sys);
-    if (this.tick % TICK_RATE === 0) this.groups.step();
+    if (this.tick % TICK_RATE === 0) { this.groups.step(); this.stepGalaxy(); }
     for (const s of this.sessions.values()) {
       if (this.time - s.lastSave > 30) { s.lastSave = this.time; this.store.save(s.pilot); }
     }

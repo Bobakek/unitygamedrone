@@ -3,6 +3,7 @@ import {
 } from '../../shared/economy.ts';
 import type { Action, PilotInfo } from '../../shared/net/protocol.ts';
 import type { MarketMsg } from '../../shared/market.ts';
+import { EVENT_ICONS, eventText, eventTitle, type GalaxyEventInfo } from '../../shared/galaxy-events.ts';
 import { getSystem } from '../../shared/galaxy/system-gen.ts';
 import { FACTION_COLORS, objectiveText, RANKS, rankOf } from '../../shared/contracts.ts';
 import { HULL_KEYS, HULLS, type HullKey } from '../../shared/ships/hulls.ts';
@@ -36,6 +37,8 @@ export class Hud {
   private chatLog = $('#chat-log');
   private lastPilot: PilotInfo | null = null;
   private market: MarketMsg | null = null;
+  private galaxyEvents: GalaxyEventInfo[] = [];
+  private galaxyAt = 0;
   private marketAt = 0;
   private groupEl = $('#group-panel');
   onChat: (text: string) => void = () => {};
@@ -301,6 +304,23 @@ export class Hud {
     if (invite) $('span', inv).textContent = `${invite} зовёт вас в группу`;
   }
 
+  setGalaxyEvents(list: GalaxyEventInfo[]) {
+    this.galaxyEvents = list;
+    this.galaxyAt = performance.now();
+    if (!this.station.classList.contains('hidden') && this.lastPilot) this.renderMarket(this.lastPilot);
+  }
+
+  /** Events that move the prices here or at the neighbours shown in the table. */
+  private renderNews(m: MarketMsg) {
+    const shown = new Set([m.here.system, ...m.others.map((o) => o.system)]);
+    const near = this.galaxyEvents.filter((e) => shown.has(e.system));
+    $('.mk-news').innerHTML = near.map((e) => {
+      const min = Math.max(1, Math.ceil((e.left - (performance.now() - this.galaxyAt)) / 60000));
+      const where = e.system === m.here.system ? 'здесь' : getSystem(e.system).name;
+      return `<div class="mk-ev${e.system === m.here.system ? ' here' : ''}">${EVENT_ICONS[e.kind]} <b>${esc(eventTitle(e))}</b> · ${esc(where)}<small>ещё ${min} мин</small><br>${esc(eventText(e))}</div>`;
+    }).join('');
+  }
+
   setMarket(m: MarketMsg) {
     this.market = m;
     this.marketAt = performance.now();
@@ -312,6 +332,7 @@ export class Hud {
     const m = this.market;
     const box = $('.mk-table');
     if (!m) { box.innerHTML = '<p class="mk-hint">Загрузка цен…</p>'; return; }
+    this.renderNews(m);
     const room = combatStats(p.upgrades, p.ship).cargoCap - cargoCount(p.cargo);
     const left = Math.max(0, m.next - (performance.now() - this.marketAt));
     $('.mk-next').textContent = `· цены сменятся через ${Math.max(1, Math.ceil(left / 60000))} мин`;

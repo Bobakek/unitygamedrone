@@ -11,6 +11,7 @@ import { jumpsFrom } from './galaxy/galaxy.ts';
 import { SYSTEM_COUNT } from './constants.ts';
 import { hashInts, Rng } from './math/rng.ts';
 import { planetSites } from './planet/sites.ts';
+import { eventOffers, type GalaxyEvent, type GalaxyEventKind } from './galaxy-events.ts';
 import { clampRep, FACTION_SHORT, FACTIONS, PIRATE_FRIENDLY, REP, repLevel, WANTED_BELOW, type Faction } from './factions.ts';
 
 export * from './factions.ts';
@@ -62,6 +63,8 @@ export interface ContractDef {
   reward: ContractReward;
   /** Reputation change with other factions on completion. */
   side?: Partial<Record<Faction, number>>;
+  /** Put on the board by a galaxy event (urgent, better paid). */
+  event?: GalaxyEventKind;
 }
 export interface ActiveContract extends ContractDef { have: number }
 
@@ -224,8 +227,8 @@ export function interceptOffer(sysId: number, poi: Poi): ContractDef {
   };
 }
 
-/** The station board of a system for an epoch, plus interception offers for active convoys. */
-export function generateBoard(sysId: number, epoch: number, pois: readonly Poi[] = []): ContractDef[] {
+/** The station board of a system for an epoch, plus interception offers for active convoys and urgent offers from galaxy events. */
+export function generateBoard(sysId: number, epoch: number, pois: readonly Poi[] = [], events: readonly GalaxyEvent[] = []): ContractDef[] {
   const rng = new Rng(hashInts(getSystem(sysId).seed, epoch, 0xc0a7));
   const make = makers(sysId);
   const plan: [Faction, Exclude<ContractKind, 'intercept'>[]][] = [
@@ -254,6 +257,7 @@ export function generateBoard(sysId: number, epoch: number, pois: readonly Poi[]
     }
   });
   for (const p of pois) if (p.kind === 'convoy' && p.ship) out.push(interceptOffer(sysId, p));
+  out.push(...eventOffers(sysId, events));
   return out;
 }
 

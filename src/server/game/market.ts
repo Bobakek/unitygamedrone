@@ -1,6 +1,7 @@
 import { CARGO_KEYS, CARGO_NAMES, cargoCount, combatStats, type CargoKey } from '../../shared/economy.ts';
 import { boardEpoch, BOARD_EPOCH_MS } from '../../shared/contracts.ts';
 import { MARKET_HALF_LIFE, marketQuote, type MarketMsg, type MarketQuote } from '../../shared/market.ts';
+import { eventPriceMods } from '../../shared/galaxy-events.ts';
 import { MSG } from '../../shared/net/protocol.ts';
 import type { Session } from './session.ts';
 import type { SystemInstance } from './system.ts';
@@ -31,7 +32,7 @@ export class StationMarket {
 
   quote(): MarketQuote {
     this.decay();
-    return marketQuote(this.sys.def.id, boardEpoch(this.sys.now()), this.pressure);
+    return marketQuote(this.sys.def.id, boardEpoch(this.sys.now()), this.pressure, eventPriceMods(this.sys.def.id, this.sys.galaxyEvents()));
   }
 
   /** This station's prices and those of the systems its gates lead to. */

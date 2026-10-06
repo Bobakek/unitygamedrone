@@ -1,3 +1,4 @@
+import { EVENT_ICONS } from '../../shared/galaxy-events.ts';
 import {
   cannotTake, FACTION_COLORS, FACTION_NAMES, FACTION_SHORT, FACTIONS, KIND_NAMES, objectiveText, RANKS, rankOf, REP_NAMES, repLevel,
   rewardText, type ContractDef, type Faction,
@@ -94,8 +95,8 @@ export class ContractsUi {
 
   private card(o: ContractDef, foot: string, have?: number) {
     const prog = have !== undefined ? `<div class="ct-prog"><i style="width:${Math.min(100, (have / o.need) * 100)}%"></i></div>` : '';
-    return `<div class="ct-card" style="--fc:${FACTION_COLORS[o.faction]}">
-      <div class="ct-head"><span class="ct-fac">${FACTION_SHORT[o.faction]} · ${KIND_NAMES[o.kind]}</span><span class="ct-tier" title="Уровень ${o.tier}">${tierDots(o.tier)}</span></div>
+    return `<div class="ct-card${o.event ? ' urgent' : ''}" style="--fc:${FACTION_COLORS[o.faction]}">
+      <div class="ct-head"><span class="ct-fac">${o.event ? `<span class="ct-urgent">${EVENT_ICONS[o.event]} Срочно</span>` : ''}${FACTION_SHORT[o.faction]} · ${KIND_NAMES[o.kind]}</span><span class="ct-tier" title="Уровень ${o.tier}">${tierDots(o.tier)}</span></div>
       <div class="ct-name">${esc(o.title)}</div>
       <div class="ct-desc">${esc(o.desc)}</div>
       <div class="ct-obj">◆ ${esc(objectiveText(o, have ?? 0))}</div>${prog}
@@ -112,7 +113,8 @@ export class ContractsUi {
       const why = cannotTake(o, c);
       return why ? `<div class="ct-why">${esc(why)}</div>` : `<button data-take="${esc(o.id)}">Взять контракт</button>`;
     };
-    const legal = this.board.offers.filter((o) => o.faction !== 'pirate');
+    // urgent offers from galaxy events go first
+    const legal = this.board.offers.filter((o) => o.faction !== 'pirate').sort((a, b) => Number(!!b.event) - Number(!!a.event));
     const shady = this.board.offers.filter((o) => o.faction === 'pirate');
     return `<div class="ct-grid">${legal.map((o) => this.card(o, foot(o))).join('')}</div>
       <h3 class="ct-shady">Теневые предложения <small>— Синдикат «Чёрная звезда»</small></h3>

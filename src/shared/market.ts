@@ -101,12 +101,14 @@ export function marketDrift(system: number, epoch: number, k: CargoKey): number 
 /** Effect of recent trade: `pressure` = units sold minus units bought (decayed). */
 export const pressureFactor = (pressure: number) => Math.max(0.5, Math.min(1.5, 1 - MARKET_ELASTICITY * pressure));
 
-/** Current prices of a station. */
-export function marketQuote(system: number, epoch: number, pressure: Partial<Record<CargoKey, number>> = {}): MarketQuote {
+/** Current prices of a station; `mods` = multipliers from galaxy events (see galaxy-events.ts). */
+export function marketQuote(
+  system: number, epoch: number, pressure: Partial<Record<CargoKey, number>> = {}, mods: Partial<Record<CargoKey, number>> = {},
+): MarketQuote {
   const prof = marketProfile(system);
   const goods = {} as Record<CargoKey, Quote>;
   for (const k of CARGO_KEYS) {
-    const sell = Math.max(1, Math.round(PRICES[k] * prof.mult[k] * marketDrift(system, epoch, k) * pressureFactor(pressure[k] ?? 0)));
+    const sell = Math.max(1, Math.round(PRICES[k] * prof.mult[k] * marketDrift(system, epoch, k) * pressureFactor(pressure[k] ?? 0) * (mods[k] ?? 1)));
     goods[k] = prof.exports.includes(k) ? { sell, buy: Math.max(sell + 1, Math.round(sell * MARKET_SPREAD)) } : { sell };
   }
   return { system, goods };

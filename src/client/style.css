@@ -355,3 +355,20 @@ button.ghost:hover { color: var(--ink); border-color: var(--cyan); }
 .tr-item button { flex: none; padding: 4px 10px; font-size: 12px; }
 .tr-empty { color: var(--dim); font-size: 13px; line-height: 1.5; }
 .tr-close { margin-top: 14px; width: 100%; }
+
+/* galaxy events: news on the market, icons on the galaxy map, urgent contracts */
+.mk-news { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 8px; }
+.mk-news:empty { display: none; }
+.mk-ev { font-size: 12.5px; padding: 5px 8px; border-left: 3px solid #ffb347; background: rgba(255, 179, 71, 0.08); border-radius: 3px; }
+.mk-ev.here { border-color: #ff5a6a; background: rgba(255, 90, 106, 0.12); }
+.mk-ev b { color: #ffd59a; }
+.mk-ev small { color: var(--dim); margin-left: 4px; }
+.gx-ev { font-size: 3.2px; text-anchor: middle; pointer-events: none; }
+.gx-ev.raid { fill: #ff5a6a; }
+.gx-ev.storm { fill: #ffb347; }
+.gx-ev.shortage { fill: #5aa0ff; }
+.gx-event { color: #ffd59a; }
+.gx-news { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; font-size: 12px; }
+.gx-news p { margin: 3px 0; }
+.ct-card.urgent { box-shadow: 0 0 0 1px #ffb347 inset; }
+.ct-urgent { color: #ffb347; font-weight: 600; margin-right: 6px; }

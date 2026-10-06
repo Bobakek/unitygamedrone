@@ -61,6 +61,7 @@ import { wreckLog } from '../shared/planet/wreck-log.ts';
 import { POI_LABEL, SALVAGE_MAX_SPEED, SALVAGE_RANGE, type Poi } from '../shared/events.ts';
 import { getGalaxy, route, SECURITY_NAMES } from '../shared/galaxy/galaxy.ts';
 import { GalaxyMap } from './ui/galaxy-map.ts';
+import { EVENT_ICONS, eventText, eventTitle, type GalaxyEventInfo } from '../shared/galaxy-events.ts';
 
 interface Remote {
   info: EntityInfo | null;
@@ -150,6 +151,10 @@ export class Game {
   /** Recent chat lines by pilot name (speech bubbles over their heads). */
   private bubbles = new Map<string, { text: string; until: number }>();
   private wxOverrides = new Map<number, WeatherOverride>();
+  /** Galaxy events going on (from the server) and when they arrived. */
+  private galaxyEvents: GalaxyEventInfo[] = [];
+  private galaxyAt = 0;
+  private meteorT = 0;
   /** Weather where the camera is: kind, felt strength (fades with altitude), world wind. */
   private wx = { kind: 'clear' as WeatherKind, k: 0, wind: new THREE.Vector3(), dark: false };
   private wxBody: Weather = { kind: 'clear', k: 0, wind: v3() };
@@ -829,6 +834,14 @@ export class Game {
           break;
         case 'weather':
           this.wxOverrides.set(e.planet, { kind: e.kind, k: e.k, until: e.until });
+          break;
+        case 'galaxy':
+          this.galaxyEvents = e.list;
+          this.galaxyAt = performance.now();
+          this.galaxyMap.setEvents(e.list);
+          this.hud.setGalaxyEvents(e.list);
+          // news from the rest of the galaxy (the event's own system gets a banner from the server)
+          for (const ev of e.list) if (e.fresh?.includes(ev.id) && ev.system !== this.sys?.id) this.hud.chat(null, `${EVENT_ICONS[ev.kind]} ${eventTitle(ev)}. ${eventText(ev)}`);
           break;
         case 'strike': {
           const pl = this.sys?.planets[e.planet];
@@ -1625,12 +1638,32 @@ export class Game {
     this.effects.setViewport(window.innerHeight, cam.fov);
     this.underwater.setViewport(window.innerHeight, cam.fov);
     this.weatherV.setViewport(window.innerHeight, cam.fov);
+    this.updateMeteors(dt, mode);
     this.effects.update(dt, this.origin);
     this.updateWeather(dt, onFoot);
 
     this.updateEnvironment(toSun, onFoot || roverPl ? this.charPos : this.shipPos);
     this.updateHud(self, mode, speed);
     this.r.render();
+  }
+
+  /** A meteor storm in this system: burning rocks streak past the ship, all from one side. */
+  private updateMeteors(dt: number, mode: number) {
+    const sys = this.sys;
+    if (!sys || mode !== MODE.SHIP || this.pred.ship.landed) return;
+    const age = performance.now() - this.galaxyAt;
+    const storm = this.galaxyEvents.find((e) => e.kind === 'storm' && e.system === sys.id && e.left > age);
+    if (!storm || (this.meteorT -= dt) > 0) return;
+    this.meteorT = 0.1 + Math.random() * 0.25;
+    // the storm's direction follows from its id, so every pilot sees the same sky; most rocks
+    // cross the view ahead of the ship, some pass anywhere around it
+    const a = storm.id * 2.399, dir = vnorm(v3(), v3(Math.cos(a), -0.35, Math.sin(a)));
+    const fwd = qrot(v3(), this.shipQ, FWD), r = () => Math.random() - 0.5;
+    const ahead = Math.random() < 0.7 ? 300 + Math.random() * 900 : 0, spread = ahead ? 700 : 1400;
+    const o = this.origin, sp = 300 + Math.random() * 250;
+    const c = v3(o.x + fwd.x * ahead + r() * spread, o.y + fwd.y * ahead + r() * spread * 0.5, o.z + fwd.z * ahead + r() * spread);
+    const at = v3(c.x - dir.x * sp * 2, c.y - dir.y * sp * 2, c.z - dir.z * sp * 2);
+    this.effects.meteor(at, v3(dir.x * sp, dir.y * sp, dir.z * sp), 6);
   }
 
   /**

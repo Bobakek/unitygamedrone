@@ -1,5 +1,6 @@
 import { getGalaxy, jumpsFrom, route, SECURITY_COLORS, SECURITY_NAMES } from '../../shared/galaxy/galaxy.ts';
 import { getSystem } from '../../shared/galaxy/system-gen.ts';
+import { EVENT_ICONS, eventText, eventTitle, type GalaxyEventInfo } from '../../shared/galaxy-events.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
 const SVG = 'http://www.w3.org/2000/svg';
@@ -20,6 +21,8 @@ export class GalaxyMap {
   private selected = -1;
   private routeTo: number | null = null;
   private goals = new Set<number>();
+  private events: GalaxyEventInfo[] = [];
+  private eventsAt = 0;
   onRoute: (to: number | null) => void = () => {};
 
   constructor() {
@@ -49,6 +52,17 @@ export class GalaxyMap {
     this.routeTo = routeTo;
     this.goals = new Set(goals);
     if (this.open) this.render();
+  }
+
+  /** Galaxy events going on (`left` counted from now). */
+  setEvents(list: GalaxyEventInfo[]) {
+    this.events = list;
+    this.eventsAt = performance.now();
+    if (this.open) this.render();
+  }
+
+  private minutesLeft(e: GalaxyEventInfo) {
+    return Math.max(1, Math.ceil((e.left - (performance.now() - this.eventsAt)) / 60000));
   }
 
   toggle(force?: boolean) {
@@ -89,6 +103,11 @@ export class GalaxyMap {
       if (s.id === this.here) el('circle', { r: 2.2, class: 'gx-here' }, grp);
       const label = el('text', { y: -2.4, class: s.id === this.here ? 'gx-name here' : 'gx-name' }, grp);
       label.textContent = (this.goals.has(s.id) ? '◆ ' : '') + s.name;
+      const ev = this.events.filter((e) => e.system === s.id);
+      if (ev.length) {
+        const icon = el('text', { y: 4.6, class: `gx-ev ${ev[0].kind}` }, grp);
+        icon.textContent = ev.map((e) => EVENT_ICONS[e.kind]).join('');
+      }
     }
     this.renderInfo(path);
   }
@@ -104,6 +123,7 @@ export class GalaxyMap {
       `<p>Станция: ${sys.station.name}</p>`,
       id !== this.here ? `<p>Отсюда: ${jumpsText(hops)}</p>` : '',
       this.goals.has(id) ? '<p class="gx-goal">◆ Здесь цель контракта</p>' : '',
+      ...this.events.filter((e) => e.system === id).map((e) => `<p class="gx-event">${EVENT_ICONS[e.kind]} ${eventTitle(e)} · ещё ${this.minutesLeft(e)} мин<br><small>${eventText(e)}</small></p>`),
     ];
     if (this.routeTo !== null) {
       lines.push(`<p class="gx-route">Маршрут: ${path.map((i) => g.stars[i].name).join(' → ')}</p>`);
@@ -112,6 +132,9 @@ export class GalaxyMap {
       id !== this.here && this.routeTo !== id ? '<button class="primary" data-route="set">Проложить маршрут</button>' : '',
       this.routeTo !== null ? '<button data-route="clear">Сбросить маршрут</button>' : '',
     ];
-    this.info.innerHTML = lines.join('') + `<div class="gx-buttons">${buttons.join('')}</div>`;
+    const news = this.events.length
+      ? `<div class="gx-news"><b>События в галактике</b>${this.events.map((e) => `<p>${EVENT_ICONS[e.kind]} ${eventTitle(e)}: ${g.stars[e.system].name} · ${jumpsText(jumpsFrom(this.here)[e.system]).replace(/^0 прыжков$/, 'здесь')}</p>`).join('')}</div>`
+      : '';
+    this.info.innerHTML = lines.join('') + `<div class="gx-buttons">${buttons.join('')}</div>` + news;
   }
 }

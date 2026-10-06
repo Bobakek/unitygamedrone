@@ -40,6 +40,8 @@ import type { MarketQuote } from '../../shared/market.ts';
 import { BOARD_REACH, inCabin, PAD, RAMP, stepDeck } from '../../shared/station/deck.ts';
 import { awardTrophy } from './trophies.ts';
 import { WeatherDesk } from './weather.ts';
+import { GalaxyEffects } from './galaxy-effects.ts';
+import type { GalaxyEvent } from '../../shared/galaxy-events.ts';
 import type { Weather } from '../../shared/weather.ts';
 import type { Session } from './session.ts';
 
@@ -58,6 +60,8 @@ export interface GameContext {
   crew(s: Session, at: V3, range: number): Session[];
   /** Are the two pilots in one group? */
   allies(a: Session, b: Session): boolean;
+  /** Galaxy events going on now (raids, storms, shortages). */
+  galaxyEvents(): GalaxyEvent[];
 }
 
 const tmp = v3(), tmp2 = v3(), aim = v3(), rot = quat();
@@ -94,6 +98,7 @@ export class SystemInstance implements NpcWorld {
   readonly market: StationMarket;
   readonly mining: AsteroidMining;
   readonly weather: WeatherDesk;
+  readonly galaxy: GalaxyEffects;
 
   constructor(private ctx: GameContext, id: number) {
     this.def = getSystem(id);
@@ -107,6 +112,7 @@ export class SystemInstance implements NpcWorld {
     this.market = new StationMarket(this);
     this.mining = new AsteroidMining(this);
     this.weather = new WeatherDesk(this);
+    this.galaxy = new GalaxyEffects(this);
   }
 
   /** Inside a derelict's hull (shelter from the weather). */
@@ -138,6 +144,7 @@ export class SystemInstance implements NpcWorld {
 
   get time() { return this.ctx.time; }
   now() { return this.ctx.now(); }
+  galaxyEvents() { return this.ctx.galaxyEvents(); }
   convoyAlive(system: number, poi: number) { return this.ctx.convoyAlive(system, poi); }
   get stationPos() { return this.def.station.pos; }
   ship(id: number) { return this.ships.get(id); }
@@ -161,14 +168,14 @@ export class SystemInstance implements NpcWorld {
   }
 
   // ------------------------------------------------------------------ entities
-  spawnPirate(near?: V3): ShipEntity {
+  spawnPirate(near?: V3, name?: string): ShipEntity {
     const field = this.def.fields[this.rng.int(0, this.def.fields.length - 1)];
     const r = field.radius;
     const pos = near ? { ...near } : v3(field.center.x + this.rng.range(-r, r), field.center.y + this.rng.range(-r, r) * 0.3, field.center.z + this.rng.range(-r, r));
     const id = this.ctx.nextId();
     const q = qlook(quat(), vnorm(v3(), v3(this.rng.range(-1, 1), 0, this.rng.range(-1, 1))), v3(0, 1, 0));
     const ship: ShipEntity = {
-      id, name: `Пират ${makeName(this.rng)}`, bp: pirateBlueprint(this.rng.int(0, 1e9)),
+      id, name: name ?? `Пират ${makeName(this.rng)}`, bp: pirateBlueprint(this.rng.int(0, 1e9)),
       state: newShip(pos, q), world: newPose(), flight: PIRATE_FLIGHT, combat: PIRATE_COMBAT,
       hull: PIRATE_COMBAT.maxHull, shield: PIRATE_COMBAT.maxShield, energy: 100, lastHit: -99, fireCooldown: 0, gun: 0,
       throttle: 0, boosting: false, dead: false, respawnAt: 0, docked: false, god: false, session: null,
@@ -449,6 +456,7 @@ export class SystemInstance implements NpcWorld {
       for (const s of this.sessions) this.contracts.expire(s);
       // prices drift each epoch and recover from trade: docked pilots see them move
       if (this.market.changed()) this.broadcastMarket();
+      this.galaxy.step(this.galaxyEvents());
     }
 
     for (const ship of this.ships.values()) {

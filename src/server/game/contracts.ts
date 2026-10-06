@@ -29,12 +29,13 @@ export class ContractDesk {
   board(): { offers: ContractDef[]; changed: boolean } {
     const ep = boardEpoch(this.sys.now());
     const pois = this.sys.world.list().filter((p) => p.kind === 'convoy' && p.ship);
-    const key = pois.map((p) => p.id).join(',');
+    const events = this.sys.galaxyEvents();
+    const key = pois.map((p) => p.id).join(',') + '|' + events.map((e) => e.id).join(',');
     const changed = ep !== this.epoch || key !== this.convoys;
     if (changed) {
       this.epoch = ep;
       this.convoys = key;
-      this.offers = generateBoard(this.sys.def.id, ep, pois);
+      this.offers = generateBoard(this.sys.def.id, ep, pois, events);
     }
     return { offers: this.offers, changed };
   }

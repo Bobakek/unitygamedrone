@@ -332,6 +332,14 @@ export class WorldEvents {
     }
   }
 
+  /** A meteor fragment drifting in a storm (see galaxy-effects.ts). */
+  dropFragment(p: V3, contents: LootContents) {
+    const r = this.rng;
+    const l: Loot = { id: this.sys.nextId(), p, v: v3(r.range(-3, 3), r.range(-3, 3), r.range(-3, 3)), contents, until: this.sys.time + 150 };
+    this.loot.set(l.id, l);
+    this.sys.infos.push({ id: l.id, kind: KIND.LOOT, name: 'Осколок метеорита' });
+  }
+
   private dropLoot(l: Loot) {
     this.loot.delete(l.id);
     this.sys.gone.push(l.id);

@@ -1,3 +1,4 @@
+import type { GalaxyEventInfo } from '../galaxy-events.ts';
 import type { CharInput, CharState } from '../sim/character.ts';
 import type { ShipInput, ShipState } from '../sim/ship.ts';
 import type { RoverState } from '../sim/rover.ts';
@@ -102,7 +103,9 @@ export type GameEvent =
   /** The local pilot's rover drill on deposit `id`: `left` seconds to go, 0 = done, -1 = stopped. */
   | { t: 'drill'; id: number; left: number }
   /** A mining laser of ship `by` hit an asteroid; `good` = a unit went into its hold. */
-  | { t: 'mine'; pos: [number, number, number]; by: number; good?: CargoKey };
+  | { t: 'mine'; pos: [number, number, number]; by: number; good?: CargoKey }
+  /** Galaxy events going on now (sent on login and whenever the list changes); `fresh` = ids that just began. */
+  | { t: 'galaxy'; list: GalaxyEventInfo[]; fresh?: number[] };
 
 export type Action =
   | { a: 'exit' } | { a: 'board' } | { a: 'dock' } | { a: 'undock' } | { a: 'jump' }
