@@ -40,6 +40,8 @@ export interface ShipEntity {
   provokedAt?: number;
   /** An NPC knocked out by fire: dead in space, open to boarding (see boarding.ts). */
   disabled?: boolean;
+  /** Sim time it was disabled: bolts already in flight then can't finish it off. */
+  disabledAt?: number;
 }
 
 export interface CharEntity {

@@ -22,10 +22,11 @@ const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
 /**
  * Fills `out` (yaw, pitch, throttle, boost, cruise) to bring a ship at `p`/`v`/`q` within
  * `range` metres of `tp` moving at `tv`. The nose points at `aim` when given (e.g. the lead
- * point for the guns), otherwise at the target itself.
+ * point for the guns), otherwise at the target itself. With `orbit` (-1..1) the ship side-slips
+ * around the target once it is near the wanted range, so it is not a sitting duck in a fight.
  */
 export function steerTo(
-  p: V3, v: V3, q: Quat, tp: V3, tv: V3, range: number, st: ShipStats, ap: AutopilotState, out: ShipInput, aim?: V3,
+  p: V3, v: V3, q: Quat, tp: V3, tv: V3, range: number, st: ShipStats, ap: AutopilotState, out: ShipInput, aim?: V3, orbit = 0,
 ): void {
   const dx = tp.x - p.x, dy = tp.y - p.y, dz = tp.z - p.z;
   const d = Math.hypot(dx, dy, dz) || 1;
@@ -41,7 +42,7 @@ export function steerTo(
   out.yaw = clamp(yawErr * 3, -1, 1);
   out.pitch = clamp(pitchErr * 3, -1, 1);
   out.roll = 0;
-  out.strafeX = 0;
+  out.strafeX = Math.abs(gap) < 300 ? orbit : 0;
   out.strafeY = 0;
   // How well the nose points at the target (not the aim point): drives how hard we may thrust.
   const fl = Math.hypot(loc.x, loc.y, loc.z) || 1;

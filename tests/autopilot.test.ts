@@ -55,3 +55,21 @@ describe('auto-approach', () => {
     expect(Math.abs(r.dist - 400)).toBeLessThan(60);
   });
 });
+
+describe('combat orbit', () => {
+  it('circles the target at gun range instead of sitting still', () => {
+    const st = flightStats(defaultUpgrades(), 'fighter');
+    const s = newShip(v3(0, 0, 0));
+    const tp = v3(0, 0, -2000), ap = newAutopilot(), inp = emptyInput();
+    const dirs: V3[] = [];
+    for (let k = 0; k < 90 / DT; k++) {
+      steerTo(s.p, s.v, s.q, tp, v3(), 600, st, ap, inp, undefined, 0.7);
+      stepShip(s, inp, st, env, DT);
+      if (k * DT > 30 && k % 30 === 0) dirs.push(vsub(v3(), s.p, tp));
+    }
+    expect(Math.abs(vdist(s.p, tp) - 600)).toBeLessThan(60);
+    // the bearing from the target keeps changing: the ship moves around it
+    const a = dirs[0], b = dirs.at(-1)!;
+    expect(Math.acos((a.x * b.x + a.y * b.y + a.z * b.z) / (vlen(a) * vlen(b)))).toBeGreaterThan(0.5);
+  });
+});

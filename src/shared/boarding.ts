@@ -120,6 +120,8 @@ export function deckWaypoint(from: { x: number; z: number }, to: { x: number; z:
 export const DISABLE_HULL = 0.25;
 /** Seconds a disabled ship stays dead in space with nobody aboard before its crew restarts it. */
 export const DISABLE_TIME = 90;
+/** Seconds after being disabled during which further hits do nothing (the volley already in flight). */
+export const DISABLE_GRACE = 1.5;
 /** How close (m, from the hull) and how slow (m/s) a pilot must be to dock with a disabled ship. */
 export const BOARD_RANGE = 140;
 export const BOARD_SPEED = 40;

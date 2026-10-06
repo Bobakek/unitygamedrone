@@ -27,6 +27,8 @@ export class Controller {
   private yawAcc = 0;
   /** Auto-approach: when set, it flies the ship (stick, throttle, boost, cruise); guns stay manual. */
   autopilot: ((ship: ShipInput) => void) | null = null;
+  /** Autofire: when set, the guns fire on ticks where it says the shot will land. */
+  autofire: (() => boolean) | null = null;
 
   constructor(private input: Input) {}
 
@@ -90,6 +92,7 @@ export class Controller {
         if (ship.boost) flags |= IFLAG.BOOST;
         if (ship.cruise) flags |= IFLAG.CRUISE;
       }
+      if (this.autofire?.()) flags |= IFLAG.FIRE;
     } else if (m === MODE.ROVER) {
       // W/S drive and brake, A/D steer, Space handbrake, Shift boost
       char.mx = k('KeyD') - k('KeyA');

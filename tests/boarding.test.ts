@@ -64,6 +64,11 @@ describe('boarding', () => {
     expect(pirate.dead).toBe(false);
     expect(pirate.hull).toBeLessThanOrEqual(pirate.combat.maxHull * DISABLE_HULL);
     expect(sys.boarding.hulks.has(pirate.id)).toBe(true);
+    // the rest of the volley, already in flight, does not finish it off
+    const left = pirate.hull;
+    for (let i = 0; i < 10; i++) sys.damage(pirate, 9, s.ship.id);
+    expect(pirate.dead).toBe(false);
+    expect(pirate.hull).toBe(left);
     // dead in space: it does not fire or fly, the shield does not come back
     const at = { ...pirate.world.p };
     tick(3);

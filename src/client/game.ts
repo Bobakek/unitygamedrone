@@ -3,7 +3,7 @@ import { DOCK_RANGE, DT, EXIT_RANGE, GATE_RANGE, HARVEST_RANGE, INTERP_DELAY, SA
 import { CARGO_NAMES, cargoCount, defaultUpgrades, flightStats } from '../shared/economy.ts';
 import { DEPOSIT_BASE, DEPOSIT_NAMES, depositPos, DRILL_RANGE, DRILL_SPEED, yieldText } from '../shared/planet/deposits.ts';
 import { getSystem, type PlanetDef, type SystemDef } from '../shared/galaxy/system-gen.ts';
-import { FWD, qlook, qrot, quat, v3, vcross, vdist, vlen, vnorm, vsub, type Quat, type V3 } from '../shared/math/vec.ts';
+import { FWD, qlook, qrot, quat, v3, vcross, vdist, vdot, vlen, vnorm, vsub, type Quat, type V3 } from '../shared/math/vec.ts';
 import {
   aimPitch, BLASTER_LEVEL, BOARD_FRAME, DRONE_LEVEL, DECK_FRAME, CFLAG, EFLAG, IFLAG, KIND, MODE, ROVER_SPEED_MAX, steerAngle, type EntityInfo, type EntityState, type GameEvent, type GroupMsg, type PilotInfo, type SelfState, type Shot, type Snapshot, type Welcome,
 } from '../shared/net/protocol.ts';
@@ -96,9 +96,11 @@ interface Remote {
 /** Distances the auto-approach holds: guns, boarding, docking and so on. */
 const AUTO_RANGE = { combat: 600, board: 90, station: 350, gate: 150, ally: 150, orbit: 2500 } as const;
 /** Keys that hand the ship back to the pilot when pressed during auto-approach. */
+/** Combat autopilot: side-slip while circling the target; autofire reach. */
+const FIGHT_ORBIT = 0.7, AUTOFIRE_RANGE = 1500;
 const MANUAL_KEYS = ['KeyW', 'KeyS', 'KeyX', 'KeyA', 'KeyD', 'KeyQ', 'KeyE', 'Space', 'KeyC', 'ControlLeft', 'ShiftLeft', 'ShiftRight', 'KeyJ'];
 
-interface AutoGoal { p: V3; v: V3; range: number; aim?: V3; name: string; hint?: string }
+interface AutoGoal { p: V3; v: V3; range: number; aim?: V3; orbit?: number; name: string; hint?: string }
 
 interface NavItem { name: string; pos: V3; kind: 'planet' | 'station' | 'gate' | 'event' | 'goal' | 'ally' | 'deposit'; radius: number; ship?: number; site?: { planet: number; p: V3 } }
 
@@ -228,8 +230,10 @@ export class Game {
   private navIndex = 0;
   private navItems: NavItem[] = [];
   /** Auto-approach (U) to a target entity (`id`) or a nav point (`nav` = its name). */
-  private auto: { id: number; nav: string; ap: AutopilotState; arrived: boolean; thr: number; name: string; dist: number } | null = null;
+  private auto: { id: number; nav: string; fight: boolean; ap: AutopilotState; arrived: boolean; thr: number; name: string; dist: number } | null = null;
   private autoPose: Pose = newPose();
+  /** Autofire (B): the guns shoot at the target (T) whenever the lead point is under the nose. */
+  private autofire = false;
   /** The pilot's group and the session ids of the other members. */
   private group: GroupMsg = { members: [] };
   private allies = new Set<number>();
@@ -1261,14 +1265,16 @@ export class Game {
     if (i.hit('KeyT')) {
       this.pickTarget();
       if (this.auto && this.targetId && this.targetId !== this.auto.id) {
-        Object.assign(this.auto, { id: this.targetId, nav: '', arrived: false, ap: newAutopilot() });
+        const npc = !!this.remotes.get(this.targetId)?.info?.npc;
+        Object.assign(this.auto, { id: this.targetId, nav: '', arrived: false, ap: newAutopilot(), fight: this.auto.fight && npc });
         this.hud.toast(`Автоподлёт: новая цель — ${this.remotes.get(this.targetId)?.info?.name ?? '?'}`);
       }
     }
     if (i.hit('KeyU') && mode === MODE.SHIP) { if (this.auto) this.stopAuto(); else this.startAuto(); }
+    if (i.hit('KeyB') && mode === MODE.SHIP) this.toggleFight();
     if (this.auto) {
       if (mode !== MODE.SHIP || this.pred.ship.landed) this.stopAuto('', true);
-      else if (!this.autoGoal()) this.stopAuto('цель потеряна');
+      else if (!this.autoGoal()) this.stopAuto(this.auto.fight ? 'цель сбита или ушла' : 'цель потеряна');
       else if (!i.typing && (MANUAL_KEYS.some((k) => i.hit(k)) || i.wheel || i.moved > 25)) this.stopAuto('ручное управление');
     }
     if (i.hit('KeyP')) this.inviteNearby();
@@ -1359,7 +1365,7 @@ export class Game {
     const t = this.targetId ? this.remotes.get(this.targetId) : undefined;
     const n = this.navItems[this.navIndex];
     if (!t?.visible && !n) { this.hud.toast('Выберите цель (T) или точку навигации (Tab)', 'warn'); return; }
-    this.auto = { id: t?.visible ? this.targetId : 0, nav: t?.visible ? '' : n.name, ap: newAutopilot(), arrived: false, thr: this.ctrl.throttle, name: '', dist: 0 };
+    this.auto = { id: t?.visible ? this.targetId : 0, nav: t?.visible ? '' : n.name, fight: false, ap: newAutopilot(), arrived: false, thr: this.ctrl.throttle, name: '', dist: 0 };
     const g = this.autoGoal();
     if (!g) { this.auto = null; this.hud.toast('К этой точке автоподлёт не ведёт', 'warn'); return; }
     this.auto.name = g.name;
@@ -1372,13 +1378,58 @@ export class Game {
 
   private stopAuto(why = '', quiet = false) {
     if (!this.auto) return;
+    const fight = this.auto.fight;
     // the throttle lever stays where the autopilot left it, so taking over doesn't lurch the ship
     this.ctrl.throttle = Math.max(-0.3, Math.min(1, this.auto.thr));
     this.ctrl.cruiseOn = false;
     this.ctrl.autopilot = null;
     this.auto = null;
     this.input.centerCursor();
-    if (!quiet) this.hud.toast(`Автоподлёт выключен${why ? `: ${why}` : ''}`);
+    if (!quiet) this.hud.toast(`${fight ? 'Бой на автопилоте' : 'Автоподлёт'} выключен${why ? `: ${why}` : ''}${this.autofire ? ' · автоогонь остаётся (B — выключить)' : ''}`);
+  }
+
+  /**
+   * B: against NPCs the ship fights by itself (circles the target at gun range, nose on the lead
+   * point, guns on autofire); in the arena and against other pilots only the guns are automatic.
+   */
+  private toggleFight() {
+    if (this.autofire || this.auto?.fight) {
+      this.autofire = false;
+      this.ctrl.autofire = null;
+      // the fight's own flying (circling, or closing in on the beaten ship) stops too
+      if (this.auto?.fight || (this.auto && this.auto.id === this.targetId)) this.stopAuto('', true);
+      this.hud.toast('Автоатака выключена');
+      return;
+    }
+    const t = this.targetId ? this.remotes.get(this.targetId) : undefined;
+    if (!t?.visible || !t.state || t.info?.kind !== KIND.SHIP) { this.hud.toast('Выберите цель (T)', 'warn'); return; }
+    if (t.state.flags & EFLAG.DISABLED) { this.hud.toast('Цель уже выведена из строя: U — подлететь, F — абордаж', 'warn'); return; }
+    if (this.pred.ship.landed) { this.hud.toast('Сначала взлетите (W)', 'warn'); return; }
+    this.autofire = true;
+    this.ctrl.autofire = () => this.autoFireNow();
+    this.sfx.beep(true);
+    if (this.arenaHud.active || !t.info?.npc) {
+      this.hud.toast(`Автоогонь по цели: ${t.info?.name ?? '?'} — пушки стреляют сами, когда цель под прицелом; рулите сами. B — выключить`, 'good');
+      return;
+    }
+    if (this.auto) this.stopAuto('', true);
+    this.auto = { id: this.targetId, nav: '', fight: true, ap: newAutopilot(), arrived: false, thr: this.ctrl.throttle, name: t.info?.name ?? 'цель', dist: 0 };
+    this.ctrl.autopilot = (s) => this.autoSteer(s);
+    this.ctrl.cruiseOn = false;
+    this.input.centerCursor();
+    this.hud.toast(`Бой на автопилоте: ${this.auto.name}. Любое управление вернёт штурвал, автоогонь останется. B — выключить всё`, 'good');
+  }
+
+  /** Autofire: true on ticks where a bolt fired now would meet the target. */
+  private autoFireNow(): boolean {
+    const t = this.targetId ? this.remotes.get(this.targetId) : undefined;
+    if (!t?.visible || !t.state || t.state.flags & (EFLAG.DISABLED | EFLAG.DEAD)) return false;
+    const s = this.shipW;
+    if (vdist(t.p, s.p) > AUTOFIRE_RANGE) return false;
+    const lp = leadPoint(s.p, s.v, t.p, t.v, LASER.speed, v3());
+    const to = vsub(v3(), lp, s.p), l = vlen(to) || 1;
+    const r = t.view instanceof ShipView ? t.view.radius : 6;
+    return vdot(to, qrot(v3(), s.q, FWD)) / l > Math.cos(Math.max(0.015, Math.atan((r * 0.8) / l)));
   }
 
   /** Where the auto-approach is heading and what distance it holds there. */
@@ -1389,9 +1440,16 @@ export class Game {
       const r = this.remotes.get(a.id);
       if (!r?.visible || !r.state || r.state.flags & EFLAG.DEAD) return null;
       const name = r.info?.name ?? 'цель';
+      if (r.state.flags & EFLAG.DISABLED && a.fight) {
+        // won the fight: the autopilot now brings the ship alongside for boarding
+        a.fight = false;
+        a.arrived = false;
+        this.hud.toast(`${name} выведен из строя — подхожу на абордаж`, 'good');
+      }
       if (r.state.flags & EFLAG.DISABLED) return { p: r.p, v: r.v, range: AUTO_RANGE.board, name, hint: 'F — абордаж' };
       // in gun range the nose leads the target, so the lasers land
       const aim = vdist(r.p, this.shipW.p) < 1800 ? leadPoint(this.shipW.p, this.shipW.v, r.p, r.v, LASER.speed, v3()) : undefined;
+      if (a.fight) return { p: r.p, v: r.v, range: AUTO_RANGE.combat, aim, orbit: FIGHT_ORBIT, name };
       return { p: r.p, v: r.v, range: AUTO_RANGE.combat, aim, name, hint: 'на дистанции огня' };
     }
     const n = this.navItems.find((x) => x.name === a.nav);
@@ -1421,11 +1479,11 @@ export class Game {
     const a = this.auto, g = this.autoGoal();
     if (!a || !g || !this.sys) return;
     const w = worldPose(this.pred.ship, this.sys.planets, this.timeline.serverNow, this.autoPose);
-    steerTo(w.p, w.v, w.q, g.p, g.v, g.range, this.stats, a.ap, ship, g.aim);
+    steerTo(w.p, w.v, w.q, g.p, g.v, g.range, this.stats, a.ap, ship, g.aim, g.orbit);
     a.thr = ship.throttle;
     a.name = g.name;
     a.dist = vdist(w.p, g.p);
-    if (!a.arrived && a.dist < g.range + 60) {
+    if (!a.arrived && !a.fight && a.dist < g.range + 60) {
       a.arrived = true;
       this.sfx.beep(true);
       this.hud.toast(`${g.name}: на месте, держу дистанцию${g.hint ? ` · ${g.hint}` : ''}`, 'good');
@@ -2375,10 +2433,12 @@ export class Game {
       let modeText = '';
       const inh = this.env ? cruiseInhibited(ship, this.env) : false;
       if (ship.landed) modeText = 'ПОСАДКА';
+      else if (this.auto?.fight) modeText = `БОЙ: ${this.auto.name} · ${this.fmtDist(this.auto.dist)}`;
       else if (this.auto) modeText = `АВТОПОДЛЁТ${isCruising(ship) ? ' · КРУИЗ' : ''}: ${this.auto.name} · ${this.fmtDist(this.auto.dist)}`;
       else if (isCruising(ship)) modeText = 'КРУИЗ';
       else if (this.ctrl.cruiseOn) modeText = ship.cruiseBlock > 0 ? 'КРУИЗ: помехи' : inh ? 'КРУИЗ: масса рядом' : `КРУИЗ: ${(CRUISE_SPOOL - ship.cruise).toFixed(1)} с`;
       else if (vdist(this.shipW.p, sys.station.pos) < SAFE_ZONE_RADIUS) modeText = 'ЗОНА СТАНЦИИ';
+      if (this.autofire && !this.auto?.fight) modeText = modeText ? `${modeText} · АВТООГОНЬ` : 'АВТООГОНЬ';
       this.hud.flight({ speed, throttle: this.auto ? this.auto.thr : this.ctrl.throttle, boost: ship.boost, energy: this.energy / 100, shield: self.shield / self.maxShield, hull: self.hull / self.maxHull, mode: modeText });
     }
 
@@ -2519,8 +2579,13 @@ export class Game {
       else if (vdist(this.shipW.p, sys.station.pos) < DOCK_RANGE) prompt = '<kbd>F</kbd> стыковка со станцией';
       else if (sys.gates.some((g) => vdist(g.pos, this.shipW.p) < GATE_RANGE)) prompt = '<kbd>F</kbd> прыжок через врата';
       else if (this.nearPlanet && this.nearAlt < 250 && speed < 80 && Math.abs(this.ctrl.throttle) >= 0.05) prompt = '<kbd>X</kbd> сброс тяги — корабль сам опустится и сядет';
+      else if (this.auto?.fight) prompt = '<kbd>B</kbd> выключить бой · любое управление — штурвал вам, автоогонь останется';
       else if (this.auto) prompt = '<kbd>U</kbd> или любое управление — выключить автоподлёт';
-      else if (this.targetId && this.remotes.get(this.targetId)?.visible) prompt = '<kbd>U</kbd> автоподлёт к цели';
+      else if (this.targetId && this.remotes.get(this.targetId)?.visible) {
+        const t = this.remotes.get(this.targetId)!;
+        const fight = t.state && t.state.flags & EFLAG.DISABLED ? '' : this.autofire ? ' · <kbd>B</kbd> выключить автоогонь' : this.arenaHud.active || !t.info?.npc ? ' · <kbd>B</kbd> автоогонь' : ' · <kbd>B</kbd> бой на автопилоте';
+        prompt = `<kbd>U</kbd> автоподлёт к цели${fight}`;
+      }
     } else if (mode === MODE.FOOT) {
       const n = this.nearestNode();
       const carcass = this.nearCarcass();

@@ -41,7 +41,7 @@ import type { MarketQuote } from '../../shared/market.ts';
 import { BOARD_REACH, inCabin, PAD, RAMP, stepDeck } from '../../shared/station/deck.ts';
 import { awardTrophy } from './trophies.ts';
 import { Boarding } from './boarding.ts';
-import { SHIP_DECK } from '../../shared/boarding.ts';
+import { DISABLE_GRACE, SHIP_DECK } from '../../shared/boarding.ts';
 import { WeatherDesk } from './weather.ts';
 import { GalaxyEffects } from './galaxy-effects.ts';
 import type { GalaxyEvent } from '../../shared/galaxy-events.ts';
@@ -315,6 +315,8 @@ export class SystemInstance implements NpcWorld {
     if (target.dead || target.docked || target.god) return;
     if (target.session && (target.session.mode === MODE.FOOT || target.session.mode === MODE.ROVER || target.session.mode === MODE.BOARD)) return;
     if (this.inSafeZone(target.world.p)) return;
+    // a ship that has just been knocked out isn't destroyed by the volley that was already on its way
+    if (target.disabled && this.time - (target.disabledAt ?? -1e9) < DISABLE_GRACE) return;
     // no friendly fire inside a group
     const by = attacker ? this.ships.get(attacker)?.session : undefined;
     if (by && target.session && this.ctx.allies(by, target.session)) return;

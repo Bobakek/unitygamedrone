@@ -82,6 +82,29 @@ try {
   await sleep(300);
   if (await page.evaluate(() => !!window.__game.auto)) errors.push('W did not switch auto-approach off');
 
+  // ---- B on the pirate: the ship circles it at gun range and the guns fire by themselves
+  const foe = await page.evaluate(() => window.__game.targetId);
+  const hp0 = await page.evaluate((id) => { const s = window.__game.remotes.get(id)?.state; return s ? s.hull + s.shield : 0; }, foe);
+  await page.keyboard.press('KeyB');
+  await page.waitForFunction(() => window.__game.auto?.fight && window.__game.autofire, null, { timeout: 3000, polling: 100 });
+  await shot('03-fight.png', 6000);
+  const fight = [];
+  for (let k = 0; k < 40; k++) {
+    const st = await page.evaluate((id) => { const g = window.__game, r = g.remotes.get(id); return r?.state ? { hp: r.state.hull + r.state.shield, off: !!(r.state.flags & 128), d: Math.round(Math.hypot(r.p.x - g.shipW.p.x, r.p.y - g.shipW.p.y, r.p.z - g.shipW.p.z)) } : null; }, foe);
+    fight.push(st);
+    if (!st || (st.off && st.d < 140)) break;
+    await sleep(1000);
+  }
+  console.log('fight:', fight.map((f) => f ? `${f.d}м/${f.hp.toFixed(2)}${f.off ? '/выведен' : ''}` : 'уничтожен').join(' '));
+  const end = fight.at(-1);
+  if (!end) errors.push('the pirate was destroyed instead of disabled');
+  else if (!end.off) errors.push(`autofire did not disable the pirate (${hp0} -> ${end.hp})`);
+  else if (end.d >= 140) errors.push('the autopilot did not bring the ship alongside the hulk');
+  else await shot('04-alongside-hulk.png', 1500);
+  await page.keyboard.press('KeyB');
+  await sleep(300);
+  if (await page.evaluate(() => window.__game.autofire || !!window.__game.auto)) errors.push('B did not switch the fight off');
+
   // ---- station from the nav list: auto-approach brings the ship into docking range, F docks
   await chat('/pirate');
   await chat('/tp field');
@@ -91,9 +114,9 @@ try {
   console.log('station distance before:', far);
   await page.keyboard.press('KeyU');
   await page.waitForFunction(() => !!window.__game.auto, null, { timeout: 3000, polling: 100 });
-  await shot('03-to-station.png', 4000);
+  await shot('05-to-station.png', 4000);
   await page.waitForFunction(() => window.__game.auto?.arrived, null, { timeout: 120000, polling: 500 });
-  await shot('04-at-station.png', 1500);
+  await shot('06-at-station.png', 1500);
   await page.keyboard.press('KeyF');
   await page.waitForFunction(() => window.__game.pred.mode === 2, null, { timeout: 15000, polling: 250 });
   console.log('docked after auto-approach');

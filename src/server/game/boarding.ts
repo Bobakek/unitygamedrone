@@ -77,6 +77,7 @@ export class Boarding {
     const kind: PrizeKind = ship.bp.cls === 'freighter' ? 'freighter' : 'pirate';
     const r = this.rng, t = this.sys.time;
     ship.disabled = true;
+    ship.disabledAt = t;
     ship.shield = 0;
     ship.throttle = 0;
     ship.boosting = false;
