@@ -109,6 +109,8 @@ export type Action =
   | { a: 'harvest'; node: number }
   /** Sell `n` of `key` (all of it without `n`, the whole hold without `key`), buy `n` of `key`. */
   | { a: 'sell'; key?: CargoKey; n?: number } | { a: 'buy'; key: CargoKey; n: number } | { a: 'repair' } | { a: 'buyMissiles' } | { a: 'upgrade'; key: string }
+  /** Station smelter: run `n` batches of a recipe (as many as possible without `n`), see refinery.ts. */
+  | { a: 'refine'; recipe: string; n?: number }
   | { a: 'missile'; target: number } | { a: 'respawn' }
   | { a: 'salvage'; id: number } | { a: 'sample'; id: number }
   | { a: 'buyItem'; id: string } | { a: 'equip'; id: string }

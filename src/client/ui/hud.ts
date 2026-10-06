@@ -6,6 +6,7 @@ import type { MarketMsg } from '../../shared/market.ts';
 import { getSystem } from '../../shared/galaxy/system-gen.ts';
 import { FACTION_COLORS, objectiveText, RANKS, rankOf } from '../../shared/contracts.ts';
 import { HULL_KEYS, HULLS, type HullKey } from '../../shared/ships/hulls.ts';
+import { batchesPossible, inputsText, RECIPES } from '../../shared/refinery.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
 
@@ -70,6 +71,7 @@ export class Hud {
       else if (act === 'contracts') this.onContracts();
       else if (act === 'upgrade') this.onAction({ a: 'upgrade', key: b.dataset.key! });
       else if (act === 'ship') this.onAction({ a: b.dataset.op === 'buy' ? 'buyShip' : 'setShip', ship: b.dataset.key as HullKey });
+      else if (act === 'refine') this.onAction({ a: 'refine', recipe: b.dataset.key!, n: b.dataset.n === 'all' ? undefined : Number(b.dataset.n) });
       else if (act === 'trade') {
         const key = b.dataset.key as CargoKey, n = b.dataset.n === 'all' ? undefined : Number(b.dataset.n);
         this.onAction(b.dataset.op === 'buy' ? { a: 'buy', key, n: n ?? 999 } : { a: 'sell', key, n });
@@ -279,8 +281,8 @@ export class Hud {
     if (html) this.promptEl.innerHTML = html;
   }
 
-  /** `deck`: opened from a terminal on the station deck (closable, no "walk out" button). */
-  showStation(open: boolean, name = '', deck = false) {
+  /** `deck`: opened from a terminal on the station deck (closable, no "walk out" button); `focus`: a section to scroll to. */
+  showStation(open: boolean, name = '', deck = false, focus?: string) {
     const was = !this.station.classList.contains('hidden');
     this.station.classList.toggle('hidden', !open);
     this.station.classList.toggle('deck', deck);
@@ -288,6 +290,9 @@ export class Hud {
       $('.st-title').textContent = name;
       if (this.lastPilot) this.renderStation(this.lastPilot);
     }
+    const card = $('.st-card', this.station);
+    if (open && !was) card.scrollTop = 0;
+    if (open && focus) $(focus, this.station)?.scrollIntoView({ block: 'start' });
   }
 
   /** Pilots in the group (empty hides the panel) and a pending invitation. */
@@ -347,7 +352,22 @@ export class Hud {
       return `<div class="upg"><span>${UPGRADE_NAMES[k]} — ур. ${lvl}</span><button data-act="upgrade" data-key="${k}" ${max || p.credits < cost ? 'disabled' : ''}>${max ? 'макс.' : `${cost} кр`}</button></div>`;
     }).join('');
     this.renderMarket(p);
+    this.renderRefinery(p);
     this.renderYard(p);
+  }
+
+  /** Smelter recipes: what goes in, what comes out, and what a batch earns at this station's prices. */
+  private renderRefinery(p: PilotInfo) {
+    const q = this.market?.here.goods;
+    $('.rf-list').innerHTML = RECIPES.map((r) => {
+      const can = batchesPossible(r, p.cargo, p.credits);
+      const cost = Object.entries(r.inputs).reduce((n, [k, v]) => n + (q ? q[k as CargoKey].sell * v : 0), 0);
+      const gain = q ? q[r.key].sell - cost - r.fee : 0;
+      const btn = (n: string, text: string, off: boolean) => `<button data-act="refine" data-key="${r.key}" data-n="${n}" ${off ? 'disabled' : ''}>${text}</button>`;
+      return `<div class="rf${can ? ' can' : ''}"><div class="rf-io"><b>${CARGO_NAMES[r.key]}</b><span>${esc(inputsText(r))} → 1 · ${r.fee} кр</span><small>${esc(r.blurb)}</small></div>` +
+        `<div class="rf-gain">${q ? `здесь <b class="${gain > 0 ? 'up' : 'down'}">${gain > 0 ? '+' : ''}${gain} кр</b> за партию` : ''}<br><span>в трюме: ${p.cargo[r.key]} · хватит на ${can}</span></div>` +
+        `<div class="rf-acts">${btn('1', '×1', can < 1)}${btn('5', '×5', can < 5)}${btn('all', 'всё', can < 1)}</div></div>`;
+    }).join('');
   }
 
   /** Shipyard: the ship classes with their numbers under the pilot's upgrades. */

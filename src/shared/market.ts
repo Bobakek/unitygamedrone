@@ -38,10 +38,13 @@ const ORE: Partial<Record<PlanetType, number>> = { lava: 2, barren: 2, desert: 1
 const CRYSTAL: Partial<Record<PlanetType, number>> = { ice: 2, alien: 1.6, lava: 1.2, barren: 1, desert: 0.6, terran: 0.3, ocean: 0.3 };
 const BIO: Partial<Record<PlanetType, number>> = { terran: 2, ocean: 2, alien: 1.6, desert: 0.6, ice: 0.6 };
 
+/** Range of a station's industry: how much of its raw goods it refines itself. */
+const INDUSTRY: readonly [number, number] = [0.25, 1.75];
+
 /** How much of each good a system produces (arbitrary units). */
 export function supplyOf(system: number): Record<CargoKey, number> {
   const d = getSystem(system);
-  const out: Record<CargoKey, number> = { ore: d.fields.length * 1.5, crystal: d.fields.length * 0.5, relic: 0, bio: 0 };
+  const out: Record<CargoKey, number> = { ore: d.fields.length * 1.5, crystal: d.fields.length * 0.5, relic: 0, bio: 0, ingot: 0, optics: 0, parts: 0 };
   for (const p of d.planets) {
     out.ore += ORE[p.type] ?? 0;
     out.crystal += CRYSTAL[p.type] ?? 0;
@@ -49,6 +52,11 @@ export function supplyOf(system: number): Record<CargoKey, number> {
     // relics come from ruins and crashed ships
     for (const s of planetSites(p)) out.relic += s.kind === 'ruin' ? 1 : s.kind === 'wreck' ? 1.5 : 0;
   }
+  // refined goods: made from what the system mines, more where the station has big smelters
+  const industry = INDUSTRY[0] + (INDUSTRY[1] - INDUSTRY[0]) * new Rng(hashInts(d.seed, 0x5e17)).float();
+  out.ingot = out.ore * industry;
+  out.optics = out.crystal * industry;
+  out.parts = (out.ore + out.crystal) * 0.5 * industry;
   return out;
 }
 

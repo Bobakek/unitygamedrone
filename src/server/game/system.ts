@@ -33,6 +33,7 @@ import { item, lookCode, owns, repNeedText, repOk, SLOT_NAMES } from '../../shar
 import { isPirateFriend, isWanted, WANTED_BOUNTY } from '../../shared/contracts.ts';
 import { ContractDesk } from './contracts.ts';
 import { StationMarket } from './market.ts';
+import { inputsText, MAX_BATCHES, recipeOf, refine } from '../../shared/refinery.ts';
 import { AsteroidMining } from './mining.ts';
 import { HULLS, isHull, type HullKey } from '../../shared/ships/hulls.ts';
 import { GROUP_BONUS, SHARE_RANGE } from './groups.ts';
@@ -939,6 +940,17 @@ export class SystemInstance implements NpcWorld {
         const err = this.market.buy(s, act.key, Number(act.n));
         if (!err) this.marketTrade();
         return err;
+      }
+      case 'refine': {
+        if (!atStation(s)) return 'Нужно пристыковаться';
+        const r = recipeOf(String(act.recipe));
+        if (!r) return null;
+        const { n, fee } = refine(r, p.cargo, p.credits, act.n === undefined ? MAX_BATCHES : Number(act.n));
+        if (!n) return p.credits < r.fee ? 'Недостаточно кредитов' : `Нужно: ${inputsText(r)}`;
+        p.credits -= fee;
+        s.sendPilot();
+        s.msg(`Плавильня: ${CARGO_NAMES[r.key].toLowerCase()} ×${n} — −${fee} кр`, 'good');
+        return null;
       }
       case 'repair': {
         if (!atStation(s)) return 'Нужно пристыковаться';

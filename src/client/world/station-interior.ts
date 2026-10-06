@@ -4,6 +4,7 @@ import type { SystemDef } from '../../shared/galaxy/system-gen.ts';
 import type { V3 } from '../../shared/math/vec.ts';
 import { CABIN, DECK_Y, PAD, ROOMS, TERMINALS, type TerminalKind } from '../../shared/station/deck.ts';
 import { CabinView } from './cabin.ts';
+import { RefineryView } from './refinery.ts';
 import { add, newParts, type Parts } from '../entities/ship-builder.ts';
 import { glowTexture } from './textures.ts';
 
@@ -12,7 +13,7 @@ const metalMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShadin
 const glowMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false });
 const glassMat = new THREE.MeshStandardMaterial({ color: '#9ad8ff', roughness: 0.05, metalness: 0.9, transparent: true, opacity: 0.1, depthWrite: false });
 
-const SCREEN: Record<TerminalKind, string> = { trade: '#6affb0', upgrades: '#6ac8ff', contracts: '#ffb43a', wardrobe: '#e07aff', trophies: '#ffd27a' };
+const SCREEN: Record<TerminalKind, string> = { trade: '#6affb0', upgrades: '#6ac8ff', contracts: '#ffb43a', wardrobe: '#e07aff', trophies: '#ffd27a', refinery: '#ff8a3a' };
 const FIELD_VS = `varying vec2 vUv;
 #include <common>
 #include <logdepthbuf_pars_vertex>
@@ -52,8 +53,8 @@ function textSprite(text: string, color: string, h = 0.6): THREE.Sprite {
  * station/deck.ts) and placed inside the station's hull: the hangar with the
  * pilot's ship on its pad and the bay's force field, the airlock with sliding
  * doors and the promenade with big windows on real space, four terminals, a
- * hologram of the star system, planters and benches, and the pilot's cabin
- * with their trophies (see cabin.ts).
+ * hologram of the star system, planters and benches, the smelter (see
+ * refinery.ts) and the pilot's cabin with their trophies (see cabin.ts).
  */
 export class StationInterior {
   readonly group = new THREE.Group();
@@ -61,6 +62,7 @@ export class StationInterior {
   readonly q = new THREE.Quaternion();
   private doors: { mesh: THREE.Mesh; open: number; x: number; z: number; side: number; w: number }[] = [];
   readonly cabin = new CabinView();
+  readonly refinery = new RefineryView();
   private holo = new THREE.Group();
   private field: THREE.ShaderMaterial;
 
@@ -107,13 +109,14 @@ export class StationInterior {
       this.doors.push({ mesh: d, open: 0, x: door.x, z: door.z - 0.3, side, w: door.half / 2 });
     }
     this.group.add(this.cabin.group);
+    this.group.add(this.refinery.group);
     // terminal names and signs
     for (const t of TERMINALS) {
       const s = textSprite(t.name, SCREEN[t.kind], 0.5);
       s.position.set(t.x, 2.8, t.z);
       this.group.add(s);
     }
-    for (const [text, x, y, z] of [['ПРОМЕНАД', 0, 5.6, -39.5], ['АНГАР', 0, 6, -80.5], [sys.station.name, 0, 8.2, 29.3], ['КАЮТА', CABIN.door.x, 3.7, -39.6]] as [string, number, number, number][]) {
+    for (const [text, x, y, z] of [['ПРОМЕНАД', 0, 5.6, -39.5], ['АНГАР', 0, 6, -80.5], [sys.station.name, 0, 8.2, 29.3], ['КАЮТА', CABIN.door.x, 3.7, -39.6], ['ПЛАВИЛЬНЯ', 18, 7.9, -39.4]] as [string, number, number, number][]) {
       const s = textSprite(text, '#8ff8ff', 1.1);
       s.position.set(x, y, z);
       this.group.add(s);
@@ -295,10 +298,12 @@ export class StationInterior {
     this.holo.rotation.y += dt * 0.08;
     for (const o of this.holo.children) if (o.userData.speed) o.rotation.y += dt * o.userData.speed;
     this.field.uniforms.t.value = time;
+    this.refinery.update(time);
   }
 
   dispose() {
     this.cabin.dispose();
+    this.refinery.dispose();
     this.group.removeFromParent();
     this.group.traverse((o) => {
       if (o instanceof THREE.Mesh) o.geometry.dispose();

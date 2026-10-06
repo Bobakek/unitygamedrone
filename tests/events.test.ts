@@ -6,7 +6,7 @@ import {
   ANOMALY_SCAN_TIME, BASE_BOUNTY, PILOT_HP, vnorm, vsub, CFLAG, aimByte, aimPitch, KIND, MOOD, moodOf, cargoCount, decodeJson, encodeJson, FWD, MSG, nodesNear, PROTOCOL_VERSION, qrot, resourceNode, TICK_RATE, v3, vdist,
   type GameEvent, type Poi, getSystem, heightAt, MODE, lookCode, defaultOutfit, type PilotInfo,
   BOARD_EPOCH_MS, BOUNTY, newCareer, generateBoard, WANTED_BOUNTY, type BoardMsg, type ContractDef, type ContractKind,
-  planetRot, toBodyDir, DECK_FRAME, DECK_PLANET,
+  planetRot, toBodyDir, DECK_FRAME, DECK_PLANET, emptyCargo,
 } from '../src/shared/index.ts';
 import { RAMP } from '../src/shared/station/deck.ts';
 import { DatabaseSync } from 'node:sqlite';
@@ -87,7 +87,7 @@ describe('world events', () => {
 
   it('convoys travel, fight back and spill cargo when the freighter dies', () => {
     park(0);
-    me.s.pilot.cargo = { ore: 0, crystal: 0, relic: 0, bio: 0 };
+    me.s.pilot.cargo = emptyCargo();
     const f0 = qrot(v3(), me.s.ship.world.q, FWD);
     const at = v3(me.s.ship.world.p.x + f0.x * 3000, me.s.ship.world.p.y + f0.y * 3000, me.s.ship.world.p.z + f0.z * 3000);
     const poi = sys.world.spawn('convoy', { p: at, dir: v3(1, 0, 0) })!;
@@ -235,11 +235,11 @@ describe('fauna and on-foot combat', () => {
   });
 
   it('a pilot whose suit fails is recalled to the ship and loses half the cargo', () => {
-    me.s.pilot.cargo = { ore: 4, crystal: 2, relic: 1, bio: 3 };
+    me.s.pilot.cargo = { ...emptyCargo(), ore: 4, crystal: 2, relic: 1, bio: 3 };
     sys.fauna.hurt(me.s, 500, 0);
     expect(me.s.char).toBeNull();
     expect(me.s.mode).toBe(0);
-    expect(me.s.pilot.cargo).toEqual({ ore: 2, crystal: 1, relic: 1, bio: 2 });
+    expect(me.s.pilot.cargo).toEqual({ ...emptyCargo(), ore: 2, crystal: 1, relic: 1, bio: 2 });
   });
 });
 

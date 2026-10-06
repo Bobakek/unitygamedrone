@@ -355,3 +355,18 @@ button.ghost:hover { color: var(--ink); border-color: var(--cyan); }
 .tr-item button { flex: none; padding: 4px 10px; font-size: 12px; }
 .tr-empty { color: var(--dim); font-size: 13px; line-height: 1.5; }
 .tr-close { margin-top: 14px; width: 100%; }
+
+/* station smelter */
+.st-refinery { margin-top: 14px; }
+.rf-list { display: flex; flex-direction: column; gap: 6px; }
+.rf { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; border: 1px solid rgba(255, 150, 70, 0.18); border-radius: 8px; padding: 8px 10px; background: rgba(52, 30, 18, 0.35); font-size: 12px; }
+.rf.can { border-color: rgba(255, 150, 70, 0.5); }
+.rf-io { display: flex; flex-direction: column; gap: 2px; }
+.rf-io b { font-size: 13px; color: #ffd2a8; }
+.rf-io span { color: #cfd9ea; }
+.rf-io small { color: var(--dim); }
+.rf-gain { text-align: right; color: var(--dim); line-height: 1.45; }
+.rf-gain b.up { color: #6dff9c; }
+.rf-gain b.down { color: #ff9a8a; }
+.rf-acts button { width: auto !important; display: inline-block !important; margin: 0 2px; padding: 3px 8px; font-size: 12px; }
+@media (max-width: 760px) { .rf { grid-template-columns: 1fr; } .rf-gain { text-align: left; } }
