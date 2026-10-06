@@ -354,6 +354,41 @@ try {
     await mode(2);
     console.log('done station');
   }
+  // the pilot's cabin off the promenade, full of trophies, and its collection terminal
+  if (!only || only === 'cabin') {
+    if ((await page.evaluate(() => window.__game.pred.mode)) === 1) { await page.keyboard.press('KeyG'); await mode(0); }
+    if ((await page.evaluate(() => window.__game.pred.mode)) !== 2 && (await page.evaluate(() => window.__game.pred.mode)) !== 4) {
+      await chat('/tp dock');
+      await page.waitForFunction(() => { const el = document.querySelector('#prompt'); return el.style.display !== 'none' && el.textContent.includes('стыков'); }, null, { timeout: Math.max(20000, STEP_MS), polling: 250 });
+      await page.keyboard.press('KeyF');
+      await mode(2);
+      await page.evaluate(() => document.querySelector('#station button[data-act="close-station"]')?.click());
+    }
+    if ((await page.evaluate(() => window.__game.pred.mode)) === 2) { await page.keyboard.press('KeyG'); await mode(4); }
+    await chat('/trophies');
+    await page.waitForFunction(() => (window.__game.pilot?.trophies.length ?? 0) > 20, null, { timeout: STEP_MS, polling: 250 });
+    // in the doorway, looking into the room
+    await chat('/deck cabin');
+    await page.evaluate(() => { const g = window.__game; g.ctrl.footPitch = 0.12; g.ctrl.footDist = 3.5; });
+    await sleep(6000);
+    await page.screenshot({ path: `${OUT}/cabin.png` });
+    // the relic shelf on the left wall
+    await chat('/deck shelf');
+    await page.evaluate(() => { const g = window.__game; g.ctrl.footDist = 2.6; g.ctrl.footPitch = 0.05; });
+    await sleep(5000);
+    await page.screenshot({ path: `${OUT}/cabin-shelf.png` });
+    await chat('/deck trophies');
+    await sleep(1500);
+    await page.keyboard.press('KeyF');
+    await page.waitForFunction(() => !document.querySelector('#trophies').classList.contains('hidden'), null, { timeout: STEP_MS, polling: 250 });
+    await sleep(800);
+    await page.screenshot({ path: `${OUT}/cabin-collection.png` });
+    await page.evaluate(() => document.querySelector('#trophies .tr-close').click());
+    const placed = await page.evaluate(() => window.__game.interior.cabin.placed.length);
+    console.log('cabin trophies placed', placed);
+    if (placed < 20) errors.push(`cabin: only ${placed} trophies on display`);
+    console.log('done cabin');
+  }
   // the planetary rover: unloaded from the landed ship, driven over the terrain, then parked
   if (!only || only === 'rover') {
     if ((await page.evaluate(() => window.__game.sys.id)) !== 0) {

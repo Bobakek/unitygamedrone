@@ -13,7 +13,7 @@ import {
   aimByte, CFLAG, DECK_FRAME, DECK_PLANET, EFLAG, IFLAG, KIND, MODE, ROVER_SPEED_MAX, steerByte, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
 } from '../../shared/net/protocol.ts';
 import { nodesNear, resourceNode } from '../../shared/planet/resources.ts';
-import { planetSites, SITE_NODE_BASE, siteDir, sitesNear, wreckAt, wreckZone } from '../../shared/planet/sites.ts';
+import { planetSites, SITE_NODE_BASE, siteCache, siteDir, sitesNear, wreckAt, wreckZone } from '../../shared/planet/sites.ts';
 import { footHeight, heightAt, liquidOf, surfaceHeight } from '../../shared/planet/terrain.ts';
 import { charQuat, climbProgress, copyChar, emptyCharInput, HEAD_UNDER, newChar, stepChar } from '../../shared/sim/character.ts';
 import { newRover, rightRover, ROVER, roverGround, roverOverturned, stepRover } from '../../shared/sim/rover.ts';
@@ -34,7 +34,8 @@ import { ContractDesk } from './contracts.ts';
 import { StationMarket } from './market.ts';
 import { GROUP_BONUS, SHARE_RANGE } from './groups.ts';
 import type { MarketQuote } from '../../shared/market.ts';
-import { BOARD_REACH, PAD, RAMP, stepDeck } from '../../shared/station/deck.ts';
+import { BOARD_REACH, inCabin, PAD, RAMP, stepDeck } from '../../shared/station/deck.ts';
+import { awardTrophy } from './trophies.ts';
 import { WeatherDesk } from './weather.ts';
 import type { Weather } from '../../shared/weather.ts';
 import type { Session } from './session.ts';
@@ -640,6 +641,8 @@ export class SystemInstance implements NpcWorld {
       // pilots on the station deck are seen only from inside the station
       const deck = c.planet < 0;
       if (deck !== docked) continue;
+      // a cabin is private: its owner sees no one else, and no one sees them
+      if (deck && inCabin(c.state.p) !== (s.mode === MODE.DECK && !!s.char && inCabin(s.char.state.p))) continue;
       if (deck) qlook(q, c.state.f, DECK_UP); else charQuat(c.state, q);
       const cs = c.state;
       const flags = (cs.ground || cs.swim ? 0 : CFLAG.AIR) | (cs.climbMode ? CFLAG.CLIMB : 0) | (cs.scramble ? CFLAG.SCRAMBLE : 0)
@@ -923,7 +926,19 @@ export class SystemInstance implements NpcWorld {
         p.cargo[node.type]++;
         this.harvested.set(key, this.time + NODE_RESPAWN);
         this.events.push({ t: 'harvest', planet: pl.index, node: node.id, left: NODE_RESPAWN, by: s.id });
+        // the first relic from a site goes on the cabin shelf
+        const cache = node.type === 'relic' ? siteCache(pl, node.id) : null;
+        if (cache) awardTrophy(s, `relic:${this.def.id}:${pl.index}:${cache.site.id}`);
         s.sendPilot();
+        return null;
+      }
+      case 'readLog': {
+        // the log console on a wreck's bridge (the client shows the text itself)
+        if (s.mode !== MODE.FOOT || !s.char) return null;
+        const pl = this.def.planets[s.char.planet];
+        const w = wreckAt(pl, s.char.state.p);
+        if (!w || wreckZone(w.site, w.x, w.z) !== 'bridge' || Math.hypot(w.x - w.site.goal.x, w.z - w.site.goal.z) > 3.5) return null;
+        if (awardTrophy(s, `log:${this.def.id}:${pl.index}:${w.site.id}`)) s.sendPilot();
         return null;
       }
       case 'missile':

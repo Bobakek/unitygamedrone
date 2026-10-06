@@ -14,6 +14,7 @@ import type { ShipEntity } from './entities.ts';
 import { NpcBrain } from './npc.ts';
 import type { Session } from './session.ts';
 import type { SystemInstance } from './system.ts';
+import { awardTrophy } from './trophies.ts';
 
 interface PoiState extends Poi {
   escorts: number[];
@@ -367,6 +368,7 @@ export class WorldEvents {
       if (acc >= ANOMALY_SCAN_TIME) {
         this.scans.delete(key);
         poi.done.add(s.pilot.id);
+        awardTrophy(s, `shard:${this.sys.def.id}`);
         const got = this.grant(s, { credits: EVENT_REWARD.anomalyCredits, cargo: { crystal: 2 } });
         const p = s.ship.world.p;
         s.sendJson(MSG.EVENTS, { ev: [{ t: 'loot', text: `Аномалия просканирована: ${got ? describeLoot(got) : ''}`, pos: [p.x, p.y, p.z] }] });
