@@ -1,4 +1,5 @@
 import type { CharState } from '../../shared/sim/character.ts';
+import type { RoverState } from '../../shared/sim/rover.ts';
 import type { ShipInput, ShipState, ShipStats } from '../../shared/sim/ship.ts';
 import type { Blueprint } from '../../shared/ships/blueprint.ts';
 import type { CombatStats } from '../../shared/economy.ts';
@@ -59,6 +60,15 @@ export interface CharEntity {
   drown: number;
   /** Last time the client was told about weather damage. */
   hazardAt?: number;
+}
+
+/** A pilot's planetary rover, unloaded from their landed ship. */
+export interface RoverEntity {
+  id: number;
+  owner: Session;
+  /** Body-frame state of planet `planet`. */
+  state: RoverState;
+  planet: number;
 }
 
 export interface Missile {

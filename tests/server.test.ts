@@ -6,7 +6,7 @@ import { Game } from '../src/server/game/game.ts';
 import { wsTransport } from '../src/server/game/session.ts';
 import {
   decodeJson, decodeSnapshot, emptyCharInput, emptyInput, encodeInput, encodeJson, IFLAG, MODE, MSG, PROTOCOL_VERSION,
-  FWD, nodesNear, qlook, qrot, quat, v3, vnorm, vdist, type Snapshot, type Welcome,
+  FWD, KIND, nodesNear, qlook, qrot, quat, v3, vnorm, vdist, type Snapshot, type Welcome,
 } from '../src/shared/index.ts';
 
 class Bot {
@@ -36,6 +36,9 @@ class Bot {
   }
   footInput(char = emptyCharInput()) {
     this.ws.send(encodeInput({ seq: ++this.seq, mode: MODE.FOOT, flags: 0, t: this.snap?.time ?? 0, ship: emptyInput(), char }));
+  }
+  roverInput(char = emptyCharInput(), flags = 0) {
+    this.ws.send(encodeInput({ seq: ++this.seq, mode: MODE.ROVER, flags, t: this.snap?.time ?? 0, ship: emptyInput(), char }));
   }
   action(a: object) { this.ws.send(encodeJson(MSG.ACTION, a)); }
   close() { this.ws.close(); }
@@ -166,6 +169,66 @@ describe('game server', () => {
     c.close();
     await waitFor(() => game.sessions.size === 0);
     expect(store.find('Miner')!.credits).toBeGreaterThan(before);
+  });
+
+  it('unloads a rover from the landed ship, drives it, others see it, and it goes back into the hold', async () => {
+    const a = new Bot(url, 'Driver');
+    const b = new Bot(url, 'Watcher');
+    await a.connect();
+    await b.connect();
+    const s = sessionOf(a), o = sessionOf(b);
+    a.ws.send(encodeJson(MSG.CHAT, { text: '/land 1' }));
+    await waitFor(() => s.ship.state.landed === 2);
+    // no rover from orbit or from the cockpit
+    a.action({ a: 'rover' });
+    a.action({ a: 'exit' });
+    await waitFor(() => s.mode === MODE.FOOT && !!s.char);
+    expect(s.rover).toBeNull();
+    a.action({ a: 'rover' });
+    await waitFor(() => !!s.rover);
+    const rover = s.rover!;
+    expect(s.system.rovers.get(rover.id)).toBe(rover);
+    // too far to take the wheel, then next to it
+    a.action({ a: 'drive' });
+    await new Promise((r) => setTimeout(r, 80));
+    expect(s.mode).toBe(MODE.FOOT);
+    s.char!.state.p = { ...rover.state.p };
+    a.action({ a: 'drive' });
+    await waitFor(() => s.mode === MODE.ROVER && a.snap?.self.mode === MODE.ROVER && !!a.snap.self.rover);
+    expect(a.snap!.self.roverId).toBe(rover.id);
+    // the watcher, parked on the same planet, sees the rover (driven) but not a pilot walking
+    b.ws.send(encodeJson(MSG.CHAT, { text: '/land 1' }));
+    await waitFor(() => o.ship.state.landed === 2);
+    await waitFor(() => !!b.snap?.entities.some((e) => e.id === rover.id));
+    const seen = b.snap!.entities.find((e) => e.id === rover.id)!;
+    expect(seen.kind).toBe(KIND.ROVER);
+    expect(seen.frame).toBe(2);
+    expect(b.snap!.entities.some((e) => e.id === s.char!.id)).toBe(false);
+    // drive: it moves, the pilot rides along in the seat
+    const p0 = { ...rover.state.p };
+    for (let i = 0; i < 45; i++) { a.roverInput({ ...emptyCharInput(), mz: 1 }); await new Promise((r) => setTimeout(r, 33)); }
+    await waitFor(() => vdist(rover.state.p, p0) > 3);
+    expect(vdist(s.char!.state.p, rover.state.p)).toBeLessThan(1.5);
+    // step out next to it, load it back by the ship
+    a.action({ a: 'leave' });
+    await waitFor(() => s.mode === MODE.FOOT);
+    expect(vdist(s.char!.state.p, rover.state.p)).toBeLessThan(4);
+    rover.state.p = { ...s.ship.state.p };
+    s.char!.state.p = { ...s.ship.state.p };
+    a.action({ a: 'rover' });
+    await waitFor(() => !s.rover && !s.system.rovers.size);
+    // a rover left behind is loaded automatically when the ship takes off
+    a.action({ a: 'rover' });
+    await waitFor(() => !!s.rover);
+    s.char!.state.p = { ...s.ship.state.p };
+    a.action({ a: 'board' });
+    await waitFor(() => s.mode === MODE.SHIP);
+    expect(s.rover).not.toBeNull();
+    s.ship.state.landed = 0;
+    await waitFor(() => !s.rover && !s.system.rovers.size);
+    a.close();
+    b.close();
+    await waitFor(() => game.sessions.size === 0);
   });
 
   it('pirates hunt players outside the safe zone', async () => {

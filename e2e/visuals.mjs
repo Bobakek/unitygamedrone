@@ -354,6 +354,56 @@ try {
     await mode(2);
     console.log('done station');
   }
+  // the planetary rover: unloaded from the landed ship, driven over the terrain, then parked
+  if (!only || only === 'rover') {
+    if ((await page.evaluate(() => window.__game.sys.id)) !== 0) {
+      await chat('/system 0');
+      await page.waitForFunction(() => window.__game.sys.id === 0 && window.__game.pred.ready, null, { timeout: 30000, polling: 250 });
+    }
+    await chat('/god');
+    await chat(`/land ${process.env.ROVER_PLANET ?? 2} day`);
+    await chat('/weather clear');
+    await sleep(6000);
+    await chat('/rover');
+    await mode(5);
+    await page.waitForFunction(() => window.__game.myRover?.ready, null, { timeout: 30000, polling: 250 });
+    await sleep(2500);
+    const p0 = await page.evaluate(() => ({ ...window.__game.pred.rover.p }));
+    // (software WebGL runs the game slower than real time: drive by simulated ticks, not wall time)
+    const ticks = () => page.evaluate(() => window.__game.ctrl.seq);
+    const hold = async (n) => { const t0 = await ticks(); while ((await ticks()) - t0 < n) await sleep(100); };
+    await page.keyboard.down('KeyW');
+    await hold(75);
+    await page.keyboard.down('KeyD');
+    await hold(25);
+    await page.keyboard.up('KeyD');
+    await hold(30);
+    await page.screenshot({ path: `${OUT}/rover-drive.png` });
+    await page.keyboard.up('KeyW');
+    await page.keyboard.down('Space');
+    await hold(60);
+    await page.keyboard.up('Space');
+    const st = await page.evaluate((a) => {
+      const r = window.__game.pred.rover;
+      return { moved: Math.hypot(r.p.x - a.x, r.p.y - a.y, r.p.z - a.z), v: Math.hypot(r.v.x, r.v.y, r.v.z), ground: r.ground, susp: r.susp.map((x) => +x.toFixed(2)) };
+    }, p0);
+    console.log('rover drive', JSON.stringify(st));
+    if (st.moved < 10) errors.push(`rover: did not drive (${JSON.stringify(st)})`);
+    // a three-quarter view from the front: swing the chase camera around and hold it there
+    await page.evaluate(() => { const c = window.__game.ctrl; c.roverYaw = 2.4; c.roverLook = 1e9; c.roverDist = 8; c.footPitch = -0.15; });
+    await sleep(2000);
+    await page.addStyleTag({ content: '#prompt { visibility: hidden !important; }' }).then((h) => h.evaluate((e) => e.id = 'e2e-hide'));
+    await page.screenshot({ path: `${OUT}/rover.png` });
+    await page.evaluate(() => document.getElementById('e2e-hide')?.remove());
+    await page.evaluate(() => { window.__game.ctrl.roverLook = 0; });
+    await page.keyboard.press('KeyG');
+    await mode(1);
+    await sleep(2500);
+    await page.screenshot({ path: `${OUT}/rover-parked.png` });
+    const parked = await page.evaluate(() => [...window.__game.remotes.values()].some((r) => r.info?.kind === 6 && r.view?.ready && r.visible));
+    if (!parked) errors.push('rover: the parked rover is not drawn');
+    console.log('done rover');
+  }
 } catch (e) {
   errors.push(String(e.stack || e));
 } finally {

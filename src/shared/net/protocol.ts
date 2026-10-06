@@ -1,5 +1,6 @@
 import type { CharInput, CharState } from '../sim/character.ts';
 import type { ShipInput, ShipState } from '../sim/ship.ts';
+import type { RoverState } from '../sim/rover.ts';
 import type { Blueprint } from '../ships/blueprint.ts';
 import type { Cargo, Upgrades } from '../economy.ts';
 import type { Outfit } from '../outfit.ts';
@@ -12,7 +13,7 @@ export const MSG = {
   WELCOME: 20, SNAPSHOT: 21, INFO: 22, GONE: 23, SHOTS: 24, EVENTS: 25, PILOT: 26, PONG: 27, ERROR: 28, WORLD: 29, BOARD: 30,
 } as const;
 
-export const KIND = { SHIP: 1, CHAR: 2, MISSILE: 3, LOOT: 4, CREATURE: 5 } as const;
+export const KIND = { SHIP: 1, CHAR: 2, MISSILE: 3, LOOT: 4, CREATURE: 5, ROVER: 6 } as const;
 /** Shot.level used for the pilot's hand blaster. */
 export const BLASTER_LEVEL = 10;
 /** Shot.level of a wreck's guard drone. */
@@ -26,8 +27,17 @@ export const CFLAG = { SCRAMBLE: 1, CLIMB: 2, AIR: 4, SWIM: 8, UNDER: 16, AIM: 1
 export const aimByte = (pitch: number) => Math.max(0, Math.min(1, pitch / 2.6 + 0.5));
 export const aimPitch = (b: number) => (b - 0.5) * 2.6;
 export const IFLAG = { FIRE: 1, BOOST: 2, CRUISE: 4, JUMP: 8, SPRINT: 16, AIM: 32, DIVE: 64 } as const;
-/** DECK: walking about the inside of the station (docked). */
-export const MODE = { SHIP: 0, FOOT: 1, DOCKED: 2, DEAD: 3, DECK: 4 } as const;
+/** DECK: walking about the inside of the station (docked); ROVER: driving the planetary rover. */
+export const MODE = { SHIP: 0, FOOT: 1, DOCKED: 2, DEAD: 3, DECK: 4, ROVER: 5 } as const;
+/**
+ * Rovers (KIND.ROVER): `throttle` carries the speed (of ROVER_SPEED_MAX), `shield` the front wheel
+ * angle (see steerByte) and EFLAG.BOOST that someone is at the wheel.
+ */
+export const ROVER_SPEED_MAX = 30;
+export const steerByte = (a: number) => Math.max(0, Math.min(1, a / 1.2 + 0.5));
+export const steerAngle = (b: number) => (b - 0.5) * 1.2;
+/** Inputs that use the on-foot layout (rovers steer with the same keys). */
+const charLayout = (mode: number) => mode === MODE.FOOT || mode === MODE.DECK || mode === MODE.ROVER;
 /** EntityState.frame of pilots walking on a station deck (deck coordinates, see station/deck.ts). */
 export const DECK_FRAME = 255;
 /** SelfState.charPlanet of the local pilot on the deck. */
@@ -84,7 +94,9 @@ export type Action =
   | { a: 'salvage'; id: number } | { a: 'sample'; id: number }
   | { a: 'buyItem'; id: string } | { a: 'equip'; id: string }
   | { a: 'takeContract'; id: string } | { a: 'dropContract'; id: string }
-  | { a: 'disembark' };
+  | { a: 'disembark' }
+  /** Rover: unload it from / load it into the landed ship, take the wheel, step out, put it back on its wheels. */
+  | { a: 'rover' } | { a: 'drive' } | { a: 'leave' } | { a: 'flip' };
 
 export function encodeJson(type: number, payload: unknown): Uint8Array {
   const body = new TextEncoder().encode(JSON.stringify(payload));
@@ -110,7 +122,7 @@ const d8 = (v: number) => v / 127;
 export function encodeInput(m: InputMsg): Uint8Array {
   const w = new Writer(32);
   w.u8(MSG.INPUT).u32(m.seq).u8(m.mode).u16(m.flags).f64(m.t);
-  if (m.mode === MODE.FOOT || m.mode === MODE.DECK) {
+  if (charLayout(m.mode)) {
     w.i8(q8(m.char.mx)).i8(q8(m.char.mz)).f32(m.char.yawDelta).i8(q8(m.char.pitch / 1.3));
   } else {
     const s = m.ship;
@@ -126,7 +138,7 @@ export function decodeInput(data: Uint8Array): InputMsg {
   const tt = r.f64(), t = Number.isFinite(tt) ? tt : 0;
   const ship: ShipInput = { yaw: 0, pitch: 0, roll: 0, throttle: 0, strafeX: 0, strafeY: 0, boost: !!(flags & IFLAG.BOOST), cruise: !!(flags & IFLAG.CRUISE) };
   const char: CharInput = { mx: 0, mz: 0, yawDelta: 0, pitch: 0, jump: !!(flags & IFLAG.JUMP), sprint: !!(flags & IFLAG.SPRINT), dive: !!(flags & IFLAG.DIVE) };
-  if (mode === MODE.FOOT || mode === MODE.DECK) {
+  if (charLayout(mode)) {
     char.mx = d8(r.i8()); char.mz = d8(r.i8());
     const yd = r.f32();
     char.yawDelta = Number.isFinite(yd) ? Math.max(-0.5, Math.min(0.5, yd)) : 0;
@@ -151,6 +163,8 @@ export interface SelfState {
   charId: number; char: CharState | null; charPlanet: number;
   /** Pilot suit integrity in percent (on foot). */
   suit: number;
+  /** The rover being driven (MODE.ROVER), in the body frame of planet `charPlanet`. */
+  roverId: number; rover: RoverState | null;
 }
 export interface EntityState {
   id: number; kind: number; flags: number;
@@ -180,6 +194,12 @@ export function encodeSnapshot(s: Snapshot): Uint8Array {
     w.u8(1).u32(me.charId).i8(me.charPlanet);
     w.f64(c.p.x).f64(c.p.y).f64(c.p.z).f64(c.v.x).f64(c.v.y).f64(c.v.z).f64(c.f.x).f64(c.f.y).f64(c.f.z);
     w.u8(c.ground).f64(c.fuel).u8(c.climbMode).f64(c.climb).f64(c.climbRise).f64(c.climbFwd).f64(c.climbUp).u8(c.scramble).u8(c.swim).f64(c.air);
+  } else w.u8(0);
+  if (me.rover) {
+    const v = me.rover;
+    w.u8(1).u32(me.roverId);
+    w.f64(v.p.x).f64(v.p.y).f64(v.p.z).f64(v.v.x).f64(v.v.y).f64(v.v.z).f64(v.q.x).f64(v.q.y).f64(v.q.z).f64(v.q.w);
+    w.f64(v.w.x).f64(v.w.y).f64(v.w.z).f64(v.steer).f64(v.susp[0]).f64(v.susp[1]).f64(v.susp[2]).f64(v.susp[3]).u8(v.ground);
   } else w.u8(0);
   w.u16(s.entities.length);
   for (const e of s.entities) {
@@ -211,6 +231,14 @@ export function decodeSnapshot(data: Uint8Array): Snapshot {
       ground: r.u8(), fuel: r.f64(), climbMode: r.u8(), climb: r.f64(), climbRise: r.f64(), climbFwd: r.f64(), climbUp: r.f64(), scramble: r.u8(), swim: r.u8(), air: r.f64(),
     };
   }
+  let rover: RoverState | null = null, roverId = 0;
+  if (r.u8()) {
+    roverId = r.u32();
+    rover = {
+      p: { x: r.f64(), y: r.f64(), z: r.f64() }, v: { x: r.f64(), y: r.f64(), z: r.f64() }, q: { x: r.f64(), y: r.f64(), z: r.f64(), w: r.f64() },
+      w: { x: r.f64(), y: r.f64(), z: r.f64() }, steer: r.f64(), susp: [r.f64(), r.f64(), r.f64(), r.f64()], ground: r.u8(),
+    };
+  }
   const n = r.u16();
   const entities: EntityState[] = [];
   for (let i = 0; i < n; i++) {
@@ -222,7 +250,7 @@ export function decodeSnapshot(data: Uint8Array): Snapshot {
       hull: r.u8() / 255, shield: r.u8() / 255, throttle: r.u8() / 255,
     });
   }
-  return { tick, time, ack, self: { shipId, mode, teleport, ship, hull, maxHull, shield, maxShield, energy, missiles, charId, char, charPlanet, suit }, entities };
+  return { tick, time, ack, self: { shipId, mode, teleport, ship, hull, maxHull, shield, maxShield, energy, missiles, charId, char, charPlanet, suit, roverId, rover }, entities };
 }
 
 // ---------------------------------------------------------------- shots

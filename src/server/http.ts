@@ -5,6 +5,7 @@ import { extname, join, normalize, resolve } from 'node:path';
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2',
+  '.glb': 'model/gltf-binary',
 };
 
 /** Minimal static file server for the built client (dist/client) plus a health endpoint. */
