@@ -4,7 +4,7 @@ import { Game } from '../src/server/game/game.ts';
 import type { Transport } from '../src/server/game/session.ts';
 import { deckSight, deckWaypoint, roomAt } from '../src/shared/boarding.ts';
 import {
-  BUNKER, BUNKER_CHEST, BUNKER_CONSOLE, BUNKER_DECK, BUNKER_DOORS, BUNKER_HATCH, BUNKER_LAYOUT, DEPOT_EVERY, GARRISON, HOLD_TIME, PAD_R, waveSize,
+  BUNKER, BUNKER_CHEST, BUNKER_CONSOLE, BUNKER_DECK, BUNKER_DOORS, BUNKER_HATCH, BUNKER_LAYOUT, DEPOT_EVERY, DOOR_REACH, GARRISON, HOLD_TIME, PAD_R, waveSize,
   type BaseInfo,
 } from '../src/shared/base-assault.ts';
 import { emptyCharInput, newChar } from '../src/shared/sim/character.ts';
@@ -172,7 +172,7 @@ describe('pirate base assault', () => {
     expect(sys.handleAction(s, { a: 'board' })).toBeNull();
     expect(s.mode).toBe(MODE.FOOT);
     const q = sitePlane(pl, site, s.char!.state.p);
-    expect(Math.hypot(q.x - BUNKER.door.x, q.z - BUNKER.door.z)).toBeLessThan(4);
+    expect(Math.hypot(q.x - BUNKER.door.x, q.z - BUNKER.door.z)).toBeLessThan(DOOR_REACH);
     // the captors may go back in
     expect(sys.handleAction(s, { a: 'enterBase' })).toBeNull();
     expect(s.mode).toBe(MODE.BOARD);

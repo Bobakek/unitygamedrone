@@ -2496,10 +2496,10 @@ export class Game {
     const b = best.b;
     if (b.state === 'held') {
       const who = this.ownsBase(b) ? 'ваша' : `держит ${b.owners?.[0] ?? '?'}`;
-      return `⚑ База ${b.name}: ${who} · ещё ${this.fmtLeft(b.until ?? 0)}${b.raid ? ` · налёт: ${b.raid}` : ''}${b.depot ? ` · на складе ${b.depot} ед.` : ''}`;
+      return `⚑ ${b.name}: ${who} · ещё ${this.fmtLeft(b.until ?? 0)}${b.raid ? ` · налёт: ${b.raid}` : ''}${b.depot ? ` · на складе ${b.depot} ед.` : ''}`;
     }
-    if (b.state === 'open') return `☠ База ${b.name}: оборона подавлена — бункер открыт, гарнизон ${b.garrison}`;
-    return `☠ База ${b.name}: ${b.shield ? 'щит активен · ' : ''}турелей ${b.towers} · гарнизон ${b.garrison}`;
+    if (b.state === 'open') return `☠ ${b.name}: оборона подавлена — бункер открыт, гарнизон ${b.garrison}`;
+    return `☠ ${b.name}: ${b.shield ? 'щит активен · ' : ''}турелей ${b.towers} · гарнизон ${b.garrison}`;
   }
 
   private charOrShip(): V3 {

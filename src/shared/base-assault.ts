@@ -23,7 +23,7 @@ export const BUNKER = { x0: 20, x1: 28, z0: -2, z1: 6, h: 5.5, door: { x: 19.2, 
 /** The shield generator tower (its pylon is the networked entity, see outposts.ts). */
 export const GENERATOR = { x: -14, z: -24, r: 2.8, h: 11 };
 /** How close to the blast door a pilot on foot must stand to go in. */
-export const DOOR_REACH = 4;
+export const DOOR_REACH = 5.5;
 /** Radius of the force dome over the blockhouse while the generator stands. */
 export const DOME_R = 9;
 /** Where a landed ship gets repaired and refuelled (the pad in the middle of the base). */

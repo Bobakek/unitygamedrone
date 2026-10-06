@@ -193,8 +193,8 @@ export class Outposts {
     if (!h) h = this.sys.boarding.openBunker(b.site.planet, b.site.id, this.pocket(b));
     this.sys.boarding.enter(s, h);
     const alive = h.crew.filter((x) => !x.dead).length;
-    if (b.state === 'held') s.msg(`Бункер базы ${b.site.name}. Склад — налево по галерее, пульт — в конце`, 'info');
-    else s.msg(alive ? `Бункер базы ${b.site.name}: гарнизон — ${alive} чел. Пульт захвата — в командном пункте в конце галереи` : `Бункер базы ${b.site.name}: гарнизона нет. Пульт — в командном пункте`, alive ? 'warn' : 'info');
+    if (b.state === 'held') s.msg(`Бункер — ${b.site.name}. Склад — налево по галерее, пульт — в конце`, 'info');
+    else s.msg(alive ? `Бункер — ${b.site.name}: гарнизон — ${alive} чел. Пульт захвата — в командном пункте в конце галереи` : `Бункер — ${b.site.name}: гарнизона нет. Пульт — в командном пункте`, alive ? 'warn' : 'info');
     // nobody rebuilds the towers while the bunker is being stormed
     this.changed();
     return null;
@@ -205,12 +205,14 @@ export class Outposts {
   }
 
   /** Where a pilot coming out of the bunker stands: in front of the blast door, facing the yard. */
-  exitPoint(planet: number, site: number): { p: V3; f: V3 } {
+  exitPoint(planet: number, site: number, facingDoor = false): { p: V3; f: V3 } {
     const pl = this.sys.def.planets[planet];
     const s = planetSites(pl)[site];
-    const d = siteDir(pl, s, BUNKER.door.x - 1.6, BUNKER.door.z);
+    // far enough out that the camera behind the pilot stays clear of the blockhouse wall
+    const d = siteDir(pl, s, BUNKER.door.x - (facingDoor ? 3 : 4.5), BUNKER.door.z);
     const g = pl.radius + footHeight(pl, d.x, d.y, d.z) + 0.05;
-    return { p: v3(d.x * g, d.y * g, d.z * g), f: v3(-s.east.x, -s.east.y, -s.east.z) };
+    const k = facingDoor ? 1 : -1;
+    return { p: v3(d.x * g, d.y * g, d.z * g), f: v3(k * s.east.x, k * s.east.y, k * s.east.z) };
   }
 
   /** The garrison is down and `s` is at the console: the base changes hands. */
@@ -395,7 +397,7 @@ export class Outposts {
     this.steerRaiders(b);
     const owners = [...this.sys.sessions].filter((s) => b.owners.includes(s.pilot.name));
     this.sys.events.push({ t: 'announce', text: 'Пираты идут отбивать базу', sub: `${b.site.name}: налётчиков — ${n}. Если они собьют все турели, база будет потеряна`, kind: 'warn' });
-    for (const s of owners) s.msg(`Налёт на базу ${b.site.name}: ${n} пиратов атакуют турели`, 'warn');
+    for (const s of owners) s.msg(`Налёт на ${b.site.name}: ${n} пиратов атакуют турели`, 'warn');
     this.changed();
   }
 
@@ -513,7 +515,7 @@ export class Outposts {
     if (!b) return 'В системе нет баз';
     if (s.mode === MODE.BOARD) this.sys.recallPilot(s);
     if (s.char) { this.sys.chars.delete(s.char.id); this.sys.gone.push(s.char.id); s.char = null; }
-    const at = this.exitPoint(b.site.planet, b.site.id);
+    const at = this.exitPoint(b.site.planet, b.site.id, true);
     this.sys.putOnFoot(s, b.site.planet, at.p, at.f);
     return `У двери бункера: ${b.site.name}`;
   }

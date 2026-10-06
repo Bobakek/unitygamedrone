@@ -673,7 +673,7 @@ def build_outside_preview():
     bpy.ops.import_scene.gltf(filepath=gen_path)
     for o in bpy.context.selected_objects:
         if o not in gate:
-            o.location = (-9, 6, 4.95)
+            o.location = (-13, 9, 4.95)
     ground = material('Ground', '#7a6a50', 0.0, 0.95)
     bpy.ops.mesh.primitive_plane_add(size=120, location=(0, 0, 0))
     bpy.context.active_object.data.materials.append(ground)
