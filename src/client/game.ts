@@ -962,7 +962,7 @@ export class Game {
     else if (kind === 'wardrobe') this.wardrobe.show(this.pilot);
     else if (kind === 'trophies') this.trophiesUi.show(this.pilot);
     else {
-      this.hud.showStation(true, `${this.sys!.station.name} · ${name}`, true);
+      this.hud.showStation(true, `${this.sys!.station.name} · ${name}`, true, kind === 'refinery' ? '.st-refinery' : undefined);
       if (this.self) this.hud.renderStation(this.pilot, { hull: this.self.hull, max: this.self.maxHull });
     }
   }

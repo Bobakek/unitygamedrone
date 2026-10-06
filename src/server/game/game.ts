@@ -309,7 +309,7 @@ export class Game implements GameContext {
       case 'group': s.msg(this.groups.list(s)); return;
       case 'g': case 'p': { const t = args.join(' ').trim(); if (t) this.groups.say(s, t); return; }
       case 'help':
-        s.msg('Команды: /who, /help, группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|rock|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /gevent <raid|storm|shortage|end> [товар] [мин], /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|cabin|shelf|window|ramp>, /trophies, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /raid, /cargo <вид> <n>, /ship <fighter|hauler|miner>' : ''));
+        s.msg('Команды: /who, /help, группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|rock|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /gevent <raid|storm|shortage|end> [товар] [мин], /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|refinery|smelter|cabin|shelf|window|ramp>, /trophies, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /raid, /cargo <вид> <n>, /ship <fighter|hauler|miner>' : ''));
         return;
       case 'who':
         s.msg(`Онлайн (${this.sessions.size}): ${[...this.sessions.values()].map((o) => o.pilot.name).join(', ')}`);
@@ -397,7 +397,7 @@ export class Game implements GameContext {
       }
       case 'cargo': {
         const k = args[0] as keyof typeof s.pilot.cargo;
-        if (!(k in s.pilot.cargo)) { s.msg('/cargo ore|crystal|relic|bio <n>', 'warn'); break; }
+        if (!(k in s.pilot.cargo)) { s.msg(`/cargo ${Object.keys(s.pilot.cargo).join('|')} <n>`, 'warn'); break; }
         s.pilot.cargo[k] += Number(args[1]) || 1;
         s.sendPilot();
         break;
@@ -419,7 +419,7 @@ export class Game implements GameContext {
         // a terminal, the promenade's window on the planet, or the ramp
         const t = TERMINALS.find((x) => x.kind === args[0]);
         // named spots: x, z and which way to face
-        const spots: Record<string, [number, number, number, number]> = { window: [4, 4, 0, 1], cabin: [-15, -42, 0, -1], shelf: [-18.8, -51, -1, 0] };
+        const spots: Record<string, [number, number, number, number]> = { window: [4, 4, 0, 1], cabin: [-15, -42, 0, -1], shelf: [-18.8, -51, -1, 0], smelter: [16.5, -30, 0, -1] };
         const spot = spots[args[0]];
         const to = t ? { x: t.x + (t.x < 0 ? 1.8 : -1.8), z: t.z } : spot ? { x: spot[0], z: spot[1] } : RAMP;
         ch.state.p = v3(to.x, 0, to.z);

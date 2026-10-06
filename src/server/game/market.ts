@@ -1,4 +1,4 @@
-import { CARGO_KEYS, CARGO_NAMES, type CargoKey } from '../../shared/economy.ts';
+import { CARGO_KEYS, CARGO_NAMES, emptyCargo, type CargoKey } from '../../shared/economy.ts';
 import { boardEpoch, BOARD_EPOCH_MS, holdRoom } from '../../shared/contracts.ts';
 import { MARKET_HALF_LIFE, marketQuote, type MarketMsg, type MarketQuote } from '../../shared/market.ts';
 import { eventPriceMods } from '../../shared/galaxy-events.ts';
@@ -15,7 +15,7 @@ const MAX_LOT = 100;
  * worked out when the market is looked at, so a system nobody visits costs nothing.
  */
 export class StationMarket {
-  private pressure: Record<CargoKey, number> = { ore: 0, crystal: 0, relic: 0, bio: 0 };
+  private pressure: Record<CargoKey, number> = emptyCargo();
   private at = 0;
   /** Quote last sent to docked pilots (to resend only on a change). */
   private sent = '';

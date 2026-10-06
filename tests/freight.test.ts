@@ -6,6 +6,7 @@ import { getGalaxy, jumpsFrom } from '../src/shared/galaxy/galaxy.ts';
 import {
   BOARD_EPOCH_MS, combatStats, decodeJson, encodeJson, FREIGHT_FAIL_REP, FREIGHT_JUMPS, FREIGHT_SIZE, freightLoad, freightOffer, generateBoard,
   holdRoom, holdUsed, MODE, MSG, newCareer, PROTOCOL_VERSION, TICK_RATE, validCareer, type ContractDef, type GameEvent,
+  emptyCargo,
 } from '../src/shared/index.ts';
 
 function pilot(game: Game, name: string) {
@@ -78,7 +79,7 @@ describe('freight runs', () => {
     me.s.pilot.ship = 'hauler';
     me.s.pilot.ships = ['fighter', 'hauler'];
     me.s.pilot.credits = 5000;
-    me.s.pilot.cargo = { ore: 0, crystal: 0, relic: 0, bio: 0 };
+    me.s.pilot.cargo = emptyCargo();
     me.s.ship.dead = false;
     me.s.mode = MODE.DOCKED;
   };
