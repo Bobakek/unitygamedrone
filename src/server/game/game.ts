@@ -266,7 +266,7 @@ export class Game implements GameContext {
       case 'group': s.msg(this.groups.list(s)); return;
       case 'g': case 'p': { const t = args.join(' ').trim(); if (t) this.groups.say(s, t); return; }
       case 'help':
-        s.msg('Команды: /who, /help, группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|rock|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|cabin|shelf|window|ramp>, /trophies, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /cargo <вид> <n>, /ship <fighter|hauler|miner>' : ''));
+        s.msg('Команды: /who, /help, группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|rock|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|cabin|shelf|window|ramp>, /trophies, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /raid, /cargo <вид> <n>, /ship <fighter|hauler|miner>' : ''));
         return;
       case 'who':
         s.msg(`Онлайн (${this.sessions.size}): ${[...this.sessions.values()].map((o) => o.pilot.name).join(', ')}`);
@@ -326,9 +326,15 @@ export class Game implements GameContext {
         const kind = args[0] as ContractKind;
         const def = sys.contracts.board().offers.find((o) => o.kind === kind && !s.pilot.career.active.some((a) => a.id === o.id));
         if (!CONTRACT_KINDS.includes(kind) || !def) { s.msg(`Нет такого предложения. Виды: ${CONTRACT_KINDS.join(', ')}`, 'warn'); break; }
-        s.pilot.career.active.push({ ...structuredClone(def), have: 0 });
+        s.pilot.career.active.push({ ...structuredClone(def), have: 0, due: def.time ? this.now() + def.time : undefined });
         s.sendPilot();
         s.msg(`Контракт выдан: ${def.title}`);
+        break;
+      }
+      case 'raid': {
+        // dev: pirates come for the freight in the hold right now
+        if (s.mode !== MODE.SHIP) { s.msg('Нужно быть в корабле', 'warn'); break; }
+        sys.contracts.raid(s);
         break;
       }
       case 'finish': {
@@ -441,6 +447,7 @@ export class Game implements GameContext {
     const p = v3(gate.pos.x + away.x * 600, gate.pos.y + away.y * 600, gate.pos.z + away.z * 600);
     s.ship.state.v = v3();
     to.addSession(s, { p, q: qlook(quat(), away, v3(0, 1, 0)) });
+    to.contracts.onArrive(s);
     s.resync();
     this.sendWelcome(s);
     this.store.save(s.pilot);

@@ -654,6 +654,7 @@ describe('contracts', () => {
             expect(hops).toBeGreaterThan(0);
             expect(hops).toBeLessThanOrEqual(o.tier);
           }
+          else if (o.kind === 'freight') expect(jumpsFrom(sysId)[o.system]).toBeGreaterThanOrEqual(2);
           else expect(o.system).toBe(sysId);
           if (o.planet !== undefined) {
             const pl = sys.planets[o.planet];

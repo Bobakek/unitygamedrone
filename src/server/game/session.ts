@@ -67,7 +67,7 @@ export class Session {
       upgrades: { ...p.upgrades }, missiles: p.missiles, kills: p.kills, deaths: p.deaths,
       items: [...p.items], outfit: { ...p.outfit }, career: structuredClone(p.career), trophies: p.trophies.map((t) => ({ ...t })),
       roverBed: { ...p.roverBed }, roverBedCap: ROVER_BED,
-      ship: p.ship, ships: [...p.ships],
+      ship: p.ship, ships: [...p.ships], clock: this.system.now(),
     };
   }
 

@@ -4,7 +4,8 @@ import {
 import type { Action, PilotInfo } from '../../shared/net/protocol.ts';
 import type { MarketMsg } from '../../shared/market.ts';
 import { getSystem } from '../../shared/galaxy/system-gen.ts';
-import { FACTION_COLORS, objectiveText, RANKS, rankOf } from '../../shared/contracts.ts';
+import { FACTION_COLORS, freightLoad, holdRoom, holdUsed, objectiveText, RANKS, rankOf } from '../../shared/contracts.ts';
+import { dueHtml, syncClock, tickDeadlines } from './contracts.ts';
 import { HULL_KEYS, HULLS, type HullKey } from '../../shared/ships/hulls.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
@@ -46,6 +47,8 @@ export class Hud {
   onGroup: (what: 'yes' | 'no' | 'leave') => void = () => {};
 
   constructor() {
+    // freight deadlines in the task list count down between pilot updates
+    window.setInterval(() => tickDeadlines($('.pp-tasks')), 1000);
     this.chatInput.addEventListener('keydown', (e) => {
       e.stopPropagation();
       if (e.key === 'Enter') {
@@ -92,10 +95,12 @@ export class Hud {
 
   setPilot(p: PilotInfo, system: string) {
     this.lastPilot = p;
+    syncClock(p.clock);
     $('.pp-name').textContent = p.name;
     $('.pp-credits').textContent = `${p.credits.toLocaleString('ru-RU')} кр`;
-    $('.pp-cargo').textContent = `${cargoCount(p.cargo)}/${p.cargoCap}`;
-    $('.pp-cargo').title = CARGO_KEYS.map((k) => `${CARGO_NAMES[k]} ${p.cargo[k]}`).join(', ');
+    const freight = freightLoad(p.career);
+    $('.pp-cargo').textContent = `${holdUsed(p)}/${p.cargoCap}`;
+    $('.pp-cargo').title = CARGO_KEYS.map((k) => `${CARGO_NAMES[k]} ${p.cargo[k]}`).join(', ') + (freight ? `, контейнеры по контракту ${freight}` : '');
     const bed = cargoCount(p.roverBed);
     $('.pp-bed-row').classList.toggle('hidden', !bed);
     $('.pp-bed').textContent = `${bed}/${p.roverBedCap}`;
@@ -103,7 +108,7 @@ export class Hud {
     $('.pp-missiles').textContent = String(p.missiles);
     $('.pp-system').textContent = system;
     $('.pp-rank').textContent = RANKS[rankOf(p.career.xp)].name;
-    $('.pp-tasks').innerHTML = p.career.active.map((c) => `<div class="pp-task${c.have >= c.need ? ' full' : ''}" style="--fc:${FACTION_COLORS[c.faction]}"><b>◆ ${esc(c.title)}</b><span>${esc(objectiveText(c))}</span></div>`).join('');
+    $('.pp-tasks').innerHTML = p.career.active.map((c) => `<div class="pp-task${c.have >= c.need ? ' full' : ''}" style="--fc:${FACTION_COLORS[c.faction]}"><b>◆ ${esc(c.title)}</b><span>${esc(objectiveText(c))}</span>${dueHtml(c.due)}</div>`).join('');
     if (!this.station.classList.contains('hidden')) this.renderStation(p);
   }
 
@@ -312,7 +317,7 @@ export class Hud {
     const m = this.market;
     const box = $('.mk-table');
     if (!m) { box.innerHTML = '<p class="mk-hint">Загрузка цен…</p>'; return; }
-    const room = combatStats(p.upgrades, p.ship).cargoCap - cargoCount(p.cargo);
+    const room = holdRoom(p);
     const left = Math.max(0, m.next - (performance.now() - this.marketAt));
     $('.mk-next').textContent = `· цены сменятся через ${Math.max(1, Math.ceil(left / 60000))} мин`;
     const others = m.others;
@@ -337,7 +342,8 @@ export class Hud {
     const c = p.cargo;
     const q = this.market?.here.goods;
     const value = q ? CARGO_KEYS.reduce((n, k) => n + c[k] * q[k].sell, 0) : 0;
-    $('.st-cargo').innerHTML = `Груз: ${cargoCount(c)}/${combatStats(p.upgrades, p.ship).cargoCap}${q ? ` · по местным ценам ≈ <b>${value} кр</b>` : ''}<br>Баланс: <b>${p.credits} кр</b>` +
+    const crates = freightLoad(p.career);
+    $('.st-cargo').innerHTML = `Груз: ${holdUsed(p)}/${combatStats(p.upgrades, p.ship).cargoCap}${crates ? ` (контейнеры ${crates})` : ''}${q ? ` · по местным ценам ≈ <b>${value} кр</b>` : ''}<br>Баланс: <b>${p.credits} кр</b>` +
       (hull ? `<br>Корпус: ${Math.round(hull.hull)}/${hull.max} (ремонт ${Math.ceil((hull.max - hull.hull) * REPAIR_COST_PER_HP)} кр)` : '') +
       `<br>Ракеты: ${p.missiles} (${MISSILE_COST} кр/шт)`;
     $('.st-upgrades').innerHTML = UPGRADE_KEYS.map((k) => {
@@ -352,7 +358,7 @@ export class Hud {
 
   /** Shipyard: the ship classes with their numbers under the pilot's upgrades. */
   private renderYard(p: PilotInfo) {
-    const load = cargoCount(p.cargo);
+    const load = holdUsed(p);
     $('.yard-list').innerHTML = HULL_KEYS.map((k) => {
       const h = HULLS[k], c = combatStats(p.upgrades, k), f = flightStats(p.upgrades, k);
       const mine = p.ship === k, owned = p.ships.includes(k);

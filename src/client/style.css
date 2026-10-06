@@ -56,6 +56,11 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #03040b; col
 .pp-task b { display: block; font-weight: 600; color: var(--ink); }
 .pp-task span { color: var(--dim); }
 .pp-task.full span { color: #6dff9c; }
+.pp-task .ct-due { display: block; }
+.ct-due { color: #ffd050; font-variant-numeric: tabular-nums; }
+.ct-due.late { color: #ff5a6a; }
+.ct-freight { font-size: 12px; color: var(--dim); margin-top: 4px; }
+.ct-freight b { color: #ff9a50; }
 
 #nav-panel { right: 16px; top: 16px; width: 230px; font-size: 12px; }
 .np-title { color: var(--dim); margin-bottom: 4px; }

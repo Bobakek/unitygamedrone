@@ -60,6 +60,8 @@ export interface PilotInfo {
   trophies: Trophy[];
   /** Ship class flown and ships owned. */
   ship: HullKey; ships: HullKey[];
+  /** Server clock (ms) when sent, for freight deadlines. */
+  clock: number;
 }
 /** A member of the pilot's group; `pos` (world) only for members in the same system. */
 export interface GroupMember {
