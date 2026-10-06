@@ -12,6 +12,8 @@ export class Input {
   dx = 0;
   dy = 0;
   wheel = 0;
+  /** Raw mouse travel this frame (pixels), locked or not: tells a pilot grabbing the stick. */
+  moved = 0;
   locked = false;
   typing = false;
   /** Mouse sensitivity multiplier from settings. */
@@ -43,6 +45,7 @@ export class Input {
     window.addEventListener('mousemove', (e) => {
       this.mouseX = e.clientX;
       this.mouseY = e.clientY;
+      this.moved += Math.abs(e.movementX) + Math.abs(e.movementY);
       if (this.locked) {
         this.dx += e.movementX;
         this.dy += e.movementY;
@@ -92,5 +95,6 @@ export class Input {
     this.clicked.clear();
     this.released.clear();
     this.wheel = 0;
+    this.moved = 0;
   }
 }

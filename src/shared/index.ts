@@ -20,6 +20,7 @@ export * from './sim/ship.ts';
 export * from './sim/frames.ts';
 export * from './sim/character.ts';
 export * from './sim/weapons.ts';
+export * from './sim/autopilot.ts';
 export * from './ships/blueprint.ts';
 export * from './net/protocol.ts';
 export * from './market.ts';

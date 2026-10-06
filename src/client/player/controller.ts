@@ -1,6 +1,6 @@
 import { IFLAG, MODE, quantizeInput, type InputMsg } from '../../shared/net/protocol.ts';
 import { emptyCharInput } from '../../shared/sim/character.ts';
-import { emptyInput } from '../../shared/sim/ship.ts';
+import { emptyInput, type ShipInput } from '../../shared/sim/ship.ts';
 import type { Input } from '../core/input.ts';
 
 const DEAD = 0.06;
@@ -25,6 +25,8 @@ export class Controller {
   roverYaw = 0;
   private roverLook = 0;
   private yawAcc = 0;
+  /** Auto-approach: when set, it flies the ship (stick, throttle, boost, cruise); guns stay manual. */
+  autopilot: ((ship: ShipInput) => void) | null = null;
 
   constructor(private input: Input) {}
 
@@ -82,6 +84,12 @@ export class Controller {
       if (k('ShiftLeft') || k('ShiftRight')) flags |= IFLAG.BOOST;
       if (this.cruiseOn) flags |= IFLAG.CRUISE;
       if (i.mouse(0) && !i.typing) flags |= IFLAG.FIRE;
+      if (this.autopilot) {
+        this.autopilot(ship);
+        flags &= ~(IFLAG.BOOST | IFLAG.CRUISE);
+        if (ship.boost) flags |= IFLAG.BOOST;
+        if (ship.cruise) flags |= IFLAG.CRUISE;
+      }
     } else if (m === MODE.ROVER) {
       // W/S drive and brake, A/D steer, Space handbrake, Shift boost
       char.mx = k('KeyD') - k('KeyA');
