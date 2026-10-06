@@ -188,6 +188,36 @@ export class Sfx {
     o.connect(g); g.connect(this.master);
     o.start(t); o.stop(t + 0.07);
   }
+  /** Railgun: a charging whine snapping into a hard metallic crack. */
+  rail(vol = 1) {
+    const c = this.ctx; if (!c || !this.master) return;
+    const t = c.currentTime, o = c.createOscillator(), g = c.createGain();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(3200, t);
+    o.frequency.exponentialRampToValueAtTime(70, t + 0.35);
+    this.env(g, t, 0.002, 0.12 * vol, 0.35);
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + 0.4);
+    this.burst(0.25, 5200, 0.16 * vol, 'highpass', 1400);
+    this.burst(0.5, 220, 0.18 * vol, 'lowpass', 60);
+  }
+  /** EMP: a deep electric thump with a fizzing tail. */
+  emp(vol = 1) {
+    const c = this.ctx; if (!c || !this.master) return;
+    const t = c.currentTime, o = c.createOscillator(), g = c.createGain();
+    o.type = 'square';
+    o.frequency.setValueAtTime(55, t);
+    o.frequency.linearRampToValueAtTime(140, t + 0.5);
+    this.env(g, t, 0.01, 0.12 * vol, 0.6);
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + 0.7);
+    this.burst(0.9, 6000, 0.1 * vol, 'bandpass', 1500);
+  }
+  /** A mine leaving the chute: a clank and a short hiss. */
+  mineDrop() {
+    this.burst(0.08, 900, 0.12, 'bandpass');
+    setTimeout(() => this.burst(0.3, 2400, 0.05, 'highpass', 800), 60);
+  }
   /** A ship warping in: a rising whoosh with a chime. */
   warp() {
     this.burst(0.6, 300, 0.12, 'bandpass', 3200);

@@ -18,6 +18,7 @@ import { Session, type Transport } from './session.ts';
 import { SystemInstance, type GameContext } from './system.ts';
 import { Groups } from './groups.ts';
 import { ArenaDesk, ArenaInstance } from './arena.ts';
+import { fitOf, isModule, MINE, MODULE_KEYS, MODULE_SLOTS } from '../../shared/modules.ts';
 import { marketQuote, type MarketQuote } from '../../shared/market.ts';
 import { CARGO_KEYS, type CargoKey } from '../../shared/economy.ts';
 import { eventInfo, eventPriceMods, galaxyEventsAt, GALAXY_EVENT_KINDS, type GalaxyEvent, type GalaxyEventKind } from '../../shared/galaxy-events.ts';
@@ -319,7 +320,7 @@ export class Game implements GameContext {
       case 'arena': say(this.arena.inArena(s) || this.arena.queued(s) ? this.arena.leave(s) : this.arena.join(s)); return;
       case 'g': case 'p': { const t = args.join(' ').trim(); if (t) this.groups.say(s, t); return; }
       case 'help':
-        s.msg('Команды: /who, /help, /arena — арена 3×3 (запись на станции, повторно — выйти), группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|rock|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /gevent <raid|storm|shortage|end> [товар] [мин], /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|refinery|smelter|cabin|shelf|window|ramp>, /trophies, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /raid, /cargo <вид> <n>, /ship <fighter|hauler|miner>, /disable [freighter], /aboard <pirate|freighter|clear|hatch|chest|helm|комната>' : ''));
+        s.msg('Команды: /who, /help, /arena — арена 3×3 (запись на станции, повторно — выйти), группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|rock|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /gevent <raid|storm|shortage|end> [товар] [мин], /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|refinery|smelter|cabin|shelf|window|ramp>, /trophies, /credits <n>, /arms [railgun|mines|emp], /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /raid, /cargo <вид> <n>, /ship <fighter|hauler|miner>, /disable [freighter], /aboard <pirate|freighter|clear|hatch|chest|helm|комната>' : ''));
         return;
       case 'who':
         s.msg(`Онлайн (${this.sessions.size}): ${[...this.sessions.values()].map((o) => o.pilot.name).join(', ')}`);
@@ -330,6 +331,16 @@ export class Game implements GameContext {
       case 'tp': s.msg(sys.devTeleport(s, args[0] ?? 'station', args[1])); break;
       case 'land': s.msg(sys.devTeleport(s, `land${args[0] ?? '0'}`, args[1])); break;
       case 'credits': s.pilot.credits += Number(args[0]) || 1000; s.sendPilot(); break;
+      case 'arms': {
+        // dev: every weapon module, a full mine magazine, these modules (or the first ones) fitted in the ship flown
+        const want = args.filter(isModule);
+        s.pilot.arms = { owned: [...MODULE_KEYS], fits: { ...s.pilot.arms.fits, [s.pilot.ship]: want.length ? want : MODULE_KEYS.slice(0, MODULE_SLOTS[s.pilot.ship]) }, mines: MINE.cap };
+        s.pilot.arms.fits[s.pilot.ship] = fitOf(s.pilot.arms, s.pilot.ship);
+        sys.refreshMods(s);
+        s.sendPilot();
+        s.msg(`Модули: ${s.ship.mods?.join(', ') || 'нет'}`, 'good');
+        break;
+      }
       case 'god': s.ship.god = !s.ship.god; s.msg(`Бессмертие: ${s.ship.god ? 'вкл' : 'выкл'}`); break;
       case 'pirate': {
         const w = s.ship.world;

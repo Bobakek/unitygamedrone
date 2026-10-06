@@ -29,3 +29,4 @@ export * from './planet/deposits.ts';
 export * from './arena.ts';
 export * from './galaxy-events.ts';
 export * from './jump.ts';
+export * from './modules.ts';

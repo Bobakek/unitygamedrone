@@ -48,6 +48,8 @@ import type { GalaxyEvent } from '../../shared/galaxy-events.ts';
 import { fuelPrice, tankOf } from '../../shared/jump.ts';
 import type { Weather } from '../../shared/weather.ts';
 import type { Session } from './session.ts';
+import { Armory } from './arms.ts';
+import { fitOf, isModule, MINE, MODULES, toggleFit, type ModuleKey } from '../../shared/modules.ts';
 
 export interface GameContext {
   time: number;
@@ -104,6 +106,7 @@ export class SystemInstance implements NpcWorld {
   readonly weather: WeatherDesk;
   readonly boarding: Boarding;
   readonly galaxy: GalaxyEffects;
+  readonly arms: Armory;
 
   /** `quiet`: no pirates of its own (arena matches reuse a system's space without its life). */
   constructor(protected ctx: GameContext, id: number, quiet = false) {
@@ -120,6 +123,7 @@ export class SystemInstance implements NpcWorld {
     this.weather = new WeatherDesk(this);
     this.boarding = new Boarding(this);
     this.galaxy = new GalaxyEffects(this);
+    this.arms = new Armory(this);
   }
 
   /** Inside a derelict's hull (shelter from the weather). */
@@ -203,12 +207,13 @@ export class SystemInstance implements NpcWorld {
       state: newShip(pos, q), world: newPose(), flight: flightStats(pilot.upgrades, pilot.ship), combat: c,
       hull: c.maxHull, shield: c.maxShield, energy: 100, lastHit: -99, fireCooldown: 0, gun: 0,
       throttle: 0, boosting: false, dead: false, respawnAt: 0, docked: false, god: false, session: null, npc: null, lastInput: emptyInput(),
+      mods: fitOf(pilot.arms, pilot.ship),
     };
     return ship;
   }
 
   shipInfo(s: ShipEntity): EntityInfo {
-    return { id: s.id, kind: KIND.SHIP, name: s.name, bp: s.bp, npc: !!s.npc, owner: s.session?.id, wanted: s.session && isWanted(s.session.pilot.career) ? true : undefined };
+    return { id: s.id, kind: KIND.SHIP, name: s.name, bp: s.bp, npc: !!s.npc, owner: s.session?.id, wanted: s.session && isWanted(s.session.pilot.career) ? true : undefined, mods: s.mods?.length ? [...s.mods] : undefined };
   }
 
   allInfos(): EntityInfo[] {
@@ -220,6 +225,7 @@ export class SystemInstance implements NpcWorld {
     for (const l of this.world.loot.values()) out.push({ id: l.id, kind: KIND.LOOT, name: 'Контейнер' });
     for (const c of this.fauna.creatures.values()) out.push(this.fauna.info(c));
     this.boarding.infos(out);
+    this.arms.infos(out);
     return out;
   }
 
@@ -272,7 +278,7 @@ export class SystemInstance implements NpcWorld {
 
   // ------------------------------------------------------------------ combat
   tryFire(ship: ShipEntity) {
-    if (ship.fireCooldown > 0 || ship.energy < LASER.cost || (ship.state.landed && ship.bp.cls !== 'turret') || isCruising(ship.state)) return;
+    if (ship.fireCooldown > 0 || (ship.jamUntil ?? 0) > this.time || ship.energy < LASER.cost || (ship.state.landed && ship.bp.cls !== 'turret') || isCruising(ship.state)) return;
     const w = ship.world;
     if (this.inSafeZone(w.p)) return;
     ship.fireCooldown = LASER.cooldown;
@@ -311,7 +317,31 @@ export class SystemInstance implements NpcWorld {
     return null;
   }
 
-  damage(target: ShipEntity, dmg: number, attacker: number, pos?: V3) {
+  /**
+   * Can ship `a`'s weapons hurt ship `b`? Not group mates, ships at a station or pilots out of their
+   * ship (the arena adds its teams).
+   */
+  hostile(a: ShipEntity, b: ShipEntity): boolean {
+    if (a === b || b.dead || b.docked || b.god || this.inSafeZone(b.world.p)) return false;
+    if (b.session && (b.session.mode === MODE.FOOT || b.session.mode === MODE.ROVER || b.session.mode === MODE.BOARD)) return false;
+    return !(a.session && b.session && this.ctx.allies(a.session, b.session));
+  }
+
+  /** May this ship use its weapons right now? (The arena only lets them fire during a round.) */
+  armed(_ship: ShipEntity): boolean {
+    return true;
+  }
+
+  /** Cover on the segment p0→p1 (hit parameter 0..1, or −1). */
+  cover(p0: V3, p1: V3): number {
+    return this.coverHit(p0, p1);
+  }
+
+  /**
+   * `mul`: how hard the hit lands on shields and on bare hull (the railgun: soft on shields,
+   * hard on hull). The shield soaks `dmg × shield`; what it can't hold goes to the hull × `hull`.
+   */
+  damage(target: ShipEntity, dmg: number, attacker: number, pos?: V3, mul?: { shield: number; hull: number }) {
     if (target.dead || target.docked || target.god) return;
     if (target.session && (target.session.mode === MODE.FOOT || target.session.mode === MODE.ROVER || target.session.mode === MODE.BOARD)) return;
     if (this.inSafeZone(target.world.p)) return;
@@ -322,11 +352,14 @@ export class SystemInstance implements NpcWorld {
     if (by && target.session && this.ctx.allies(by, target.session)) return;
     target.lastHit = this.time;
     target.state.cruiseBlock = Math.max(target.state.cruiseBlock, 4);
-    const absorbed = Math.min(target.shield, dmg);
+    const sm = mul?.shield ?? 1, hm = mul?.hull ?? 1;
+    const want = dmg * sm;
+    const absorbed = Math.min(target.shield, want);
     target.shield -= absorbed;
-    target.hull -= dmg - absorbed;
+    const through = dmg * (want > 0 ? 1 - absorbed / want : 1) * hm;
+    target.hull -= through;
     const hp = pos ?? target.world.p;
-    this.events.push({ t: 'hit', target: target.id, pos: [hp.x, hp.y, hp.z], shield: absorbed >= dmg - 1e-9, dmg: Math.round(dmg), by: attacker });
+    this.events.push({ t: 'hit', target: target.id, pos: [hp.x, hp.y, hp.z], shield: through <= 1e-9, dmg: Math.round(absorbed + through), by: attacker });
     this.world.onHit(target, attacker);
     if (target.npc && attacker) {
       const a = this.ships.get(attacker);
@@ -475,6 +508,7 @@ export class SystemInstance implements NpcWorld {
 
     this.stepLasers();
     this.stepMissiles();
+    this.arms.step();
     this.world.step(DT);
     this.outposts.step(DT);
     this.fauna.step(DT);
@@ -807,6 +841,7 @@ export class SystemInstance implements NpcWorld {
     }
     this.fauna.entities(s, entities);
     this.boarding.entities(s, entities);
+    this.arms.entities(focus, r2, entities);
     for (const l of this.world.loot.values()) {
       if (vdistSq(l.p, focus) > r2) continue;
       entities.push({ id: l.id, kind: KIND.LOOT, flags: 0, frame: 0, px: l.p.x, py: l.p.y, pz: l.p.z, qx: 0, qy: 0, qz: 0, qw: 1, vx: l.v.x, vy: l.v.y, vz: l.v.z, hull: 1, shield: 0, throttle: 0 });
@@ -1147,6 +1182,44 @@ export class SystemInstance implements NpcWorld {
       case 'missile':
         if (s.mode !== MODE.SHIP) return null;
         return this.fireMissile(ship, act.target);
+      case 'module':
+        if (s.mode !== MODE.SHIP) return null;
+        return this.arms.use(ship, Number(act.slot), act.target ? Number(act.target) : undefined);
+      case 'buyModule': {
+        if (!atStation(s)) return 'Нужно пристыковаться';
+        if (!isModule(act.key)) return null;
+        const def = MODULES[act.key];
+        if (p.arms.owned.includes(act.key)) return 'Этот модуль уже куплен';
+        if (p.credits < def.price) return 'Недостаточно кредитов';
+        p.credits -= def.price;
+        p.arms.owned.push(act.key);
+        // straight into a free slot of the ship flown
+        const fitted = toggleFit(p.arms, p.ship, act.key) === null;
+        if (act.key === 'mines' && p.arms.mines < MINE.cap) p.arms.mines = MINE.cap;
+        this.refreshMods(s);
+        s.sendPilot();
+        s.msg(`Куплен модуль «${def.name}»${fitted ? `: стоит в слоте ${p.arms.fits[p.ship]!.indexOf(act.key) + 1}, огонь клавишей ${p.arms.fits[p.ship]!.indexOf(act.key) + 1}` : '. Свободных слотов нет, поставьте его вместо другого'}`, 'good');
+        return null;
+      }
+      case 'fitModule': {
+        if (!atStation(s)) return 'Нужно пристыковаться';
+        if (!isModule(act.key)) return null;
+        const err = toggleFit(p.arms, p.ship, act.key);
+        if (err) return err;
+        this.refreshMods(s);
+        s.sendPilot();
+        return null;
+      }
+      case 'buyMines': {
+        if (!atStation(s)) return 'Нужно пристыковаться';
+        if (!p.arms.owned.includes('mines')) return 'Сначала купите минный постановщик';
+        const n = Math.min(MINE.cap - p.arms.mines, Math.floor(p.credits / MINE.price));
+        if (n <= 0) return p.arms.mines >= MINE.cap ? 'Кассета полна' : 'Недостаточно кредитов';
+        p.arms.mines += n;
+        p.credits -= n * MINE.price;
+        s.sendPilot();
+        return null;
+      }
       case 'respawn':
         if (ship.dead && this.time >= ship.respawnAt) this.respawn(s);
         return null;
@@ -1187,8 +1260,20 @@ export class SystemInstance implements NpcWorld {
     if (ship.bp.cls !== s.pilot.ship) {
       // everyone around sees the new hull
       ship.bp = playerBlueprint(s.pilot.name, s.pilot.ship);
+      ship.mods = fitOf(s.pilot.arms, s.pilot.ship);
+      ship.modReady = [];
       this.infos.push(this.shipInfo(ship));
-    }
+    } else this.refreshMods(s);
+  }
+
+  /** The modules fitted in the ship flown changed: everyone around sees them. */
+  refreshMods(s: Session) {
+    const mods: ModuleKey[] = fitOf(s.pilot.arms, s.pilot.ship);
+    const ship = s.ship;
+    if ((ship.mods ?? []).join() === mods.join()) return;
+    ship.mods = mods;
+    ship.modReady = [];
+    this.infos.push(this.shipInfo(ship));
   }
 
   /** Takes an owned ship out of the station's hangar (docked); returns an error text. */

@@ -4,6 +4,8 @@ import { buildShip } from './ship-builder.ts';
 import { isGlbShip, loadGlbShip } from './glb-ship.ts';
 import { HULLS, isHull } from '../../shared/ships/hulls.ts';
 import { glowTexture } from '../world/textures.ts';
+import { ModuleRig } from './weapons-view.ts';
+import type { ModuleKey } from '../../shared/modules.ts';
 
 const hullMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.55, metalness: 0.12 });
 const metalMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.32, metalness: 0.85 });
@@ -46,8 +48,13 @@ export class ShipView {
   boost = false;
   cruise = false;
   landed = false;
+  /** Weapon modules on the hull mounts. */
+  readonly rig: ModuleRig;
 
-  constructor(public bp: Blueprint) {
+  constructor(public bp: Blueprint, mods?: readonly ModuleKey[]) {
+    this.rig = new ModuleRig(bp);
+    this.group.add(this.rig.group);
+    this.rig.set(mods);
     this.shieldU = { c: { value: new THREE.Color('#59c7ff') }, k: { value: 0 }, hit: { value: new THREE.Vector3(0, 0, -1) }, hk: { value: 0 }, t: { value: 0 } };
     if (isGlbShip(bp.cls)) {
       // modelled in Blender: loads in the background, flames and shield come with it
@@ -117,6 +124,7 @@ export class ShipView {
   }
 
   update(dt: number, time: number) {
+    this.rig.update(dt, time);
     const t = this.landed ? 0 : this.cruise ? 1 : Math.max(0, this.throttle);
     const on = !this.landed && (this.cruise || t > 0.03);
     const len = this.cruise ? 16 : 1 + t * 4 * (this.boost ? 1.8 : 1);
@@ -143,6 +151,7 @@ export class ShipView {
 
   dispose() {
     this.gone = true;
+    this.rig.dispose();
     this.group.removeFromParent();
     this.ownMats.forEach((m) => m.dispose());
     this.flameMats.forEach((m) => m.dispose());

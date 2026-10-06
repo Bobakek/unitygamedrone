@@ -9,6 +9,7 @@ import { FACTION_COLORS, freightLoad, holdRoom, holdUsed, objectiveText, RANKS, 
 import { dueHtml, syncClock, tickDeadlines } from './contracts.ts';
 import { HULL_KEYS, HULLS, type HullKey } from '../../shared/ships/hulls.ts';
 import { batchesPossible, inputsText, RECIPES } from '../../shared/refinery.ts';
+import { fitOf, MINE, MODULE_KEYS, MODULE_SLOTS, MODULES, type ModuleKey } from '../../shared/modules.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
 
@@ -16,6 +17,8 @@ export interface LabelData { id: number; x: number; y: number; text: string; sub
 export interface TargetBox { x: number; y: number; size: number; name: string; info: string; shield: number; hull: number; lock: 0 | 1 | 2 }
 /** A row of the group panel. */
 export interface GroupRow { name: string; leader: boolean; where: string; hull: number }
+/** A weapon module slot on the flight panel: `ready` 0..1 recharge, mines left. */
+export interface ModSlot { name: string; ready: number; ammo?: number }
 export interface FlightData { speed: number; throttle: number; boost: number; energy: number; shield: number; hull: number; mode: string }
 
 const UPGRADE_NAMES: Record<UpgradeKey, string> = { weapons: 'Лазеры', shields: 'Щиты', hull: 'Броня', engine: 'Двигатель', cargo: 'Трюм' };
@@ -78,6 +81,7 @@ export class Hud {
       else if (act === 'wardrobe') this.onWardrobe();
       else if (act === 'contracts') this.onContracts();
       else if (act === 'upgrade') this.onAction({ a: 'upgrade', key: b.dataset.key! });
+      else if (act === 'module') this.onAction(b.dataset.op === 'buy' ? { a: 'buyModule', key: b.dataset.key as ModuleKey } : { a: 'fitModule', key: b.dataset.key as ModuleKey });
       else if (act === 'ship') this.onAction({ a: b.dataset.op === 'buy' ? 'buyShip' : 'setShip', ship: b.dataset.key as HullKey });
       else if (act === 'prize') this.onAction({ a: 'sellPrize', id: b.dataset.key! });
       else if (act === 'refine') this.onAction({ a: 'refine', recipe: b.dataset.key!, n: b.dataset.n === 'all' ? undefined : Number(b.dataset.n) });
@@ -195,6 +199,15 @@ export class Hud {
     set('.nrg', f.energy);
     set('.shd', f.shield);
     set('.hul', f.hull);
+  }
+
+  /** The module slots under the bars (empty list: hidden). */
+  modSlots(list: ModSlot[]) {
+    const box = $('.fp-mods');
+    const key = list.map((m) => `${m.name}:${Math.round(m.ready * 40)}:${m.ammo ?? ''}`).join('|');
+    if (box.dataset.k === key) return;
+    box.dataset.k = key;
+    box.innerHTML = list.map((m, i) => `<div class="fp-mod${m.ready >= 1 && m.ammo !== 0 ? ' ready' : ''}"><i style="width:${Math.round(m.ready * 100)}%"></i><kbd>${i + 1}</kbd><span>${esc(m.name)}</span>${m.ammo !== undefined ? `<span class="am">${m.ammo}</span>` : ''}</div>`).join('');
   }
 
   setFlightVisible(v: boolean) {
@@ -394,6 +407,25 @@ export class Hud {
     this.renderMarket(p);
     this.renderRefinery(p);
     this.renderYard(p);
+    this.renderArms(p);
+  }
+
+  /** Arsenal: weapon modules to buy and to fit into the slots of the ship flown, the mine magazine. */
+  private renderArms(p: PilotInfo) {
+    const fit = fitOf(p.arms, p.ship), slots = MODULE_SLOTS[p.ship];
+    $('.arms-slots').textContent = `${HULLS[p.ship].name}: слоты ${fit.length}/${slots}`;
+    $('.arms-list').innerHTML = MODULE_KEYS.map((k) => {
+      const d = MODULES[k], owned = p.arms.owned.includes(k), on = fit.indexOf(k);
+      const acts = !owned
+        ? `<button class="buy" data-act="module" data-op="buy" data-key="${k}" ${p.credits < d.price ? 'disabled' : ''}>Купить — ${d.price} кр</button>`
+        : on >= 0 ? `<button data-act="module" data-op="fit" data-key="${k}">Снять</button>`
+        : `<button data-act="module" data-op="fit" data-key="${k}" ${fit.length >= slots ? 'disabled title="Все слоты заняты"' : ''}>Поставить</button>`;
+      const mines = k === 'mines' && owned
+        ? `<p>Мины: <b>${p.arms.mines}/${MINE.cap}</b> (${MINE.price} кр/шт)</p>` + `<button data-act="buyMines" ${p.arms.mines >= MINE.cap || p.credits < MINE.price ? 'disabled' : ''}>Пополнить</button>`
+        : '';
+      const cd = `${d.cooldown} с${d.energy ? `, ${d.energy} энергии` : ''}`;
+      return `<div class="arm${on >= 0 ? ' on' : ''}"><b>${esc(d.name)}${on >= 0 ? `<small>слот ${on + 1}</small>` : ''}</b><p>${esc(d.blurb)}</p><p>Перезарядка ${cd}</p><div class="arm-acts">${acts}${mines}</div></div>`;
+    }).join('');
   }
 
   /** Smelter recipes: what goes in, what comes out, and what a batch earns at this station's prices. */

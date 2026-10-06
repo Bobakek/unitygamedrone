@@ -6,6 +6,7 @@ import type { CombatStats } from '../../shared/economy.ts';
 import type { V3 } from '../../shared/math/vec.ts';
 import type { Session } from './session.ts';
 import type { NpcBrain } from './npc.ts';
+import type { ModuleKey } from '../../shared/modules.ts';
 import type { Pose } from '../../shared/sim/frames.ts';
 
 export interface ShipEntity {
@@ -42,6 +43,13 @@ export interface ShipEntity {
   disabled?: boolean;
   /** Sim time it was disabled: bolts already in flight then can't finish it off. */
   disabledAt?: number;
+  /** Weapon modules fitted, slot by slot (see modules.ts), and when each slot can fire again. */
+  mods?: ModuleKey[];
+  modReady?: number[];
+  /** Guns and modules jammed by an EMP until this time. */
+  jamUntil?: number;
+  /** Mines in the magazine when they don't come from the pilot's stock (arena seats). */
+  mineAmmo?: number;
 }
 
 export interface CharEntity {

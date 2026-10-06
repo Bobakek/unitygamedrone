@@ -69,11 +69,13 @@ import { ArenaView } from './world/arena-view.ts';
 import { arenaLayout, ARENA, TEAM_COLORS, type ArenaMsg } from '../shared/arena.ts';
 import { EVENT_ICONS, eventText, eventTitle, type GalaxyEventInfo } from '../shared/galaxy-events.ts';
 import { fuelPrice } from '../shared/jump.ts';
+import { EMP, fitOf, MINE, MODULES, RAIL, railMuzzle, type ModuleKey } from '../shared/modules.ts';
+import { MineView } from './entities/weapons-view.ts';
 
 interface Remote {
   info: EntityInfo | null;
   buf: InterpBuffer;
-  view: ShipView | AstronautView | MissileView | LootView | CreatureView | DroneView | RoverView | null;
+  view: ShipView | AstronautView | MissileView | MineView | LootView | CreatureView | DroneView | RoverView | null;
   /** World pose at the current render time. */
   p: V3;
   q: Quat;
@@ -246,6 +248,11 @@ export class Game {
   private siteViews: (SiteView[] | null)[] = [];
   private fireCd = 0;
   private energy = 100;
+  /** Weapon module slots: when each is ready again (client time), mines left in the arena magazine, next auto-attack look. */
+  private modCd: number[] = [];
+  private arenaMines: number | null = null;
+  private autoModT = 0;
+  private fitKey = '';
   private gun = 0;
   private acc = 0;
   private last = performance.now();
@@ -400,7 +407,7 @@ export class Game {
     this.targetId = 0;
     this.navIndex = 0;
     if (!this.myShip) {
-      this.myShip = new ShipView(playerBlueprint(w.pilot.name, w.pilot.ship));
+      this.myShip = new ShipView(playerBlueprint(w.pilot.name, w.pilot.ship), fitOf(w.pilot.arms, w.pilot.ship));
       this.world.add(this.myShip.group);
     }
     this.setPilot(w.pilot);
@@ -661,7 +668,12 @@ export class Game {
       this.myShip.dispose();
       this.myShip = new ShipView(playerBlueprint(p.name, p.ship));
       this.world.add(this.myShip.group);
+      this.modCd = [];
     }
+    // a new fit (the server starts its slots afresh too)
+    const fit = fitOf(p.arms, p.ship).join();
+    if (fit !== this.fitKey) { this.fitKey = fit; this.modCd = []; }
+    this.myShip?.rig.set(fitOf(p.arms, p.ship));
     this.gear = gearStats(validOutfit(p.outfit, p.items));
     this.myAstro?.dress(validOutfit(p.outfit, p.items), p.name);
     if (this.wardrobe.open) this.wardrobe.setPilot(p);
@@ -752,6 +764,8 @@ export class Game {
       if (r) {
         // a pilot switched ships: rebuild the view
         if (r.view instanceof ShipView && i.bp && r.view.bp.cls !== i.bp.cls) { r.view.dispose(); r.view = null; }
+        // the weapon modules on the hull changed
+        else if (r.view instanceof ShipView) r.view.rig.set(i.mods);
         r.info = i;
       }
     }
@@ -767,7 +781,8 @@ export class Game {
 
   private ensureView(r: Remote) {
     if (r.view || !r.info) return;
-    if (r.info.kind === KIND.SHIP && r.info.bp) r.view = new ShipView(r.info.bp);
+    if (r.info.kind === KIND.SHIP && r.info.bp) r.view = new ShipView(r.info.bp, r.info.mods);
+    else if (r.info.kind === KIND.MINE) r.view = new MineView(r.info.owner === this.self?.shipId);
     else if (r.info.kind === KIND.CHAR) {
       const a = this.makeAstronaut(() => r.p, 0.5);
       a.dress(parseLook(r.info.look), r.info.name);
@@ -883,8 +898,62 @@ export class Game {
           this.hud.feed(`${e.killer} ✕ ${e.victim}`);
           if (this.pilot && e.killer === this.pilot.name && e.victim !== e.killer) { this.arenaHud.hit(true); this.sfx.pickup(); }
           break;
+        case 'rail': {
+          const own = e.by === myShip;
+          const shoot = () => {
+            const from = v3(e.from[0], e.from[1], e.from[2]), to = v3(e.to[0], e.to[1], e.to[2]);
+            if (own && this.myShip) {
+              // our own ship is drawn where prediction has it, a little ahead of the server: start at its muzzle
+              const m = qrot(v3(), this.shipW.q, railMuzzle(this.myShip.bp.cls, Math.max(0, this.mods().indexOf('railgun'))));
+              Object.assign(from, v3(this.shipW.p.x + m.x, this.shipW.p.y + m.y, this.shipW.p.z + m.z));
+            }
+            const c = own ? new THREE.Color(0.7, 1.7, 2.6) : this.infos.get(e.by)?.npc ? new THREE.Color(2.4, 0.9, 0.4) : new THREE.Color(0.9, 1.2, 2.6);
+            this.effects.rail(from, to, c, e.hit !== 0);
+            const v = own ? this.myShip : this.remotes.get(e.by)?.view;
+            if (v instanceof ShipView) { v.recoil(1.6); v.rig.fired(); }
+            const d = vdist(from, this.origin);
+            if (d < 5000) this.sfx.rail(Math.max(0.15, 1 - d / 5000));
+            if (own) this.rig.shake(0.25);
+          };
+          // remote ships are drawn a little in the past: the slug leaves their muzzle when they get there
+          if (own) shoot(); else setTimeout(shoot, INTERP_DELAY * 1000);
+          break;
+        }
+        case 'emp': {
+          const pos = v3(e.pos[0], e.pos[1], e.pos[2]);
+          this.effects.emp(pos, e.r, new THREE.Color(0.55, 0.8, 2.2));
+          for (const id of e.hit) {
+            const v = id === myShip ? this.myShip : this.remotes.get(id)?.view;
+            const at = id === myShip ? this.shipW.p : this.remotes.get(id)?.p;
+            if (at && v instanceof ShipView) this.effects.zap(at, v.radius * 0.8);
+          }
+          if (e.id === myShip) this.myShip?.rig.fired();
+          if (e.hit.includes(myShip ?? -1)) { this.rig.shake(0.6); this.hud.hurt(0.25); }
+          const d = vdist(pos, this.origin);
+          if (d < 4000) this.sfx.emp(Math.max(0.2, 1 - d / 4000));
+          break;
+        }
+        case 'blast': {
+          const pos = v3(e.pos[0], e.pos[1], e.pos[2]);
+          this.effects.shipExplosion(pos, false);
+          this.effects.flash(pos, new THREE.Color(1.4, 0.6, 0.3), e.r * 1.4, 0.6);
+          const d = vdist(pos, this.origin);
+          if (d < 5000) this.sfx.explosion(true, Math.max(0.15, 1 - d / 5000));
+          if (d < 700) this.rig.shake(0.7 * (1 - d / 700));
+          break;
+        }
+        case 'module': {
+          this.modCd[e.slot] = this.time + e.cd;
+          const used = this.mods()[e.slot];
+          if (used) this.energy = Math.max(0, this.energy - MODULES[used].energy);
+          if (e.ammo !== undefined && this.arenaHud.active) this.arenaMines = e.ammo;
+          if (used === 'mines') { this.sfx.mineDrop(); this.myShip?.rig.fired(); }
+          break;
+        }
         case 'warp': {
           const pos = v3(e.pos[0], e.pos[1], e.pos[2]);
+          // back at the start line: modules ready, a full arena magazine
+          if (e.id === myShip) { this.modCd = []; this.arenaMines = MINE.cap; }
           this.effects.warp(pos, new THREE.Color(TEAM_COLORS[e.team] ?? '#8ff8ff'));
           if (vdist(pos, this.origin) < 1500) this.sfx.warp();
           break;
@@ -1272,6 +1341,11 @@ export class Game {
     }
     if (i.hit('KeyU') && mode === MODE.SHIP) { if (this.auto) this.stopAuto(); else this.startAuto(); }
     if (i.hit('KeyB') && mode === MODE.SHIP) this.toggleFight();
+    if (mode === MODE.SHIP) {
+      if (i.hit('Digit1')) this.fireModule(0);
+      if (i.hit('Digit2')) this.fireModule(1);
+      if (this.autofire || this.auto?.fight) this.autoModules(dt);
+    }
     if (this.auto) {
       if (mode !== MODE.SHIP || this.pred.ship.landed) this.stopAuto('', true);
       else if (!this.autoGoal()) this.stopAuto(this.auto.fight ? 'цель сбита или ушла' : 'цель потеряна');
@@ -1357,6 +1431,49 @@ export class Game {
       this.lockT = 0;
       this.locked = false;
     }
+  }
+
+  /** The weapon modules in the slots of the ship flown. */
+  private mods(): ModuleKey[] {
+    return this.pilot ? fitOf(this.pilot.arms, this.pilot.ship) : [];
+  }
+
+  /** Fires the module in `slot` (the server checks and answers with the cooldown); `quiet`: no complaints (auto-attack). */
+  private fireModule(slot: number, quiet = false): boolean {
+    const key = this.mods()[slot];
+    if (!key) { if (!quiet) this.hud.toast(`Слот ${slot + 1} пуст: модули покупают и ставят в оружейной на станции`, 'warn'); return false; }
+    const def = MODULES[key];
+    const left = (this.modCd[slot] ?? 0) - this.time;
+    if (left > 0) { if (!quiet) this.hud.toast(`${def.name}: перезарядка ${Math.ceil(left)} с`); return false; }
+    if (this.energy < def.energy) { if (!quiet) this.hud.toast(`${def.name}: не хватает энергии`, 'warn'); return false; }
+    if (key === 'mines' && this.minesLeft() <= 0) { if (!quiet) this.hud.toast('Мины кончились: пополните кассету в оружейной на станции', 'warn'); return false; }
+    this.conn.action({ a: 'module', slot, target: this.targetId || undefined });
+    // a short hold until the server's answer, so a held key doesn't send twice
+    this.modCd[slot] = this.time + 0.4;
+    return true;
+  }
+
+  private minesLeft(): number {
+    return this.arenaHud.active ? this.arenaMines ?? MINE.cap : this.pilot?.arms.mines ?? 0;
+  }
+
+  /**
+   * Auto-attack (B) uses the modules too: the railgun when the target sits in its aim-assist cone,
+   * the EMP when the target is close with its shield up, a mine when it hangs on our tail.
+   */
+  private autoModules(dt: number) {
+    this.autoModT -= dt;
+    if (this.autoModT > 0) return;
+    this.autoModT = 0.3;
+    const t = this.targetId ? this.remotes.get(this.targetId) : undefined;
+    if (!t?.visible || !t.state || t.state.flags & (EFLAG.DISABLED | EFLAG.DEAD) || !this.arenaHud.armed) return;
+    const s = this.shipW, to = vsub(v3(), t.p, s.p), d = vlen(to) || 1;
+    const cos = vdot(to, qrot(v3(), s.q, FWD)) / d;
+    this.mods().forEach((key, slot) => {
+      if (key === 'railgun' && d < RAIL.range * 0.95 && cos > Math.cos(RAIL.assist * 0.9)) this.fireModule(slot, true);
+      else if (key === 'emp' && d < EMP.radius * 0.85 && t.state!.shield > 0.35) this.fireModule(slot, true);
+      else if (key === 'mines' && d < 450 && cos < -0.35) this.fireModule(slot, true);
+    });
   }
 
   /** Auto-approach: the selected target (T), or else the selected nav point (Tab). */
@@ -2028,6 +2145,9 @@ export class Game {
         const driven = !!(st.flags & EFLAG.BOOST);
         r.view.update(dt, { susp, steer: steerAngle(st.shield), fwd: vf, driven, lights: driven && (this.dayNow < 0.35 || this.wx.dark), drilling: !!(st.flags & EFLAG.CRUISE) });
         if (rpl && vdist(r.p, this.origin) < 120) this.roverDust(dt, r.view, rpl, Math.abs(vf), st.throttle * ROVER_SPEED_MAX > 0.5 ? 4 : 0);
+      } else if (r.view instanceof MineView) {
+        r.view.armed = st.throttle > 0.5;
+        r.view.update(dt);
       } else if (r.view instanceof LootView) {
         r.view.update(dt);
       } else if (r.view instanceof DroneView) {
@@ -2440,6 +2560,10 @@ export class Game {
       else if (vdist(this.shipW.p, sys.station.pos) < SAFE_ZONE_RADIUS) modeText = 'ЗОНА СТАНЦИИ';
       if (this.autofire && !this.auto?.fight) modeText = modeText ? `${modeText} · АВТООГОНЬ` : 'АВТООГОНЬ';
       this.hud.flight({ speed, throttle: this.auto ? this.auto.thr : this.ctrl.throttle, boost: ship.boost, energy: this.energy / 100, shield: self.shield / self.maxShield, hull: self.hull / self.maxHull, mode: modeText });
+      this.hud.modSlots(this.mods().map((k, i) => {
+        const def = MODULES[k], left = (this.modCd[i] ?? 0) - this.time;
+        return { name: def.short, ready: left > 0 ? Math.max(0, 1 - left / def.cooldown) : 1, ammo: k === 'mines' ? this.minesLeft() : undefined };
+      }));
     }
 
     // target

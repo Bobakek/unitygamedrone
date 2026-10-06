@@ -12,6 +12,27 @@ const LIGHTS = 4;
 interface Blast { x: number; y: number; z: number; t: number; k: number }
 interface Glow { light: THREE.PointLight; x: number; y: number; z: number; life: number; max: number; power: number }
 interface Meteor { x: number; y: number; z: number; vx: number; vy: number; vz: number; life: number }
+/** A railgun trace (world ends) or an EMP shell (centre, radius) fading out. */
+interface Beam { mesh: THREE.Mesh; glow: THREE.Mesh; a: V3; b: V3; life: number; max: number }
+interface Pulse { mesh: THREE.Mesh; p: V3; r: number; life: number; max: number }
+
+const beamGeo = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true).rotateX(Math.PI / 2);
+const pulseGeo = new THREE.IcosahedronGeometry(1, 4);
+const PULSE_VS = `varying vec3 vN; varying vec3 vV;
+#include <common>
+#include <logdepthbuf_pars_vertex>
+void main(){ vec4 mv = modelViewMatrix*vec4(position,1.0); vN = normalize(normalMatrix*normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix*mv;
+#include <logdepthbuf_vertex>
+}`;
+// a crackling fresnel shell: bright at the rim, banded so it reads as a wave front
+const PULSE_FS = `uniform vec3 c; uniform float k; uniform float t; varying vec3 vN; varying vec3 vV;
+#include <logdepthbuf_pars_fragment>
+void main(){
+#include <logdepthbuf_fragment>
+float d = abs(dot(vN, vV));
+float rim = pow(1.0 - d, 2.2);
+float bands = 0.6 + 0.4 * sin(vN.y * 40.0 + vN.x * 23.0 + t * 30.0);
+gl_FragColor = vec4(c * (rim * 1.6 + 0.08) * bands * k, 1.0); }`;
 
 const MAX_BOLTS = 800;
 const MAX_PARTICLES = 5000;
@@ -50,6 +71,8 @@ export class Effects {
   private blasts: Blast[] = [];
   private glows: Glow[] = [];
   private lightPool: THREE.PointLight[] = [];
+  private beams: Beam[] = [];
+  private pulses: Pulse[] = [];
 
   constructor() {
     for (let i = 0; i < LIGHTS; i++) {
@@ -205,6 +228,73 @@ export class Effects {
     }
   }
 
+  /**
+   * A railgun slug: a white-hot core along the path with a coloured glow, a spiral of sparks
+   * winding round it, a muzzle flash and, where it struck, a burst.
+   */
+  rail(a: V3, b: V3, color: THREE.Color, hit: boolean) {
+    const mk = (r: number, c: THREE.Color, op: number) => {
+      const m = new THREE.Mesh(beamGeo, new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: op, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
+      m.scale.set(r, r, 1);
+      m.frustumCulled = false;
+      this.group.add(m);
+      return m;
+    };
+    this.beams.push({ mesh: mk(0.16, new THREE.Color(2.2, 2.4, 2.6), 1), glow: mk(0.55, color.clone().multiplyScalar(1.8), 0.4), a: { ...a }, b: { ...b }, life: 0.5, max: 0.5 });
+    const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z, len = Math.hypot(dx, dy, dz) || 1;
+    const f = new THREE.Vector3(dx / len, dy / len, dz / len);
+    const u = new THREE.Vector3(0, 1, 0).cross(f);
+    if (u.lengthSq() < 1e-4) u.set(1, 0, 0).cross(f);
+    u.normalize();
+    const w = new THREE.Vector3().crossVectors(f, u);
+    const steps = Math.min(220, Math.floor(len / 6));
+    for (let i = 0; i < steps; i++) {
+      const s = (i / steps) * len, ang = s * 0.18, r = 0.9;
+      const ox = (u.x * Math.cos(ang) + w.x * Math.sin(ang)) * r, oy = (u.y * Math.cos(ang) + w.y * Math.sin(ang)) * r, oz = (u.z * Math.cos(ang) + w.z * Math.sin(ang)) * r;
+      this.particle({
+        x: a.x + f.x * s + ox, y: a.y + f.y * s + oy, z: a.z + f.z * s + oz, vx: ox * 1.5, vy: oy * 1.5, vz: oz * 1.5,
+        life: 0.5 + Math.random() * 0.5, max: 1, size: 0.7, r: color.r * 1.6, g: color.g * 1.6, b: color.b * 1.6, drag: 1.5,
+      });
+    }
+    this.flash(a, color, 9, 0.18);
+    this.flash(a, new THREE.Color(2, 2, 2), 4, 0.1);
+    if (hit) {
+      this.flash(b, color, 22, 0.35);
+      this.flash(b, color, 30, 0.5, ringTexture(), 1.4);
+      this.spark(b, new THREE.Color(1.6, 1.8, 2.2), 30);
+      this.light(b, color, 20000, 0.35);
+    }
+  }
+
+  /** An EMP pulse: an electric shell racing out to radius `r`, a ring and crackling sparks. */
+  emp(p: V3, r: number, color: THREE.Color) {
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { c: { value: color.clone() }, k: { value: 1 }, t: { value: 0 } }, vertexShader: PULSE_VS, fragmentShader: PULSE_FS,
+      blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(pulseGeo, mat);
+    mesh.frustumCulled = false;
+    this.group.add(mesh);
+    this.pulses.push({ mesh, p: { ...p }, r, life: 0.8, max: 0.8 });
+    this.flash(p, color, 60, 0.4);
+    this.flash(p, color, r * 0.7, 0.6, ringTexture(), 2.6);
+    this.light(p, color, 40000, 0.5);
+    for (let i = 0; i < 90; i++) {
+      const uu = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2, rr = Math.sqrt(1 - uu * uu), s = r * (0.8 + Math.random() * 0.6);
+      this.particle({ x: p.x, y: p.y, z: p.z, vx: Math.cos(a) * rr * s, vy: uu * s, vz: Math.sin(a) * rr * s, life: 0.6, max: 0.6, size: 2.2, r: color.r * 2.2, g: color.g * 2.2, b: color.b * 2.4, drag: 2.5 });
+    }
+  }
+
+  /** Blue arcs crawling over a ship caught by an EMP. */
+  zap(p: V3, radius: number) {
+    for (let i = 0; i < 26; i++) {
+      const uu = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2, rr = Math.sqrt(1 - uu * uu);
+      const x = p.x + Math.cos(a) * rr * radius, y = p.y + uu * radius, z = p.z + Math.sin(a) * rr * radius;
+      this.particle({ x, y, z, vx: (Math.random() - 0.5) * 30, vy: (Math.random() - 0.5) * 30, vz: (Math.random() - 0.5) * 30, life: 0.4 + Math.random() * 0.8, max: 1.2, size: 0.9, r: 0.8, g: 1.6, b: 2.6, drag: 3 });
+    }
+    this.flash(p, new THREE.Color(0.5, 1.1, 2), radius * 3, 0.3);
+  }
+
   /** A ship blows up: a fireball, a shock ring, a flash of light, burning debris and a couple of secondary blasts. */
   shipExplosion(p: V3, big: boolean) {
     this.explosion(p, big);
@@ -279,6 +369,38 @@ export class Effects {
   }
 
   update(dt: number, origin: V3) {
+    for (let i = this.beams.length - 1; i >= 0; i--) {
+      const b = this.beams[i];
+      b.life -= dt;
+      if (b.life <= 0) {
+        for (const m of [b.mesh, b.glow]) { m.removeFromParent(); (m.material as THREE.Material).dispose(); }
+        this.beams.splice(i, 1);
+        continue;
+      }
+      const t = b.life / b.max;
+      const len = Math.hypot(b.b.x - b.a.x, b.b.y - b.a.y, b.b.z - b.a.z);
+      this.dir.set(b.b.x - b.a.x, b.b.y - b.a.y, b.b.z - b.a.z).normalize();
+      this.q.setFromUnitVectors(this.Z, this.dir);
+      for (const m of [b.mesh, b.glow]) {
+        m.quaternion.copy(this.q);
+        m.position.set((b.a.x + b.b.x) / 2 - origin.x, (b.a.y + b.b.y) / 2 - origin.y, (b.a.z + b.b.z) / 2 - origin.z);
+        m.scale.z = len;
+      }
+      (b.mesh.material as THREE.MeshBasicMaterial).opacity = t * t;
+      (b.glow.material as THREE.MeshBasicMaterial).opacity = 0.45 * t;
+      b.glow.scale.x = b.glow.scale.y = 0.55 + (1 - t) * 1.2;
+    }
+    for (let i = this.pulses.length - 1; i >= 0; i--) {
+      const p = this.pulses[i];
+      p.life -= dt;
+      const mat = p.mesh.material as THREE.ShaderMaterial;
+      if (p.life <= 0) { p.mesh.removeFromParent(); mat.dispose(); this.pulses.splice(i, 1); continue; }
+      const t = 1 - p.life / p.max;
+      p.mesh.position.set(p.p.x - origin.x, p.p.y - origin.y, p.p.z - origin.z);
+      p.mesh.scale.setScalar(Math.max(1, p.r * (1 - (1 - t) ** 3)));
+      mat.uniforms.k.value = (1 - t) * 1.2;
+      mat.uniforms.t.value += dt;
+    }
     for (let i = this.blasts.length - 1; i >= 0; i--) {
       const b = this.blasts[i];
       b.t -= dt;

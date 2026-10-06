@@ -3,12 +3,13 @@ import { ARENA, arenaLayout, spawnSlot, TEAM_COLORS, TEAM_NAMES, type ArenaLayou
 import { combatStats, flightStats, type Upgrades } from '../../shared/economy.ts';
 import { makeName } from '../../shared/galaxy/names.ts';
 import { hashInts, Rng } from '../../shared/math/rng.ts';
-import { FWD, qlook, qrot, quat, v3, vdist, vnorm, vsub, type V3 } from '../../shared/math/vec.ts';
+import { FWD, qlook, qrot, quat, v3, vdist, vlen, vnorm, vsub, type V3 } from '../../shared/math/vec.ts';
 import { MODE, MSG, type Action, type GameEvent } from '../../shared/net/protocol.ts';
 import { newPose } from '../../shared/sim/frames.ts';
 import { emptyInput, newShip, stepShip, type ShipInput, type StepOut } from '../../shared/sim/ship.ts';
 import { LASER, leadPoint, segmentSphere } from '../../shared/sim/weapons.ts';
 import { playerBlueprint } from '../../shared/ships/blueprint.ts';
+import { EMP, MINE, MODULE_KEYS, RAIL } from '../../shared/modules.ts';
 import { steer } from './npc.ts';
 import type { ShipEntity } from './entities.ts';
 import type { Session } from './session.ts';
@@ -48,6 +49,8 @@ interface BotBrain {
   err: V3;
   errT: number;
   phase: number;
+  /** Next look at the weapon modules. */
+  modT: number;
 }
 
 const stepOut: StepOut = { impact: 0 };
@@ -96,17 +99,19 @@ export class ArenaInstance extends SystemInstance {
     const name = `Бот ${makeName(this.brng)}`;
     const bp = { ...playerBlueprint(name, 'fighter'), hull2: TEAM_COLORS[team], glow: TEAM_COLORS[team] };
     const c = combatStats(BOT_UPGRADES, 'fighter');
+    // one weapon module each, so pilots meet railguns, mines and EMPs on the arena
+    const mods = [MODULE_KEYS[this.brng.int(0, MODULE_KEYS.length - 1)]];
     const ship: ShipEntity = {
       id: this.ctx.nextId(), name, bp, state: newShip(v3()), world: newPose(), flight: flightStats(BOT_UPGRADES, 'fighter'), combat: c,
       hull: c.maxHull, shield: c.maxShield, energy: 100, lastHit: -99, fireCooldown: 0, gun: 0,
-      throttle: 0, boosting: false, dead: false, respawnAt: 0, docked: false, god: false, session: null, npc: null, lastInput: emptyInput(),
+      throttle: 0, boosting: false, dead: false, respawnAt: 0, docked: false, god: false, session: null, npc: null, lastInput: emptyInput(), mods,
     };
     this.ships.set(ship.id, ship);
     this.infos.push(this.shipInfo(ship));
     const seat: Seat = { ship, team, slot, kills, deaths, session: null, back: -1, wear: 1 };
     this.seats.set(ship.id, seat);
     this.bots.set(ship.id, {
-      target: 0, rethink: 0, jink: 0, evade: 0, evadeDir: v3(), err: v3(), errT: 0, phase: this.brng.range(0, 6),
+      target: 0, rethink: 0, jink: 0, evade: 0, evadeDir: v3(), err: v3(), errT: 0, phase: this.brng.range(0, 6), modT: 0,
     });
     this.spawn(seat);
   }
@@ -127,6 +132,10 @@ export class ArenaInstance extends SystemInstance {
     ship.energy = 100;
     ship.lastHit = -99;
     ship.fireCooldown = 0;
+    // modules come back ready, with a full arena magazine of mines (the pilot's own stock is untouched)
+    ship.modReady = [];
+    ship.jamUntil = 0;
+    ship.mineAmmo = MINE.cap;
     seat.warned = false;
     if (seat.session) {
       seat.session.mode = MODE.SHIP;
@@ -154,11 +163,21 @@ export class ArenaInstance extends SystemInstance {
     if (this.phase === 'fight') super.tryFire(ship);
   }
 
-  override damage(target: ShipEntity, dmg: number, attacker: number, pos?: V3) {
+  override damage(target: ShipEntity, dmg: number, attacker: number, pos?: V3, mul?: { shield: number; hull: number }) {
     if (this.phase !== 'fight') return;
     const a = this.seats.get(attacker), b = this.seats.get(target.id);
     if (a && b && a !== b && a.team === b.team) return;
-    super.damage(target, attacker ? dmg * ARENA.damage : dmg, attacker, pos);
+    super.damage(target, attacker ? dmg * ARENA.damage : dmg, attacker, pos, mul);
+  }
+
+  override hostile(a: ShipEntity, b: ShipEntity): boolean {
+    const sa = this.seats.get(a.id), sb = this.seats.get(b.id);
+    if (sa && sb && sa.team === sb.team) return false;
+    return this.phase === 'fight' && super.hostile(a, b);
+  }
+
+  override armed() {
+    return this.phase === 'fight';
   }
 
   override kill(target: ShipEntity, attacker: number) {
@@ -191,7 +210,7 @@ export class ArenaInstance extends SystemInstance {
   }
 
   override handleAction(s: Session, act: Action): string | null {
-    if (act.a === 'missile') return super.handleAction(s, act);
+    if (act.a === 'missile' || act.a === 'module') return super.handleAction(s, act);
     if (act.a === 'respawn') return null;
     return 'На арене это недоступно. Покинуть арену: /arena';
   }
@@ -237,6 +256,7 @@ export class ArenaInstance extends SystemInstance {
     this.phase = 'warmup';
     this.until = this.time + ARENA.warmup;
     this.lasers.length = 0;
+    this.arms.clear();
     for (const seat of this.seats.values()) this.spawn(seat);
     this.sendState();
   }
@@ -274,6 +294,7 @@ export class ArenaInstance extends SystemInstance {
     }
     this.stepLasers();
     this.stepMissiles();
+    this.arms.step();
 
     for (const seat of this.seats.values()) {
       const ship = seat.ship;
@@ -398,7 +419,49 @@ export class ArenaInstance extends SystemInstance {
     // shoot when the bolts would pass close enough to the lead point to have a chance
     const miss = vdist(aim, p) * Math.sqrt(Math.max(0, 1 - cos * cos));
     const fire = b.jink <= 0 && dist < 1300 && cos > 0 && miss < 22 && !this.blocked(p, target.world.p);
+    this.botModules(ship, b, target, dist);
     return { input: inp, fire };
+  }
+
+  /**
+   * Bot weapon modules, looked at a few times a second: the railgun when the target sits in the
+   * aim-assist cone, the EMP when an enemy with shields is close, a mine when someone is on its tail.
+   */
+  private botModules(ship: ShipEntity, b: BotBrain, target: ShipEntity, dist: number) {
+    const mods = ship.mods;
+    if (!mods?.length) return;
+    b.modT -= DT;
+    if (b.modT > 0) return;
+    b.modT = 0.25 + this.brng.float() * 0.35;
+    const p = ship.world.p;
+    for (let slot = 0; slot < mods.length; slot++) {
+      if (this.time < (ship.modReady?.[slot] ?? 0)) continue;
+      const key = mods[slot];
+      if (key === 'railgun') {
+        vsub(tmp, target.world.p, p);
+        const cos = (fwd.x * tmp.x + fwd.y * tmp.y + fwd.z * tmp.z) / Math.max(1, dist);
+        if (dist < RAIL.range * 0.8 && cos > Math.cos(RAIL.assist * 0.8) && !this.blocked(p, target.world.p)) this.arms.use(ship, slot, target.id);
+      } else if (key === 'emp') {
+        // worth it on a shielded enemy, or on two at once
+        let near = 0, shielded = false;
+        for (const o of this.seats.values()) {
+          if (o.ship.dead || !this.hostile(ship, o.ship) || vdist(o.ship.world.p, p) > EMP.radius * 0.85) continue;
+          near++;
+          if (o.ship.shield > o.ship.combat.maxShield * 0.4) shielded = true;
+        }
+        if (near >= 2 || shielded) this.arms.use(ship, slot, target.id);
+      } else if (key === 'mines') {
+        // someone close behind (on our tail) or a close pass just made
+        let tail = false;
+        for (const o of this.seats.values()) {
+          if (o.ship.dead || !this.hostile(ship, o.ship)) continue;
+          vsub(tmp, o.ship.world.p, p);
+          const d = vlen(tmp);
+          if (d < 500 && (fwd.x * tmp.x + fwd.y * tmp.y + fwd.z * tmp.z) / d < -0.35) { tail = true; break; }
+        }
+        if (tail || b.jink > 0.9) this.arms.use(ship, slot, target.id);
+      }
+    }
   }
 
   // ------------------------------------------------------------------ messages
@@ -535,6 +598,9 @@ export class ArenaDesk {
     const ship = s.ship;
     ship.docked = true;
     ship.state.v = v3();
+    ship.mineAmmo = undefined;
+    ship.modReady = [];
+    ship.jamUntil = 0;
     ship.hull = Math.max(1, ship.combat.maxHull * Math.min(1, wear));
     ship.shield = ship.combat.maxShield;
     s.mode = MODE.DOCKED;

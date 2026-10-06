@@ -10,6 +10,7 @@ import type { WeatherKind } from '../weather.ts';
 import type { Trophy } from '../station/trophies.ts';
 import type { HullKey } from '../ships/hulls.ts';
 import type { Prize } from '../boarding.ts';
+import type { Arms, ModuleKey } from '../modules.ts';
 import { Reader, Writer } from './buffer.ts';
 
 export const MSG = {
@@ -17,7 +18,8 @@ export const MSG = {
   WELCOME: 20, SNAPSHOT: 21, INFO: 22, GONE: 23, SHOTS: 24, EVENTS: 25, PILOT: 26, PONG: 27, ERROR: 28, WORLD: 29, BOARD: 30, MARKET: 31, GROUP: 32, ARENA: 33,
 } as const;
 
-export const KIND = { SHIP: 1, CHAR: 2, MISSILE: 3, LOOT: 4, CREATURE: 5, ROVER: 6 } as const;
+/** MINE: a proximity mine (`throttle` 1 = armed, `owner` in the info = the ship that laid it). */
+export const KIND = { SHIP: 1, CHAR: 2, MISSILE: 3, LOOT: 4, CREATURE: 5, ROVER: 6, MINE: 7 } as const;
 /** Shot.level used for the pilot's hand blaster. */
 export const BLASTER_LEVEL = 10;
 /** Shot.level of a wreck's guard drone. */
@@ -74,6 +76,8 @@ export interface PilotInfo {
   ship: HullKey; ships: HullKey[];
   /** Captured ships waiting to be sold at a shipyard. */
   prizes: Prize[];
+  /** Weapon modules owned, the fit of each ship and mines in the magazine. */
+  arms: Arms;
   /** Server clock (ms) when sent, for freight deadlines. */
   clock: number;
 }
@@ -85,8 +89,8 @@ export interface GroupMember {
 export interface GroupMsg { members: GroupMember[]; invite?: { from: string } }
 /** The station contract board (sent while docked); `next` = ms until it is refreshed. */
 export interface BoardMsg { system: number; offers: ContractDef[]; next: number }
-/** `look` (pilots on foot): outfit code, see outfit.ts lookCode; `wanted`: a player ship wanted by the Federation. */
-export interface EntityInfo { id: number; kind: number; name: string; bp?: Blueprint; npc?: boolean; owner?: number; species?: number; look?: string; wanted?: boolean }
+/** `look` (pilots on foot): outfit code, see outfit.ts lookCode; `wanted`: a player ship wanted by the Federation; `mods`: weapon modules on a ship, slot by slot. */
+export interface EntityInfo { id: number; kind: number; name: string; bp?: Blueprint; npc?: boolean; owner?: number; species?: number; look?: string; wanted?: boolean; mods?: ModuleKey[] }
 export interface Harvested { planet: number; node: number; left: number }
 export interface Welcome {
   playerId: number; shipId: number; token: string; pilot: PilotInfo; system: number;
@@ -104,6 +108,14 @@ export type GameEvent =
   | { t: 'charge'; left: number; system: number }
   | { t: 'harvest'; planet: number; node: number; left: number; by: number }
   | { t: 'missile'; id: number; target: number }
+  /** A railgun slug from ship `by` along `from`→`to`; `hit`: ship struck, -1 cover, 0 nothing. */
+  | { t: 'rail'; by: number; from: [number, number, number]; to: [number, number, number]; hit: number }
+  /** Ship `id` let off an EMP pulse of radius `r`; `hit`: the ships it caught. */
+  | { t: 'emp'; id: number; pos: [number, number, number]; r: number; hit: number[] }
+  /** Mine `id` went off (blast radius `r`). */
+  | { t: 'blast'; id: number; pos: [number, number, number]; r: number }
+  /** To the pilot only: the module in `slot` fired and is ready again in `cd` s; mines left. */
+  | { t: 'module'; slot: number; cd: number; ammo?: number }
   /** Big centred banner for world events. */
   | { t: 'announce'; text: string; sub?: string; kind?: 'info' | 'warn' | 'good' }
   /** Anomaly scan progress for this pilot (k in 0..1, -1 = left the field). */
@@ -141,6 +153,9 @@ export type Action =
   /** Station smelter: run `n` batches of a recipe (as many as possible without `n`), see refinery.ts. */
   | { a: 'refine'; recipe: string; n?: number }
   | { a: 'missile'; target: number } | { a: 'respawn' }
+  /** Weapon modules: fire slot `slot` (the selected target helps aim); arsenal (docked): buy, fit / remove on the ship flown, refill mines. */
+  | { a: 'module'; slot: number; target?: number }
+  | { a: 'buyModule'; key: ModuleKey } | { a: 'fitModule'; key: ModuleKey } | { a: 'buyMines' }
   | { a: 'salvage'; id: number } | { a: 'sample'; id: number }
   | { a: 'buyItem'; id: string } | { a: 'equip'; id: string }
   | { a: 'takeContract'; id: string } | { a: 'dropContract'; id: string }
