@@ -10,6 +10,7 @@ export * from './math/rng.ts';
 export * from './math/noise.ts';
 export * from './math/vec.ts';
 export * from './galaxy/system-gen.ts';
+export * from './galaxy/galaxy.ts';
 export * from './planet/terrain.ts';
 export * from './planet/cubesphere.ts';
 export * from './planet/resources.ts';
