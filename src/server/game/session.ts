@@ -5,6 +5,7 @@ import { gearStats, type GearStats } from '../../shared/outfit.ts';
 import type { PilotRecord } from '../storage.ts';
 import type { CharEntity, ShipEntity } from './entities.ts';
 import type { SystemInstance } from './system.ts';
+import type { Group } from './groups.ts';
 
 export interface Transport {
   send(data: Uint8Array): void;
@@ -33,6 +34,9 @@ export class Session {
   lastSave = 0;
   closed = false;
   god = false;
+  group: Group | null = null;
+  /** A pending invitation to a group. */
+  invite: { from: Session; until: number } | null = null;
 
   constructor(
     public id: number,

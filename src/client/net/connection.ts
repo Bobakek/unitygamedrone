@@ -1,9 +1,10 @@
 import { PROTOCOL_VERSION } from '../../shared/constants.ts';
 import {
   decodeJson, decodeShots, decodeSnapshot, encodeInput, encodeJson, MSG,
-  type Action, type BoardMsg, type EntityInfo, type GameEvent, type InputMsg, type PilotInfo, type Shot, type Snapshot, type Welcome,
+  type Action, type BoardMsg, type EntityInfo, type GameEvent, type GroupMsg, type InputMsg, type PilotInfo, type Shot, type Snapshot, type Welcome,
 } from '../../shared/net/protocol.ts';
 import type { Poi } from '../../shared/events.ts';
+import type { MarketMsg } from '../../shared/market.ts';
 
 export interface NetHandlers {
   welcome(w: Welcome): void;
@@ -15,6 +16,8 @@ export interface NetHandlers {
   pilot(p: PilotInfo): void;
   world(pois: Poi[]): void;
   board(b: BoardMsg): void;
+  market(m: MarketMsg): void;
+  group(g: GroupMsg): void;
   error(message: string): void;
   closed(): void;
 }
@@ -39,6 +42,8 @@ export function dispatchMessage(d: Uint8Array, h: NetHandlers): { c: number } | 
     case MSG.PILOT: h.pilot(decodeJson<PilotInfo>(d)); break;
     case MSG.WORLD: h.world(decodeJson<{ pois: Poi[] }>(d).pois); break;
     case MSG.BOARD: h.board(decodeJson<BoardMsg>(d)); break;
+    case MSG.MARKET: h.market(decodeJson<MarketMsg>(d)); break;
+    case MSG.GROUP: h.group(decodeJson<GroupMsg>(d)); break;
     case MSG.WELCOME: h.welcome(decodeJson<Welcome>(d)); break;
     case MSG.ERROR: h.error(decodeJson<{ message: string }>(d).message); break;
     case MSG.PONG: return decodeJson<{ c: number }>(d);

@@ -1,6 +1,6 @@
 import { DOCK_RANGE, DT, EXIT_RANGE, GATE_RANGE, HARVEST_RANGE, INTEREST_RADIUS, NODE_RESPAWN, SAFE_ZONE_RADIUS, SHIP_LAND_HEIGHT } from '../../shared/constants.ts';
 import {
-  BOUNTY, cargoValue, combatStats, emptyCargo, flightStats, MAX_LEVEL, MAX_MISSILES, MISSILE_COST, PIRATE_COMBAT, PIRATE_FLIGHT,
+  BOUNTY, CARGO_KEYS, combatStats, emptyCargo, flightStats, MAX_LEVEL, MAX_MISSILES, MISSILE_COST, PIRATE_COMBAT, PIRATE_FLIGHT,
   REPAIR_COST_PER_HP, UPGRADE_COST, UPGRADE_KEYS, cargoCount, type UpgradeKey,
 } from '../../shared/economy.ts';
 import { getSystem, type SystemDef } from '../../shared/galaxy/system-gen.ts';
@@ -30,6 +30,9 @@ import { Fauna } from './fauna.ts';
 import { item, lookCode, owns, repNeedText, repOk, SLOT_NAMES } from '../../shared/outfit.ts';
 import { isPirateFriend, isWanted, WANTED_BOUNTY } from '../../shared/contracts.ts';
 import { ContractDesk } from './contracts.ts';
+import { StationMarket } from './market.ts';
+import { GROUP_BONUS, SHARE_RANGE } from './groups.ts';
+import type { MarketQuote } from '../../shared/market.ts';
 import { BOARD_REACH, PAD, RAMP, stepDeck } from '../../shared/station/deck.ts';
 import { WeatherDesk } from './weather.ts';
 import type { Weather } from '../../shared/weather.ts';
@@ -44,6 +47,12 @@ export interface GameContext {
   now(): number;
   /** Is the convoy event `poi` of system `system` still under way? */
   convoyAlive(system: number, poi: number): boolean;
+  /** Current prices at the stations of these systems. */
+  quotes(systems: number[]): MarketQuote[];
+  /** The pilot and the members of their group in the same system within `range` of `at` (kill credit). */
+  crew(s: Session, at: V3, range: number): Session[];
+  /** Are the two pilots in one group? */
+  allies(a: Session, b: Session): boolean;
 }
 
 const tmp = v3(), tmp2 = v3(), aim = v3(), rot = quat();
@@ -75,6 +84,7 @@ export class SystemInstance implements NpcWorld {
   readonly outposts: Outposts;
   readonly fauna: Fauna;
   readonly contracts: ContractDesk;
+  readonly market: StationMarket;
   readonly weather: WeatherDesk;
 
   constructor(private ctx: GameContext, id: number) {
@@ -86,6 +96,7 @@ export class SystemInstance implements NpcWorld {
     this.outposts = new Outposts(this);
     this.fauna = new Fauna(this);
     this.contracts = new ContractDesk(this);
+    this.market = new StationMarket(this);
     this.weather = new WeatherDesk(this);
   }
 
@@ -252,6 +263,7 @@ export class SystemInstance implements NpcWorld {
     if (this.inSafeZone(w.p)) return 'Оружие заблокировано в зоне станции';
     const t = this.ships.get(targetId);
     if (!t || t === ship || t.dead || t.docked) return 'Нет цели';
+    if (t.session && this.ctx.allies(s, t.session)) return 'Это пилот вашей группы';
     vsub(tmp, t.world.p, w.p);
     const d = vlen(tmp);
     if (d > MISSILE.range * 1.1) return 'Цель слишком далеко';
@@ -272,6 +284,9 @@ export class SystemInstance implements NpcWorld {
     if (target.dead || target.docked || target.god) return;
     if (target.session && target.session.mode === MODE.FOOT) return;
     if (this.inSafeZone(target.world.p)) return;
+    // no friendly fire inside a group
+    const by = attacker ? this.ships.get(attacker)?.session : undefined;
+    if (by && target.session && this.ctx.allies(by, target.session)) return;
     target.lastHit = this.time;
     target.state.cruiseBlock = Math.max(target.state.cruiseBlock, 4);
     const absorbed = Math.min(target.shield, dmg);
@@ -319,12 +334,45 @@ export class SystemInstance implements NpcWorld {
       // a pilot wanted by the Federation carries an extra price on their head
       const wanted = target.session && isWanted(target.session.pilot.career) ? WANTED_BOUNTY : 0;
       const bounty = (target.bounty ?? (target.npc ? BOUNTY.npc : BOUNTY.player)) + wanted;
-      killer.session.pilot.credits += bounty;
       killer.session.pilot.kills++;
-      killer.session.sendPilot();
-      killer.session.msg(wanted ? `Разыскиваемый пилот уничтожен: +${bounty} кр` : `Цель уничтожена: +${bounty} кр`, 'good');
+      this.reward(killer.session, p, bounty, wanted ? 'Разыскиваемый пилот уничтожен' : 'Цель уничтожена');
       if (target.npc && target.npc.role !== 'turret') this.contracts.onPirateKill(killer.session);
     }
+  }
+
+  /** The pilot and group mates near `at` (or near the pilot) who share kills. */
+  crew(s: Session, at: V3 = this.focusOf(s)): Session[] {
+    return this.ctx.crew(s, at, SHARE_RANGE);
+  }
+
+  /**
+   * Pays a bounty earned by `s` near `at`: split evenly between them and the group mates
+   * nearby, with a bonus for every extra pilot.
+   */
+  reward(s: Session, at: V3, credits: number, text: string): number {
+    const crew = this.crew(s, at);
+    const share = Math.round((credits * (1 + GROUP_BONUS * (crew.length - 1))) / crew.length);
+    for (const m of crew) {
+      m.pilot.credits += share;
+      m.sendPilot();
+      m.msg(crew.length > 1 ? `${text}: +${share} кр (доля группы ×${crew.length})` : `${text}: +${share} кр`, 'good');
+    }
+    return share;
+  }
+
+  /** Sends the station's prices (and the neighbours' through the gates) to a docked pilot. */
+  sendMarket(s: Session) {
+    this.market.send(s, this.ctx.quotes(this.def.gates.map((g) => g.target)));
+  }
+
+  /** After a trade: everyone at the station sees the new prices. */
+  private marketTrade() {
+    this.market.changed();
+    this.broadcastMarket();
+  }
+
+  private broadcastMarket() {
+    for (const o of this.sessions) if (atStation(o)) this.sendMarket(o);
   }
 
   respawn(s: Session) {
@@ -386,6 +434,8 @@ export class SystemInstance implements NpcWorld {
       // a fresh board (new epoch, a convoy came or went) goes to everyone docked
       if (this.contracts.board().changed) for (const s of this.sessions) if (s.mode === MODE.DOCKED) this.contracts.sendBoard(s);
       for (const s of this.sessions) this.contracts.expire(s);
+      // prices drift each epoch and recover from trade: docked pilots see them move
+      if (this.market.changed()) this.broadcastMarket();
     }
 
     for (const ship of this.ships.values()) {
@@ -642,6 +692,7 @@ export class SystemInstance implements NpcWorld {
         s.sendPilot();
         this.contracts.deliver(s);
         this.contracts.sendBoard(s);
+        this.sendMarket(s);
         return null;
       }
       case 'undock': {
@@ -658,13 +709,17 @@ export class SystemInstance implements NpcWorld {
       }
       case 'sell': {
         if (!atStation(s)) return 'Нужно пристыковаться';
-        const sum = cargoValue(p.cargo);
-        if (!sum) return 'Трюм пуст';
-        p.credits += sum;
-        p.cargo = emptyCargo();
-        s.sendPilot();
-        s.msg(`Груз продан: +${sum} кр`, 'good');
-        return null;
+        const key = act.key && CARGO_KEYS.includes(act.key) ? act.key : undefined;
+        const err = this.market.sell(s, key, act.n === undefined ? undefined : Number(act.n));
+        if (!err) this.marketTrade();
+        return err;
+      }
+      case 'buy': {
+        if (!atStation(s)) return 'Нужно пристыковаться';
+        if (!CARGO_KEYS.includes(act.key)) return null;
+        const err = this.market.buy(s, act.key, Number(act.n));
+        if (!err) this.marketTrade();
+        return err;
       }
       case 'repair': {
         if (!atStation(s)) return 'Нужно пристыковаться';

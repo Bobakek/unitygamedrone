@@ -90,31 +90,36 @@ export class ContractDesk {
     if (touched) s.sendPilot();
   }
 
+  /** Kill credit goes to the pilot and to their group mates nearby. */
+  private crewProgress(s: Session, pred: (c: ActiveContract) => boolean) {
+    for (const m of this.sys.crew(s)) this.progress(m, pred);
+  }
+
   /** A player shot down a pirate ship. */
   onPirateKill(s: Session) {
     this.rep(s, 'pirate', -2);
     this.rep(s, 'fed', 1);
     const id = this.sys.def.id;
-    this.progress(s, (c) => c.kind === 'pirates' && c.system === id);
+    this.crewProgress(s, (c) => c.kind === 'pirates' && c.system === id);
   }
 
   /** A player destroyed a turret of base `site` on `planet`. */
   onTurretKill(s: Session, planet: number, site: number) {
     this.rep(s, 'pirate', -4);
     const id = this.sys.def.id;
-    this.progress(s, (c) => c.kind === 'clear' && c.system === id && c.planet === planet && c.site === site);
+    this.crewProgress(s, (c) => c.kind === 'clear' && c.system === id && c.planet === planet && c.site === site);
   }
 
   /** A player destroyed the freighter of convoy `poi`. */
   onFreighterKill(s: Session, poi: number) {
     const id = this.sys.def.id;
-    this.progress(s, (c) => c.kind === 'intercept' && c.system === id && c.poi === poi);
+    this.crewProgress(s, (c) => c.kind === 'intercept' && c.system === id && c.poi === poi);
   }
 
   /** A player killed a creature. */
   onCreatureKill(s: Session, species: number, planet: number) {
     const id = this.sys.def.id;
-    this.progress(s, (c) => c.kind === 'hunt' && c.system === id && c.species === species && c.planet === planet);
+    this.crewProgress(s, (c) => c.kind === 'hunt' && c.system === id && c.species === species && c.planet === planet);
   }
 
   /** Docked at this system's station: hand over supplies and deliveries (partly if need be). */
