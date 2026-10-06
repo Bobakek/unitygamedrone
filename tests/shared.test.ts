@@ -15,7 +15,7 @@ import { DECK_POSTS, DECK_WALLS, RAMP, roomAt, stepDeck, TERMINAL_REACH, TERMINA
 
 const sys = getSystem(0);
 const env: SimEnv = { star: sys.star, planets: sys.planets, fields: sys.fields, station: sys.station, time: 0 };
-const stats = flightStats(defaultUpgrades());
+const stats = flightStats(defaultUpgrades(), 'fighter');
 const cloneChar = (c: ReturnType<typeof newChar>) => copyChar(newChar(v3(), v3()), c);
 
 describe('noise & generation', () => {

@@ -1,10 +1,11 @@
 import {
-  CARGO_KEYS, CARGO_NAMES, cargoCount, combatStats, UPGRADE_COST, MAX_LEVEL, REPAIR_COST_PER_HP, MISSILE_COST, UPGRADE_KEYS, type CargoKey, type UpgradeKey,
+  CARGO_KEYS, CARGO_NAMES, cargoCount, combatStats, flightStats, UPGRADE_COST, MAX_LEVEL, REPAIR_COST_PER_HP, MISSILE_COST, UPGRADE_KEYS, type CargoKey, type UpgradeKey,
 } from '../../shared/economy.ts';
 import type { Action, PilotInfo } from '../../shared/net/protocol.ts';
 import type { MarketMsg } from '../../shared/market.ts';
 import { getSystem } from '../../shared/galaxy/system-gen.ts';
 import { FACTION_COLORS, objectiveText, RANKS, rankOf } from '../../shared/contracts.ts';
+import { HULL_KEYS, HULLS, type HullKey } from '../../shared/ships/hulls.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
 
@@ -68,6 +69,7 @@ export class Hud {
       else if (act === 'wardrobe') this.onWardrobe();
       else if (act === 'contracts') this.onContracts();
       else if (act === 'upgrade') this.onAction({ a: 'upgrade', key: b.dataset.key! });
+      else if (act === 'ship') this.onAction({ a: b.dataset.op === 'buy' ? 'buyShip' : 'setShip', ship: b.dataset.key as HullKey });
       else if (act === 'trade') {
         const key = b.dataset.key as CargoKey, n = b.dataset.n === 'all' ? undefined : Number(b.dataset.n);
         this.onAction(b.dataset.op === 'buy' ? { a: 'buy', key, n: n ?? 999 } : { a: 'sell', key, n });
@@ -306,7 +308,7 @@ export class Hud {
     const m = this.market;
     const box = $('.mk-table');
     if (!m) { box.innerHTML = '<p class="mk-hint">Загрузка цен…</p>'; return; }
-    const room = combatStats(p.upgrades).cargoCap - cargoCount(p.cargo);
+    const room = combatStats(p.upgrades, p.ship).cargoCap - cargoCount(p.cargo);
     const left = Math.max(0, m.next - (performance.now() - this.marketAt));
     $('.mk-next').textContent = `· цены сменятся через ${Math.max(1, Math.ceil(left / 60000))} мин`;
     const others = m.others;
@@ -331,7 +333,7 @@ export class Hud {
     const c = p.cargo;
     const q = this.market?.here.goods;
     const value = q ? CARGO_KEYS.reduce((n, k) => n + c[k] * q[k].sell, 0) : 0;
-    $('.st-cargo').innerHTML = `Груз: ${cargoCount(c)}/${combatStats(p.upgrades).cargoCap}${q ? ` · по местным ценам ≈ <b>${value} кр</b>` : ''}<br>Баланс: <b>${p.credits} кр</b>` +
+    $('.st-cargo').innerHTML = `Груз: ${cargoCount(c)}/${combatStats(p.upgrades, p.ship).cargoCap}${q ? ` · по местным ценам ≈ <b>${value} кр</b>` : ''}<br>Баланс: <b>${p.credits} кр</b>` +
       (hull ? `<br>Корпус: ${Math.round(hull.hull)}/${hull.max} (ремонт ${Math.ceil((hull.max - hull.hull) * REPAIR_COST_PER_HP)} кр)` : '') +
       `<br>Ракеты: ${p.missiles} (${MISSILE_COST} кр/шт)`;
     $('.st-upgrades').innerHTML = UPGRADE_KEYS.map((k) => {
@@ -341,6 +343,24 @@ export class Hud {
       return `<div class="upg"><span>${UPGRADE_NAMES[k]} — ур. ${lvl}</span><button data-act="upgrade" data-key="${k}" ${max || p.credits < cost ? 'disabled' : ''}>${max ? 'макс.' : `${cost} кр`}</button></div>`;
     }).join('');
     this.renderMarket(p);
+    this.renderYard(p);
+  }
+
+  /** Shipyard: the ship classes with their numbers under the pilot's upgrades. */
+  private renderYard(p: PilotInfo) {
+    const load = cargoCount(p.cargo);
+    $('.yard-list').innerHTML = HULL_KEYS.map((k) => {
+      const h = HULLS[k], c = combatStats(p.upgrades, k), f = flightStats(p.upgrades, k);
+      const mine = p.ship === k, owned = p.ships.includes(k);
+      const fits = load <= c.cargoCap;
+      const btn = mine ? '<button disabled>Ваш корабль</button>'
+        : owned ? `<button data-act="ship" data-op="set" data-key="${k}" ${fits ? '' : 'disabled title="Груз не поместится в трюм"'}>Пересесть</button>`
+        : `<button class="buy" data-act="ship" data-op="buy" data-key="${k}" ${p.credits < h.price ? 'disabled' : ''}>Купить — ${h.price} кр</button>`;
+      return `<div class="yard${mine ? ' on' : ''}"><b>${esc(h.name)}</b><p>${esc(h.blurb)}</p><ul>` +
+        `<li><span>Трюм</span> ${c.cargoCap}</li><li><span>Корпус / щит</span> ${c.maxHull} / ${c.maxShield}</li>` +
+        `<li><span>Урон лазера</span> ${c.laserDamage.toFixed(1)}</li><li><span>Скорость</span> ${Math.round(f.maxSpeed)} (форсаж ${Math.round(f.boostSpeed)})</li>` +
+        (h.mining ? '<li><span>Бурение астероидов</span> да</li>' : '') + `</ul>${btn}</div>`;
+    }).join('');
   }
 
   setDead(dead: boolean) {

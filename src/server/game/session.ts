@@ -59,9 +59,10 @@ export class Session {
   pilotInfo(): PilotInfo {
     const p = this.pilot;
     return {
-      name: p.name, credits: Math.floor(p.credits), cargo: { ...p.cargo }, cargoCap: combatStats(p.upgrades).cargoCap,
+      name: p.name, credits: Math.floor(p.credits), cargo: { ...p.cargo }, cargoCap: combatStats(p.upgrades, p.ship).cargoCap,
       upgrades: { ...p.upgrades }, missiles: p.missiles, kills: p.kills, deaths: p.deaths,
       items: [...p.items], outfit: { ...p.outfit }, career: structuredClone(p.career),
+      ship: p.ship, ships: [...p.ships],
     };
   }
 

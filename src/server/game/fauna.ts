@@ -585,7 +585,7 @@ export class Fauna {
     const c = this.creatures.get(id);
     if (!ch || !c || !c.dead || c.planet !== ch.planet) return 'Здесь нечего брать';
     if (vdist(c.state.p, ch.state.p) > SAMPLE_RANGE + c.sp.size) return 'Подойдите ближе';
-    const free = combatStats(s.pilot.upgrades).cargoCap - cargoCount(s.pilot.cargo);
+    const free = combatStats(s.pilot.upgrades, s.pilot.ship).cargoCap - cargoCount(s.pilot.cargo);
     if (c.sp.drone) {
       // a downed drone is stripped for crystals and saleable parts
       const n = Math.min(free, this.rng.int(1, 2)), credits = this.rng.int(30, 60);

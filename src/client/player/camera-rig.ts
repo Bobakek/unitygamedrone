@@ -12,13 +12,15 @@ export class CameraRig {
   private orbitA = 0;
   private dist = 16;
 
-  ship(dt: number, p: V3, q: Quat, speed: number, cruising: boolean, landed: boolean) {
+  /** Chase camera behind the ship; `size` (collision radius) pulls it back for big hulls. */
+  ship(dt: number, p: V3, q: Quat, speed: number, cruising: boolean, landed: boolean, size = 5) {
+    const k = 1 + Math.max(0, size - 5) * 0.24;
     const target = new THREE.Quaternion(q.x, q.y, q.z, q.w);
     if (!this.ready) { this.lag.copy(target); this.ready = true; }
     this.lag.slerp(target, 1 - Math.exp(-dt * 7));
-    const want = landed ? 20 : 15 + Math.min(speed / 60, 8) + (cruising ? 10 : 0);
+    const want = (landed ? 20 : 15 + Math.min(speed / 60, 8) + (cruising ? 10 : 0)) * k;
     this.dist += (want - this.dist) * (1 - Math.exp(-dt * 3));
-    const off = new THREE.Vector3(0, landed ? 6 : 4.2, this.dist).applyQuaternion(this.lag);
+    const off = new THREE.Vector3(0, (landed ? 6 : 4.2) * k, this.dist).applyQuaternion(this.lag);
     this.pos.x = p.x + off.x; this.pos.y = p.y + off.y; this.pos.z = p.z + off.z;
     this.quat.copy(this.lag).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), landed ? -0.2 : -0.07));
   }

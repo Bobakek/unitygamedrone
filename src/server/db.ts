@@ -6,6 +6,7 @@ import { defaultUpgrades, emptyCargo, MAX_MISSILES } from '../shared/economy.ts'
 import { defaultOutfit, validOutfit } from '../shared/outfit.ts';
 import { newCareer, validCareer } from '../shared/contracts.ts';
 import type { PilotRecord, PilotStorage } from './storage.ts';
+import { hangarOf } from '../shared/ships/hulls.ts';
 
 export type { PilotRecord } from './storage.ts';
 
@@ -13,6 +14,7 @@ interface Row {
   id: number; name: string; token: string; credits: number; cargo: string; upgrades: string;
   missiles: number; kills: number; deaths: number; system: number;
   items: string | null; outfit: string | null; career: string | null;
+  ship: string | null; ships: string | null;
 }
 
 /** Pilot persistence on the built-in node:sqlite driver (no native build step). */
@@ -40,6 +42,8 @@ export class PilotStore implements PilotStorage {
     if (!cols.has('items')) this.db.exec(`ALTER TABLE pilots ADD COLUMN items TEXT NOT NULL DEFAULT '[]'`);
     if (!cols.has('outfit')) this.db.exec(`ALTER TABLE pilots ADD COLUMN outfit TEXT NOT NULL DEFAULT '{}'`);
     if (!cols.has('career')) this.db.exec(`ALTER TABLE pilots ADD COLUMN career TEXT NOT NULL DEFAULT '{}'`);
+    if (!cols.has('ship')) this.db.exec(`ALTER TABLE pilots ADD COLUMN ship TEXT NOT NULL DEFAULT 'fighter'`);
+    if (!cols.has('ships')) this.db.exec(`ALTER TABLE pilots ADD COLUMN ships TEXT NOT NULL DEFAULT '["fighter"]'`);
   }
 
   private parse(r: Row): PilotRecord {
@@ -47,7 +51,7 @@ export class PilotStore implements PilotStorage {
       id: r.id, name: r.name, token: r.token, credits: r.credits,
       cargo: { ...emptyCargo(), ...JSON.parse(r.cargo) }, upgrades: { ...defaultUpgrades(), ...JSON.parse(r.upgrades) },
       missiles: r.missiles, kills: r.kills, deaths: r.deaths, system: r.system,
-      ...parseGear(r.items, r.outfit), career: parseCareer(r.career),
+      ...parseGear(r.items, r.outfit), career: parseCareer(r.career), ...parseHangar(r.ship, r.ships),
     };
   }
 
@@ -67,8 +71,8 @@ export class PilotStore implements PilotStorage {
 
   save(p: PilotRecord): void {
     this.db
-      .prepare('UPDATE pilots SET credits = ?, cargo = ?, upgrades = ?, missiles = ?, kills = ?, deaths = ?, system = ?, items = ?, outfit = ?, career = ?, last_seen = ? WHERE id = ?')
-      .run(Math.floor(p.credits), JSON.stringify(p.cargo), JSON.stringify(p.upgrades), p.missiles, p.kills, p.deaths, p.system, JSON.stringify(p.items), JSON.stringify(p.outfit), JSON.stringify(p.career), Date.now(), p.id);
+      .prepare('UPDATE pilots SET credits = ?, cargo = ?, upgrades = ?, missiles = ?, kills = ?, deaths = ?, system = ?, items = ?, outfit = ?, career = ?, ship = ?, ships = ?, last_seen = ? WHERE id = ?')
+      .run(Math.floor(p.credits), JSON.stringify(p.cargo), JSON.stringify(p.upgrades), p.missiles, p.kills, p.deaths, p.system, JSON.stringify(p.items), JSON.stringify(p.outfit), JSON.stringify(p.career), p.ship, JSON.stringify(p.ships), Date.now(), p.id);
   }
 
   close(): void {
@@ -88,4 +92,11 @@ export function parseGear(items: string | null | undefined, outfit: string | nul
 /** Career from stored JSON (old rows have none). */
 export function parseCareer(raw: string | null | undefined) {
   try { return validCareer(JSON.parse(raw ?? '{}')); } catch { return newCareer(); }
+}
+
+/** Ship flown and ships owned from stored values (old rows: the fighter only). */
+export function parseHangar(ship: string | null | undefined, ships: string | null | undefined): { ship: PilotRecord['ship']; ships: PilotRecord['ships'] } {
+  let list: unknown = null;
+  try { list = JSON.parse(ships ?? '[]'); } catch { /* fighter only */ }
+  return hangarOf(ship, list);
 }

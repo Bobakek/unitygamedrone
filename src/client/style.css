@@ -142,6 +142,16 @@ button:disabled { opacity: 0.4; cursor: default; }
 .upg button { width: auto !important; padding: 4px 10px; font-size: 12px; }
 .st-card > .primary { margin-top: 16px; width: 100%; }
 .st-actions { display: flex; gap: 8px; margin-top: 16px; }
+.yard-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.yard { border: 1px solid rgba(140, 180, 230, 0.18); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; background: rgba(20, 32, 52, 0.45); }
+.yard.on { border-color: #29b7d0; box-shadow: 0 0 0 1px #29b7d0 inset; }
+.yard b { font-size: 13px; color: #e8f0ff; }
+.yard p { margin: 0; color: var(--dim); line-height: 1.35; }
+.yard ul { margin: 0; padding: 0; list-style: none; color: #cfd9ea; line-height: 1.5; }
+.yard ul span { color: var(--dim); }
+.yard button { margin-top: auto; }
+.yard button.buy:not([disabled]) { background: linear-gradient(90deg, #2b6cd8, #29b7d0); border-color: transparent; }
+@media (max-width: 760px) { .yard-list { grid-template-columns: 1fr; } }
 .st-actions button { flex: 1; }
 .st-close { display: none; }
 #station.deck .st-close { display: block; }

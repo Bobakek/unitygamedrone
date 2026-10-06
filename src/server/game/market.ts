@@ -66,7 +66,7 @@ export class StationMarket {
   buy(s: Session, key: CargoKey, n: number): string | null {
     const p = s.pilot;
     if (!this.quote().goods[key].buy) return 'Станция это не продаёт';
-    const room = combatStats(p.upgrades).cargoCap - cargoCount(p.cargo);
+    const room = combatStats(p.upgrades, p.ship).cargoCap - cargoCount(p.cargo);
     if (room <= 0) return 'Трюм полон';
     const want = Math.min(room, Math.max(1, Math.floor(n) || 1), MAX_LOT);
     let cost = 0, got = 0;

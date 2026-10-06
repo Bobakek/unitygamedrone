@@ -6,6 +6,7 @@ import type { Cargo, CargoKey, Upgrades } from '../economy.ts';
 import type { Outfit } from '../outfit.ts';
 import type { Career, ContractDef } from '../contracts.ts';
 import type { WeatherKind } from '../weather.ts';
+import type { HullKey } from '../ships/hulls.ts';
 import { Reader, Writer } from './buffer.ts';
 
 export const MSG = {
@@ -52,6 +53,8 @@ export interface PilotInfo {
   items: string[]; outfit: Outfit;
   /** Experience, reputation and contracts. */
   career: Career;
+  /** Ship class flown and ships owned. */
+  ship: HullKey; ships: HullKey[];
 }
 /** A member of the pilot's group; `pos` (world) only for members in the same system. */
 export interface GroupMember {
@@ -90,7 +93,9 @@ export type GameEvent =
   /** Lightning struck at a body-frame point of a planet. */
   | { t: 'strike'; planet: number; pos: [number, number, number] }
   /** The server forced a planet's weather until `until` (dev). */
-  | { t: 'weather'; planet: number; kind: WeatherKind; k: number; until: number };
+  | { t: 'weather'; planet: number; kind: WeatherKind; k: number; until: number }
+  /** A mining laser of ship `by` hit an asteroid; `good` = a unit went into its hold. */
+  | { t: 'mine'; pos: [number, number, number]; by: number; good?: CargoKey };
 
 export type Action =
   | { a: 'exit' } | { a: 'board' } | { a: 'dock' } | { a: 'undock' } | { a: 'jump' }
@@ -106,7 +111,9 @@ export type Action =
   | { a: 'groupInvite'; name?: string; entity?: number } | { a: 'groupAnswer'; yes: boolean }
   | { a: 'groupLeave' } | { a: 'groupKick'; name: string }
   /** Rover: unload it from / load it into the landed ship, take the wheel, step out, put it back on its wheels. */
-  | { a: 'rover' } | { a: 'drive' } | { a: 'leave' } | { a: 'flip' };
+  | { a: 'rover' } | { a: 'drive' } | { a: 'leave' } | { a: 'flip' }
+  /** Shipyard (docked): buy a ship class, switch to an owned one. */
+  | { a: 'buyShip'; ship: HullKey } | { a: 'setShip'; ship: HullKey };
 
 export function encodeJson(type: number, payload: unknown): Uint8Array {
   const body = new TextEncoder().encode(JSON.stringify(payload));

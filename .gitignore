@@ -4,3 +4,4 @@ data/
 e2e/out/
 *.log
 .DS_Store
+__pycache__/

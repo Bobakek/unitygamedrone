@@ -1,6 +1,7 @@
 import type { Cargo, Upgrades } from '../shared/economy.ts';
 import type { Outfit } from '../shared/outfit.ts';
 import type { Career } from '../shared/contracts.ts';
+import type { HullKey } from '../shared/ships/hulls.ts';
 
 /** Browser-safe pilot storage contract (SQLite on the server, localStorage in offline mode). */
 export interface PilotRecord {
@@ -10,6 +11,8 @@ export interface PilotRecord {
   items: string[]; outfit: Outfit;
   /** Experience, reputation and contracts. */
   career: Career;
+  /** The ship class flown and the ships owned (always including the fighter). */
+  ship: HullKey; ships: HullKey[];
 }
 
 export interface PilotStorage {
