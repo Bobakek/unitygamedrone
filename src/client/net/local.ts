@@ -1,7 +1,9 @@
 import { defaultUpgrades, emptyCargo, MAX_MISSILES } from '../../shared/economy.ts';
+import { START_FUEL } from '../../shared/jump.ts';
 import { defaultOutfit, validOutfit } from '../../shared/outfit.ts';
 import { newCareer, validCareer } from '../../shared/contracts.ts';
 import { hangarOf } from '../../shared/ships/hulls.ts';
+import { validPrizes } from '../../shared/boarding.ts';
 import { validTrophies } from '../../shared/station/trophies.ts';
 import { encodeInput, encodeJson, MSG, type Action, type InputMsg } from '../../shared/net/protocol.ts';
 import { Game as ServerGame, type Connection as ServerConnection } from '../../server/game/game.ts';
@@ -30,14 +32,14 @@ class LocalPilotStore implements PilotStorage {
     // older saves predate some cargo kinds and the wardrobe
     if (!p) return null;
     const items = Array.isArray(p.items) ? p.items.filter((x) => typeof x === 'string') : [];
-    return { ...structuredClone(p), cargo: { ...emptyCargo(), ...p.cargo }, items, outfit: validOutfit(p.outfit, items), career: validCareer(p.career), trophies: validTrophies(p.trophies), ...hangarOf(p.ship, p.ships), roverBed: { ...emptyCargo(), ...p.roverBed } };
+    return { ...structuredClone(p), cargo: { ...emptyCargo(), ...p.cargo }, items, outfit: validOutfit(p.outfit, items), career: validCareer(p.career), trophies: validTrophies(p.trophies), ...hangarOf(p.ship, p.ships), roverBed: { ...emptyCargo(), ...p.roverBed }, prizes: validPrizes(p.prizes), fuel: typeof p.fuel === 'number' ? p.fuel : START_FUEL };
   }
   create(name: string): PilotRecord {
     const bytes = crypto.getRandomValues(new Uint8Array(12));
     const token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
     const p: PilotRecord = {
       id: Object.keys(this.pilots).length + 1, name, token, credits: 250, cargo: emptyCargo(), upgrades: defaultUpgrades(),
-      missiles: MAX_MISSILES / 2, kills: 0, deaths: 0, system: 0, items: [], outfit: defaultOutfit(), career: newCareer(), trophies: [], ship: 'fighter', ships: ['fighter'], roverBed: emptyCargo(),
+      missiles: MAX_MISSILES / 2, kills: 0, deaths: 0, system: 0, fuel: START_FUEL, items: [], outfit: defaultOutfit(), career: newCareer(), trophies: [], ship: 'fighter', ships: ['fighter'], roverBed: emptyCargo(), prizes: [],
     };
     this.pilots[name.toLowerCase()] = p;
     this.persist();

@@ -5,6 +5,7 @@ import { MODE, type InputMsg, type Snapshot } from '../../shared/net/protocol.ts
 import { copyChar, newChar, stepChar, type CharEnv, type CharGear, type CharState } from '../../shared/sim/character.ts';
 import { DEFAULT_GEAR } from '../../shared/outfit.ts';
 import { stepDeck } from '../../shared/station/deck.ts';
+import { SHIP_DECK } from '../../shared/boarding.ts';
 import type { SimEnv } from '../../shared/sim/env.ts';
 import { cloneShip, copyShip, newShip, stepShip, type ShipState, type ShipStats } from '../../shared/sim/ship.ts';
 import { copyRover, newRover, stepRover, type RoverState } from '../../shared/sim/rover.ts';
@@ -66,7 +67,7 @@ export class Predictor {
       this.ready = true;
       return;
     }
-    const onFoot = (this.mode === MODE.FOOT || this.mode === MODE.DECK) && this.char;
+    const onFoot = (this.mode === MODE.FOOT || this.mode === MODE.DECK || this.mode === MODE.BOARD) && this.char;
     const driving = this.mode === MODE.ROVER && this.rover;
     const before = driving ? { ...this.rover!.p } : onFoot ? { ...this.char!.p } : { ...this.ship.p };
     const frameBefore = this.ship.frame;
@@ -88,6 +89,7 @@ export class Predictor {
       stepShip(this.ship, m.ship, this.stats(), env, DT);
     }
     else if (this.mode === MODE.DECK && m.mode === MODE.DECK && this.char) stepDeck(this.char, m.char, DT);
+    else if (this.mode === MODE.BOARD && m.mode === MODE.BOARD && this.char) stepDeck(this.char, m.char, DT, SHIP_DECK);
     else if (this.mode === MODE.ROVER && m.mode === MODE.ROVER && this.rover && this.charPlanet >= 0) stepRover(this.rover, m.char, this.planets[this.charPlanet], DT);
     else if (this.mode === MODE.FOOT && m.mode === MODE.FOOT && this.char && this.charPlanet >= 0) stepChar(this.char, m.char, this.planets[this.charPlanet], DT, this.gear(), this.weather(this.charPlanet, m.t));
   }
@@ -98,7 +100,7 @@ export class Predictor {
     copyShip(this.prevShip, this.ship);
     if (this.char && this.prevChar) copyChar(this.prevChar, this.char);
     if (this.rover && this.prevRover) copyRover(this.prevRover, this.rover);
-    if (this.mode !== MODE.SHIP && this.mode !== MODE.FOOT && this.mode !== MODE.DECK && this.mode !== MODE.ROVER) return;
+    if (this.mode !== MODE.SHIP && this.mode !== MODE.FOOT && this.mode !== MODE.DECK && this.mode !== MODE.ROVER && this.mode !== MODE.BOARD) return;
     this.pending.push(m);
     if (this.pending.length > 120) this.pending.shift();
     this.apply(m);

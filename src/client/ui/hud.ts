@@ -3,9 +3,12 @@ import {
 } from '../../shared/economy.ts';
 import type { Action, PilotInfo } from '../../shared/net/protocol.ts';
 import type { MarketMsg } from '../../shared/market.ts';
+import { EVENT_ICONS, eventText, eventTitle, type GalaxyEventInfo } from '../../shared/galaxy-events.ts';
 import { getSystem } from '../../shared/galaxy/system-gen.ts';
-import { FACTION_COLORS, objectiveText, RANKS, rankOf } from '../../shared/contracts.ts';
+import { FACTION_COLORS, freightLoad, holdRoom, holdUsed, objectiveText, RANKS, rankOf } from '../../shared/contracts.ts';
+import { dueHtml, syncClock, tickDeadlines } from './contracts.ts';
 import { HULL_KEYS, HULLS, type HullKey } from '../../shared/ships/hulls.ts';
+import { batchesPossible, inputsText, RECIPES } from '../../shared/refinery.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
 
@@ -36,6 +39,10 @@ export class Hud {
   private chatLog = $('#chat-log');
   private lastPilot: PilotInfo | null = null;
   private market: MarketMsg | null = null;
+  private galaxyEvents: GalaxyEventInfo[] = [];
+  private galaxyAt = 0;
+  /** Price of a fuel cell at this system's station. */
+  fuelCost = 0;
   private marketAt = 0;
   private groupEl = $('#group-panel');
   onChat: (text: string) => void = () => {};
@@ -46,6 +53,8 @@ export class Hud {
   onGroup: (what: 'yes' | 'no' | 'leave') => void = () => {};
 
   constructor() {
+    // freight deadlines in the task list count down between pilot updates
+    window.setInterval(() => tickDeadlines($('.pp-tasks')), 1000);
     this.chatInput.addEventListener('keydown', (e) => {
       e.stopPropagation();
       if (e.key === 'Enter') {
@@ -70,6 +79,9 @@ export class Hud {
       else if (act === 'contracts') this.onContracts();
       else if (act === 'upgrade') this.onAction({ a: 'upgrade', key: b.dataset.key! });
       else if (act === 'ship') this.onAction({ a: b.dataset.op === 'buy' ? 'buyShip' : 'setShip', ship: b.dataset.key as HullKey });
+      else if (act === 'prize') this.onAction({ a: 'sellPrize', id: b.dataset.key! });
+      else if (act === 'refine') this.onAction({ a: 'refine', recipe: b.dataset.key!, n: b.dataset.n === 'all' ? undefined : Number(b.dataset.n) });
+      else if (act === 'fuel') this.onAction({ a: 'buyFuel', n: b.dataset.n === 'full' ? undefined : Number(b.dataset.n) });
       else if (act === 'trade') {
         const key = b.dataset.key as CargoKey, n = b.dataset.n === 'all' ? undefined : Number(b.dataset.n);
         this.onAction(b.dataset.op === 'buy' ? { a: 'buy', key, n: n ?? 999 } : { a: 'sell', key, n });
@@ -92,18 +104,21 @@ export class Hud {
 
   setPilot(p: PilotInfo, system: string) {
     this.lastPilot = p;
+    syncClock(p.clock);
     $('.pp-name').textContent = p.name;
     $('.pp-credits').textContent = `${p.credits.toLocaleString('ru-RU')} кр`;
-    $('.pp-cargo').textContent = `${cargoCount(p.cargo)}/${p.cargoCap}`;
-    $('.pp-cargo').title = CARGO_KEYS.map((k) => `${CARGO_NAMES[k]} ${p.cargo[k]}`).join(', ');
+    const freight = freightLoad(p.career);
+    $('.pp-cargo').textContent = `${holdUsed(p)}/${p.cargoCap}`;
+    $('.pp-cargo').title = CARGO_KEYS.map((k) => `${CARGO_NAMES[k]} ${p.cargo[k]}`).join(', ') + (freight ? `, контейнеры по контракту ${freight}` : '');
     const bed = cargoCount(p.roverBed);
     $('.pp-bed-row').classList.toggle('hidden', !bed);
     $('.pp-bed').textContent = `${bed}/${p.roverBedCap}`;
     $('.pp-bed').title = CARGO_KEYS.filter((k) => p.roverBed[k]).map((k) => `${CARGO_NAMES[k]} ${p.roverBed[k]}`).join(', ');
     $('.pp-missiles').textContent = String(p.missiles);
+    $('.pp-fuel').textContent = `${p.fuel}/${p.fuelTank}`;
     $('.pp-system').textContent = system;
     $('.pp-rank').textContent = RANKS[rankOf(p.career.xp)].name;
-    $('.pp-tasks').innerHTML = p.career.active.map((c) => `<div class="pp-task${c.have >= c.need ? ' full' : ''}" style="--fc:${FACTION_COLORS[c.faction]}"><b>◆ ${esc(c.title)}</b><span>${esc(objectiveText(c))}</span></div>`).join('');
+    $('.pp-tasks').innerHTML = p.career.active.map((c) => `<div class="pp-task${c.have >= c.need ? ' full' : ''}" style="--fc:${FACTION_COLORS[c.faction]}"><b>◆ ${esc(c.title)}</b><span>${esc(objectiveText(c))}</span>${dueHtml(c.due)}</div>`).join('');
     if (!this.station.classList.contains('hidden')) this.renderStation(p);
   }
 
@@ -186,6 +201,13 @@ export class Hud {
     $('#flight-panel').style.display = v ? '' : 'none';
     this.cross.style.display = v ? '' : 'none';
     this.cursor.style.display = v ? '' : 'none';
+  }
+
+  /** The on-foot blaster reticle aboard a boarded ship (null hides it). */
+  aimCross(p: { x: number; y: number } | null) {
+    const el = $('#aimdot');
+    el.style.display = p ? '' : 'none';
+    if (p) el.style.transform = `translate(${p.x}px, ${p.y}px)`;
   }
 
   crosshair(x: number, y: number) {
@@ -279,8 +301,8 @@ export class Hud {
     if (html) this.promptEl.innerHTML = html;
   }
 
-  /** `deck`: opened from a terminal on the station deck (closable, no "walk out" button). */
-  showStation(open: boolean, name = '', deck = false) {
+  /** `deck`: opened from a terminal on the station deck (closable, no "walk out" button); `focus`: a section to scroll to. */
+  showStation(open: boolean, name = '', deck = false, focus?: string) {
     const was = !this.station.classList.contains('hidden');
     this.station.classList.toggle('hidden', !open);
     this.station.classList.toggle('deck', deck);
@@ -288,6 +310,9 @@ export class Hud {
       $('.st-title').textContent = name;
       if (this.lastPilot) this.renderStation(this.lastPilot);
     }
+    const card = $('.st-card', this.station);
+    if (open && !was) card.scrollTop = 0;
+    if (open && focus) $(focus, this.station)?.scrollIntoView({ block: 'start' });
   }
 
   /** Pilots in the group (empty hides the panel) and a pending invitation. */
@@ -301,6 +326,23 @@ export class Hud {
     if (invite) $('span', inv).textContent = `${invite} зовёт вас в группу`;
   }
 
+  setGalaxyEvents(list: GalaxyEventInfo[]) {
+    this.galaxyEvents = list;
+    this.galaxyAt = performance.now();
+    if (!this.station.classList.contains('hidden') && this.lastPilot) this.renderMarket(this.lastPilot);
+  }
+
+  /** Events that move the prices here or at the neighbours shown in the table. */
+  private renderNews(m: MarketMsg) {
+    const shown = new Set([m.here.system, ...m.others.map((o) => o.system)]);
+    const near = this.galaxyEvents.filter((e) => shown.has(e.system));
+    $('.mk-news').innerHTML = near.map((e) => {
+      const min = Math.max(1, Math.ceil((e.left - (performance.now() - this.galaxyAt)) / 60000));
+      const where = e.system === m.here.system ? 'здесь' : getSystem(e.system).name;
+      return `<div class="mk-ev${e.system === m.here.system ? ' here' : ''}">${EVENT_ICONS[e.kind]} <b>${esc(eventTitle(e))}</b> · ${esc(where)}<small>ещё ${min} мин</small><br>${esc(eventText(e))}</div>`;
+    }).join('');
+  }
+
   setMarket(m: MarketMsg) {
     this.market = m;
     this.marketAt = performance.now();
@@ -312,7 +354,8 @@ export class Hud {
     const m = this.market;
     const box = $('.mk-table');
     if (!m) { box.innerHTML = '<p class="mk-hint">Загрузка цен…</p>'; return; }
-    const room = combatStats(p.upgrades, p.ship).cargoCap - cargoCount(p.cargo);
+    this.renderNews(m);
+    const room = holdRoom(p);
     const left = Math.max(0, m.next - (performance.now() - this.marketAt));
     $('.mk-next').textContent = `· цены сменятся через ${Math.max(1, Math.ceil(left / 60000))} мин`;
     const others = m.others;
@@ -337,9 +380,11 @@ export class Hud {
     const c = p.cargo;
     const q = this.market?.here.goods;
     const value = q ? CARGO_KEYS.reduce((n, k) => n + c[k] * q[k].sell, 0) : 0;
-    $('.st-cargo').innerHTML = `Груз: ${cargoCount(c)}/${combatStats(p.upgrades, p.ship).cargoCap}${q ? ` · по местным ценам ≈ <b>${value} кр</b>` : ''}<br>Баланс: <b>${p.credits} кр</b>` +
+    const crates = freightLoad(p.career);
+    $('.st-cargo').innerHTML = `Груз: ${holdUsed(p)}/${combatStats(p.upgrades, p.ship).cargoCap}${crates ? ` (контейнеры ${crates})` : ''}${q ? ` · по местным ценам ≈ <b>${value} кр</b>` : ''}<br>Баланс: <b>${p.credits} кр</b>` +
       (hull ? `<br>Корпус: ${Math.round(hull.hull)}/${hull.max} (ремонт ${Math.ceil((hull.max - hull.hull) * REPAIR_COST_PER_HP)} кр)` : '') +
-      `<br>Ракеты: ${p.missiles} (${MISSILE_COST} кр/шт)`;
+      `<br>Ракеты: ${p.missiles} (${MISSILE_COST} кр/шт)` +
+      `<br>Топливо: ${p.fuel}/${p.fuelTank} (${this.fuelCost} кр/яч) <button data-act="fuel" data-n="1" ${p.fuel >= p.fuelTank || p.credits < this.fuelCost ? 'disabled' : ''}>+1</button><button data-act="fuel" data-n="full" ${p.fuel >= p.fuelTank || p.credits < this.fuelCost ? 'disabled' : ''}>Заправить</button>`;
     $('.st-upgrades').innerHTML = UPGRADE_KEYS.map((k) => {
       const lvl = p.upgrades[k];
       const max = lvl >= MAX_LEVEL;
@@ -347,12 +392,27 @@ export class Hud {
       return `<div class="upg"><span>${UPGRADE_NAMES[k]} — ур. ${lvl}</span><button data-act="upgrade" data-key="${k}" ${max || p.credits < cost ? 'disabled' : ''}>${max ? 'макс.' : `${cost} кр`}</button></div>`;
     }).join('');
     this.renderMarket(p);
+    this.renderRefinery(p);
     this.renderYard(p);
+  }
+
+  /** Smelter recipes: what goes in, what comes out, and what a batch earns at this station's prices. */
+  private renderRefinery(p: PilotInfo) {
+    const q = this.market?.here.goods;
+    $('.rf-list').innerHTML = RECIPES.map((r) => {
+      const can = batchesPossible(r, p.cargo, p.credits);
+      const cost = Object.entries(r.inputs).reduce((n, [k, v]) => n + (q ? q[k as CargoKey].sell * v : 0), 0);
+      const gain = q ? q[r.key].sell - cost - r.fee : 0;
+      const btn = (n: string, text: string, off: boolean) => `<button data-act="refine" data-key="${r.key}" data-n="${n}" ${off ? 'disabled' : ''}>${text}</button>`;
+      return `<div class="rf${can ? ' can' : ''}"><div class="rf-io"><b>${CARGO_NAMES[r.key]}</b><span>${esc(inputsText(r))} → 1 · ${r.fee} кр</span><small>${esc(r.blurb)}</small></div>` +
+        `<div class="rf-gain">${q ? `здесь <b class="${gain > 0 ? 'up' : 'down'}">${gain > 0 ? '+' : ''}${gain} кр</b> за партию` : ''}<br><span>в трюме: ${p.cargo[r.key]} · хватит на ${can}</span></div>` +
+        `<div class="rf-acts">${btn('1', '×1', can < 1)}${btn('5', '×5', can < 5)}${btn('all', 'всё', can < 1)}</div></div>`;
+    }).join('');
   }
 
   /** Shipyard: the ship classes with their numbers under the pilot's upgrades. */
   private renderYard(p: PilotInfo) {
-    const load = cargoCount(p.cargo);
+    const load = holdUsed(p);
     $('.yard-list').innerHTML = HULL_KEYS.map((k) => {
       const h = HULLS[k], c = combatStats(p.upgrades, k), f = flightStats(p.upgrades, k);
       const mine = p.ship === k, owned = p.ships.includes(k);
@@ -365,6 +425,10 @@ export class Hud {
         `<li><span>Урон лазера</span> ${c.laserDamage.toFixed(1)}</li><li><span>Скорость</span> ${Math.round(f.maxSpeed)} (форсаж ${Math.round(f.boostSpeed)})</li>` +
         (h.mining ? '<li><span>Бурение астероидов</span> да</li>' : '') + `</ul>${btn}</div>`;
     }).join('');
+    // captured ships waiting to be sold
+    $('.yard-prizes').innerHTML = p.prizes.length
+      ? `<h4>Призы</h4>` + p.prizes.map((z) => `<div class="prize"><span>${esc(z.name)}</span><button class="buy" data-act="prize" data-key="${esc(z.id)}">Продать — ${z.value} кр</button></div>`).join('')
+      : '';
   }
 
   /** `text`: what happens next (default: back at the station). */

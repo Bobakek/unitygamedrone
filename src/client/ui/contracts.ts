@@ -1,6 +1,7 @@
+import { EVENT_ICONS } from '../../shared/galaxy-events.ts';
 import {
-  cannotTake, FACTION_COLORS, FACTION_NAMES, FACTION_SHORT, FACTIONS, KIND_NAMES, objectiveText, RANKS, rankOf, REP_NAMES, repLevel,
-  rewardText, type ContractDef, type Faction,
+  cannotLoad, cannotTake, clockText, FACTION_COLORS, FACTION_NAMES, FACTION_SHORT, FACTIONS, KIND_NAMES, objectiveText, RANKS, rankOf, REP_NAMES, repLevel,
+  rewardText, type ActiveContract, type ContractDef, type Faction,
 } from '../../shared/contracts.ts';
 import { getSystem } from '../../shared/galaxy/system-gen.ts';
 import type { Action, BoardMsg, PilotInfo } from '../../shared/net/protocol.ts';
@@ -9,6 +10,20 @@ import { ITEMS, repNeedText, repOk, SLOT_NAMES } from '../../shared/outfit.ts';
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 const tierDots = (t: number) => '●'.repeat(t) + '○'.repeat(3 - t);
+
+/** Server clock minus the local one, from the last pilot update. */
+let skew = 0;
+export const syncClock = (serverMs: number) => { skew = serverMs - Date.now(); };
+export const serverNow = () => Date.now() + skew;
+/** Time left on a freight deadline: "⏱ 7:42" (refreshed by `tickDeadlines`). */
+export const dueHtml = (due?: number) => (due === undefined ? '' : `<span class="ct-due" data-due="${due}">⏱ ${clockText(due - serverNow())}</span>`);
+export function tickDeadlines(root: ParentNode) {
+  for (const el of root.querySelectorAll<HTMLElement>('[data-due]')) {
+    const left = Number(el.dataset.due) - serverNow();
+    el.textContent = `⏱ ${clockText(left)}`;
+    el.classList.toggle('late', left < 120_000);
+  }
+}
 
 type Tab = 'board' | 'mine' | 'rep';
 
@@ -68,6 +83,7 @@ export class ContractsUi {
   private tick() {
     const el = this.el.querySelector('.ct-next');
     if (el) el.textContent = this.nextText();
+    tickDeadlines(this.el);
   }
 
   private nextText() {
@@ -93,12 +109,15 @@ export class ContractsUi {
   }
 
   private card(o: ContractDef, foot: string, have?: number) {
-    const prog = have !== undefined ? `<div class="ct-prog"><i style="width:${Math.min(100, (have / o.need) * 100)}%"></i></div>` : '';
-    return `<div class="ct-card" style="--fc:${FACTION_COLORS[o.faction]}">
-      <div class="ct-head"><span class="ct-fac">${FACTION_SHORT[o.faction]} · ${KIND_NAMES[o.kind]}</span><span class="ct-tier" title="Уровень ${o.tier}">${tierDots(o.tier)}</span></div>
+    const prog = have !== undefined && o.kind !== 'freight' ? `<div class="ct-prog"><i style="width:${Math.min(100, (have / o.need) * 100)}%"></i></div>` : '';
+    const due = (o as ActiveContract).due;
+    const freight = o.kind === 'freight'
+      ? `<div class="ct-freight">${due !== undefined ? dueHtml(due) : `⏱ срок ${clockText(o.time ?? 0)}`} · залог ${o.deposit} кр${o.urgent ? ' · <b>срочно</b>' : ''}</div>` : '';
+    return `<div class="ct-card${o.event ? ' urgent' : ''}" style="--fc:${FACTION_COLORS[o.faction]}">
+      <div class="ct-head"><span class="ct-fac">${o.event ? `<span class="ct-urgent">${EVENT_ICONS[o.event]} Срочно</span>` : ''}${FACTION_SHORT[o.faction]} · ${KIND_NAMES[o.kind]}</span><span class="ct-tier" title="Уровень ${o.tier}">${tierDots(o.tier)}</span></div>
       <div class="ct-name">${esc(o.title)}</div>
       <div class="ct-desc">${esc(o.desc)}</div>
-      <div class="ct-obj">◆ ${esc(objectiveText(o, have ?? 0))}</div>${prog}
+      <div class="ct-obj">◆ ${esc(objectiveText(o, have ?? 0))}</div>${prog}${freight}
       <div class="ct-rew">${esc(rewardText(o.reward, o.faction, o.side))}</div>
       ${foot}</div>`;
   }
@@ -109,10 +128,11 @@ export class ContractsUi {
     const foot = (o: ContractDef) => {
       if (c.active.some((a) => a.id === o.id)) return '<button disabled>Взят</button>';
       if (c.done.includes(o.id)) return '<button disabled>Выполнен</button>';
-      const why = cannotTake(o, c);
+      const why = cannotTake(o, c) ?? cannotLoad(o, p);
       return why ? `<div class="ct-why">${esc(why)}</div>` : `<button data-take="${esc(o.id)}">Взять контракт</button>`;
     };
-    const legal = this.board.offers.filter((o) => o.faction !== 'pirate');
+    // urgent offers from galaxy events go first
+    const legal = this.board.offers.filter((o) => o.faction !== 'pirate').sort((a, b) => Number(!!b.event) - Number(!!a.event));
     const shady = this.board.offers.filter((o) => o.faction === 'pirate');
     return `<div class="ct-grid">${legal.map((o) => this.card(o, foot(o))).join('')}</div>
       <h3 class="ct-shady">Теневые предложения <small>— Синдикат «Чёрная звезда»</small></h3>
@@ -123,7 +143,7 @@ export class ContractsUi {
   private mineHtml(p: PilotInfo) {
     const list = p.career.active;
     if (!list.length) return '<p class="ct-empty">Активных контрактов нет — загляните на доску.</p>';
-    return `<div class="ct-grid">${list.map((o) => this.card(o, `<button class="ghost" data-drop="${esc(o.id)}">Отказаться${o.kind === 'intercept' ? '' : ` (${FACTION_SHORT[o.faction]} −2)`}</button>`, o.have)).join('')}</div>
+    return `<div class="ct-grid">${list.map((o) => this.card(o, `<button class="ghost" data-drop="${esc(o.id)}">Отказаться${o.kind === 'intercept' ? '' : ` (${FACTION_SHORT[o.faction]} −2${o.kind === 'freight' ? ', залог — только на станции погрузки' : ''})`}</button>`, o.have)).join('')}</div>
       <p class="ct-next">Цели активных контрактов — в навигации (Tab) и на радаре.</p>`;
   }
 

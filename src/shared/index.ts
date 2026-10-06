@@ -1,6 +1,7 @@
 export * from './constants.ts';
 export * from './color.ts';
 export * from './economy.ts';
+export * from './refinery.ts';
 export * from './events.ts';
 export * from './fauna.ts';
 export * from './outfit.ts';
@@ -25,3 +26,5 @@ export * from './market.ts';
 export * from './sim/rover.ts';
 export * from './planet/deposits.ts';
 export * from './arena.ts';
+export * from './galaxy-events.ts';
+export * from './jump.ts';

@@ -10,7 +10,7 @@ import {
   FWD, qlook, qrot, quat, v3, vcross, vdist, vdistSq, vdot, vlen, vnorm, vscale, vsub, type Quat, type V3,
 } from '../../shared/math/vec.ts';
 import {
-  aimByte, CFLAG, DECK_FRAME, DECK_PLANET, EFLAG, IFLAG, KIND, MODE, MSG, ROVER_SPEED_MAX, steerByte, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
+  aimByte, BOARD_FRAME, BOARD_PLANET, CFLAG, DECK_FRAME, DECK_PLANET, EFLAG, IFLAG, KIND, MODE, MSG, ROVER_SPEED_MAX, steerByte, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
 } from '../../shared/net/protocol.ts';
 import { nodesNear, resourceNode } from '../../shared/planet/resources.ts';
 import { planetSites, SITE_NODE_BASE, siteCache, siteDir, sitesNear, wreckAt, wreckZone } from '../../shared/planet/sites.ts';
@@ -30,16 +30,22 @@ import { WorldEvents } from './world-events.ts';
 import { Outposts } from './outposts.ts';
 import { Fauna } from './fauna.ts';
 import { item, lookCode, owns, repNeedText, repOk, SLOT_NAMES } from '../../shared/outfit.ts';
-import { isPirateFriend, isWanted, WANTED_BOUNTY } from '../../shared/contracts.ts';
+import { holdRoom, holdUsed, isPirateFriend, isWanted, WANTED_BOUNTY } from '../../shared/contracts.ts';
 import { ContractDesk } from './contracts.ts';
 import { StationMarket } from './market.ts';
+import { inputsText, MAX_BATCHES, recipeOf, refine } from '../../shared/refinery.ts';
 import { AsteroidMining } from './mining.ts';
 import { HULLS, isHull, type HullKey } from '../../shared/ships/hulls.ts';
 import { GROUP_BONUS, SHARE_RANGE } from './groups.ts';
 import type { MarketQuote } from '../../shared/market.ts';
 import { BOARD_REACH, inCabin, PAD, RAMP, stepDeck } from '../../shared/station/deck.ts';
 import { awardTrophy } from './trophies.ts';
+import { Boarding } from './boarding.ts';
+import { SHIP_DECK } from '../../shared/boarding.ts';
 import { WeatherDesk } from './weather.ts';
+import { GalaxyEffects } from './galaxy-effects.ts';
+import type { GalaxyEvent } from '../../shared/galaxy-events.ts';
+import { fuelPrice, tankOf } from '../../shared/jump.ts';
 import type { Weather } from '../../shared/weather.ts';
 import type { Session } from './session.ts';
 
@@ -58,6 +64,8 @@ export interface GameContext {
   crew(s: Session, at: V3, range: number): Session[];
   /** Are the two pilots in one group? */
   allies(a: Session, b: Session): boolean;
+  /** Galaxy events going on now (raids, storms, shortages). */
+  galaxyEvents(): GalaxyEvent[];
 }
 
 const tmp = v3(), tmp2 = v3(), aim = v3(), rot = quat();
@@ -94,6 +102,8 @@ export class SystemInstance implements NpcWorld {
   readonly market: StationMarket;
   readonly mining: AsteroidMining;
   readonly weather: WeatherDesk;
+  readonly boarding: Boarding;
+  readonly galaxy: GalaxyEffects;
 
   /** `quiet`: no pirates of its own (arena matches reuse a system's space without its life). */
   constructor(protected ctx: GameContext, id: number, quiet = false) {
@@ -108,6 +118,8 @@ export class SystemInstance implements NpcWorld {
     this.market = new StationMarket(this);
     this.mining = new AsteroidMining(this);
     this.weather = new WeatherDesk(this);
+    this.boarding = new Boarding(this);
+    this.galaxy = new GalaxyEffects(this);
   }
 
   /** Inside a derelict's hull (shelter from the weather). */
@@ -139,6 +151,7 @@ export class SystemInstance implements NpcWorld {
 
   get time() { return this.ctx.time; }
   now() { return this.ctx.now(); }
+  galaxyEvents() { return this.ctx.galaxyEvents(); }
   convoyAlive(system: number, poi: number) { return this.ctx.convoyAlive(system, poi); }
   get stationPos() { return this.def.station.pos; }
   ship(id: number) { return this.ships.get(id); }
@@ -151,6 +164,8 @@ export class SystemInstance implements NpcWorld {
 
   /** World position of a pilot on foot (on the deck: the station). */
   charWorld(c: CharEntity, out: V3 = v3()): V3 {
+    const hulk = c.aboard ? this.ships.get(c.aboard) : undefined;
+    if (hulk) return this.boarding.toWorld(hulk, c.state.p.x, c.state.p.y, c.state.p.z, out);
     if (c.planet < 0) return Object.assign(out, this.def.station.pos);
     const pl = this.def.planets[c.planet];
     return toWorldPoint(pl, planetRot(pl, this.time, rot), c.state.p, out);
@@ -162,14 +177,14 @@ export class SystemInstance implements NpcWorld {
   }
 
   // ------------------------------------------------------------------ entities
-  spawnPirate(near?: V3): ShipEntity {
+  spawnPirate(near?: V3, name?: string): ShipEntity {
     const field = this.def.fields[this.rng.int(0, this.def.fields.length - 1)];
     const r = field.radius;
     const pos = near ? { ...near } : v3(field.center.x + this.rng.range(-r, r), field.center.y + this.rng.range(-r, r) * 0.3, field.center.z + this.rng.range(-r, r));
     const id = this.ctx.nextId();
     const q = qlook(quat(), vnorm(v3(), v3(this.rng.range(-1, 1), 0, this.rng.range(-1, 1))), v3(0, 1, 0));
     const ship: ShipEntity = {
-      id, name: `Пират ${makeName(this.rng)}`, bp: pirateBlueprint(this.rng.int(0, 1e9)),
+      id, name: name ?? `Пират ${makeName(this.rng)}`, bp: pirateBlueprint(this.rng.int(0, 1e9)),
       state: newShip(pos, q), world: newPose(), flight: PIRATE_FLIGHT, combat: PIRATE_COMBAT,
       hull: PIRATE_COMBAT.maxHull, shield: PIRATE_COMBAT.maxShield, energy: 100, lastHit: -99, fireCooldown: 0, gun: 0,
       throttle: 0, boosting: false, dead: false, respawnAt: 0, docked: false, god: false, session: null,
@@ -204,6 +219,7 @@ export class SystemInstance implements NpcWorld {
     for (const m of this.missiles.values()) out.push({ id: m.id, kind: KIND.MISSILE, name: '', owner: m.owner });
     for (const l of this.world.loot.values()) out.push({ id: l.id, kind: KIND.LOOT, name: 'Контейнер' });
     for (const c of this.fauna.creatures.values()) out.push(this.fauna.info(c));
+    this.boarding.infos(out);
     return out;
   }
 
@@ -232,6 +248,8 @@ export class SystemInstance implements NpcWorld {
   removeSession(s: Session) {
     this.sessions.delete(s);
     this.mining.forget(s);
+    this.boarding.forget(s);
+    this.contracts.forget(s);
     this.removeRover(s);
     if (s.char) {
       this.chars.delete(s.char.id);
@@ -295,7 +313,7 @@ export class SystemInstance implements NpcWorld {
 
   damage(target: ShipEntity, dmg: number, attacker: number, pos?: V3) {
     if (target.dead || target.docked || target.god) return;
-    if (target.session && (target.session.mode === MODE.FOOT || target.session.mode === MODE.ROVER)) return;
+    if (target.session && (target.session.mode === MODE.FOOT || target.session.mode === MODE.ROVER || target.session.mode === MODE.BOARD)) return;
     if (this.inSafeZone(target.world.p)) return;
     // no friendly fire inside a group
     const by = attacker ? this.ships.get(attacker)?.session : undefined;
@@ -317,9 +335,11 @@ export class SystemInstance implements NpcWorld {
       }
     }
     if (target.hull <= 0) this.kill(target, attacker);
+    else if (target.npc) this.boarding.maybeDisable(target, by ?? undefined);
   }
 
   kill(target: ShipEntity, attacker: number) {
+    if (target.disabled) this.boarding.onDestroyed(target);
     target.dead = true;
     target.hull = 0;
     const p = target.world.p;
@@ -329,6 +349,7 @@ export class SystemInstance implements NpcWorld {
     if (target.session) {
       const s = target.session;
       s.pilot.deaths++;
+      this.contracts.onShipLost(s);
       const lost = cargoCount(s.pilot.cargo);
       s.pilot.cargo = emptyCargo();
       target.respawnAt = this.time + this.ctx.respawnDelay;
@@ -351,6 +372,18 @@ export class SystemInstance implements NpcWorld {
       this.reward(killer.session, p, bounty, wanted ? 'Разыскиваемый пилот уничтожен' : 'Цель уничтожена');
       if (target.npc && target.npc.role !== 'turret') this.contracts.onPirateKill(killer.session);
     }
+  }
+
+  /**
+   * A boarded ship was claimed by `s`: the same consequences as shooting it down for events,
+   * outposts and contracts (no explosion, no loot spill; the prize crew takes it away).
+   */
+  captured(target: ShipEntity, s: Session) {
+    if (!target.transient) this.npcRespawn.push(this.time + 40);
+    this.world.onKill(target, s.ship, true);
+    this.outposts.onKill(target, s.ship);
+    if (target.npc && target.npc.role !== 'turret') this.contracts.onPirateKill(s);
+    this.events.push({ t: 'kill', killer: s.pilot.name, victim: `${target.name} (захвачен)` });
   }
 
   /** The pilot and group mates near `at` (or near the pilot) who share kills. */
@@ -428,7 +461,7 @@ export class SystemInstance implements NpcWorld {
 
     this.env.time = t;
     for (const ship of this.ships.values()) {
-      if (!ship.npc || ship.dead || ship.npc.role === 'turret') continue;
+      if (!ship.npc || ship.dead || ship.npc.role === 'turret' || ship.disabled) continue;
       const { input, fire } = npcThink(ship, ship.npc, this, DT);
       stepShip(ship.state, input, ship.flight, this.env, DT, stepOut);
       this.syncWorld(ship);
@@ -443,13 +476,16 @@ export class SystemInstance implements NpcWorld {
     this.world.step(DT);
     this.outposts.step(DT);
     this.fauna.step(DT);
+    this.boarding.step(DT);
     if (this.ctx.tick % 15 === 0) { this.contracts.checkSites(); this.weather.step(0.5); }
     if (this.ctx.tick % 30 === 0) {
       // a fresh board (new epoch, a convoy came or went) goes to everyone docked
       if (this.contracts.board().changed) for (const s of this.sessions) if (s.mode === MODE.DOCKED) this.contracts.sendBoard(s);
       for (const s of this.sessions) this.contracts.expire(s);
+      this.contracts.stepFreight();
       // prices drift each epoch and recover from trade: docked pilots see them move
       if (this.market.changed()) this.broadcastMarket();
+      this.galaxy.step(this.galaxyEvents());
     }
 
     for (const ship of this.ships.values()) {
@@ -457,6 +493,7 @@ export class SystemInstance implements NpcWorld {
         if (ship.session && t >= ship.respawnAt) this.respawn(ship.session);
         continue;
       }
+      if (ship.disabled) continue;
       ship.energy = Math.min(100, ship.energy + ENERGY_REGEN * DT);
       if (t - ship.lastHit > SHIELD_DELAY) ship.shield = Math.min(ship.combat.maxShield, ship.shield + ship.combat.shieldRegen * DT);
     }
@@ -495,6 +532,11 @@ export class SystemInstance implements NpcWorld {
         stepDeck(s.char.state, m.char, DT);
         s.char.pitch = m.char.pitch;
         s.char.aim = false;
+      } else if (s.mode === MODE.BOARD && m.mode === MODE.BOARD && s.char) {
+        stepDeck(s.char.state, m.char, DT, SHIP_DECK);
+        s.char.pitch = m.char.pitch;
+        s.char.aim = !!(m.flags & IFLAG.AIM);
+        if (m.flags & IFLAG.FIRE) this.boarding.shoot(s, m.char.pitch);
       } else if (s.mode === MODE.FOOT && m.mode === MODE.FOOT && s.char) {
         // the client stamps inputs with server time: the same wind as its prediction
         const wt = Math.max(this.time - 2, Math.min(this.time + 1, m.t));
@@ -570,7 +612,7 @@ export class SystemInstance implements NpcWorld {
     if (!s.rover) return;
     this.removeRover(s);
     const bed = s.pilot.roverBed, hold = s.pilot.cargo;
-    let room = combatStats(s.pilot.upgrades, s.pilot.ship).cargoCap - cargoCount(hold);
+    let room = holdRoom(s.pilot);
     const moved: Partial<Record<CargoKey, number>> = {};
     for (const k of CARGO_KEYS) {
       const n = Math.min(room, bed[k]);
@@ -708,6 +750,7 @@ export class SystemInstance implements NpcWorld {
       if (isCruising(sh.state)) flags |= EFLAG.CRUISE;
       if (sh.boosting) flags |= EFLAG.BOOST;
       if (sh.npc) flags |= EFLAG.NPC;
+      if (sh.disabled) flags |= EFLAG.DISABLED;
       if (this.inSafeZone(sh.world.p)) flags |= EFLAG.SAFE;
       // Ships inside a planet frame are sent in body coordinates so they stay glued to the ground.
       const st = sh.state;
@@ -719,22 +762,26 @@ export class SystemInstance implements NpcWorld {
     }
     const q = quat();
     const docked = s.mode === MODE.DOCKED || s.mode === MODE.DECK;
+    const aboard = s.mode === MODE.BOARD ? s.char?.aboard ?? 0 : 0;
     for (const c of this.chars.values()) {
-      if (c.session === s || vdistSq(this.charWorld(c, cw), focus) > r2) continue;
+      if (c.session === s) continue;
+      // aboard a boarded ship only those on the same deck see each other
+      if ((c.aboard ?? 0) !== aboard) continue;
+      if (vdistSq(this.charWorld(c, cw), focus) > r2) continue;
       // a driver sits in the rover's model
       if (c.session.mode === MODE.ROVER) continue;
       // pilots on the station deck are seen only from inside the station
-      const deck = c.planet < 0;
-      if (deck !== docked) continue;
+      const deck = c.planet < 0 && !c.aboard;
+      if (!c.aboard && deck !== docked) continue;
       // a cabin is private: its owner sees no one else, and no one sees them
       if (deck && inCabin(c.state.p) !== (s.mode === MODE.DECK && !!s.char && inCabin(s.char.state.p))) continue;
-      if (deck) qlook(q, c.state.f, DECK_UP); else charQuat(c.state, q);
+      if (deck || c.aboard) qlook(q, c.state.f, DECK_UP); else charQuat(c.state, q);
       const cs = c.state;
       const flags = (cs.ground || cs.swim ? 0 : CFLAG.AIR) | (cs.climbMode ? CFLAG.CLIMB : 0) | (cs.scramble ? CFLAG.SCRAMBLE : 0)
         | (cs.swim ? CFLAG.SWIM : 0) | (cs.swim === 2 ? CFLAG.UNDER : 0) | (c.aim || this.time - c.shotAt < 1.5 ? CFLAG.AIM : 0);
       const prog = climbProgress(cs);
       entities.push({
-        id: c.id, kind: KIND.CHAR, flags, frame: deck ? DECK_FRAME : c.planet + 1, px: cs.p.x, py: cs.p.y, pz: cs.p.z,
+        id: c.id, kind: KIND.CHAR, flags, frame: c.aboard ? BOARD_FRAME : deck ? DECK_FRAME : c.planet + 1, px: cs.p.x, py: cs.p.y, pz: cs.p.z,
         qx: q.x, qy: q.y, qz: q.z, qw: q.w, vx: cs.v.x, vy: cs.v.y, vz: cs.v.z, hull: c.hp / c.maxHp, shield: aimByte(c.pitch),
         throttle: cs.climbMode === 2 ? 0.5 + prog * 0.5 : prog * 0.5,
       });
@@ -757,6 +804,7 @@ export class SystemInstance implements NpcWorld {
       entities.push({ id: m.id, kind: KIND.MISSILE, flags: 0, frame: 0, px: m.p.x, py: m.p.y, pz: m.p.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, vx: m.v.x, vy: m.v.y, vz: m.v.z, hull: 1, shield: 0, throttle: 1 });
     }
     this.fauna.entities(s, entities);
+    this.boarding.entities(s, entities);
     for (const l of this.world.loot.values()) {
       if (vdistSq(l.p, focus) > r2) continue;
       entities.push({ id: l.id, kind: KIND.LOOT, flags: 0, frame: 0, px: l.p.x, py: l.p.y, pz: l.p.z, qx: 0, qy: 0, qz: 0, qw: 1, vx: l.v.x, vy: l.v.y, vz: l.v.z, hull: 1, shield: 0, throttle: 0 });
@@ -768,7 +816,7 @@ export class SystemInstance implements NpcWorld {
         shipId: ship.id, mode: s.mode, teleport: s.teleport, ship: ship.state,
         hull: Math.max(0, ship.hull), maxHull: ship.combat.maxHull, shield: ship.shield, maxShield: ship.combat.maxShield,
         energy: ship.energy, missiles: s.pilot.missiles,
-        charId: s.char?.id ?? 0, char: s.char?.state ?? null, charPlanet: s.char ? (s.char.planet < 0 ? DECK_PLANET : s.char.planet) : -1, suit: s.char ? (s.char.hp / s.char.maxHp) * 100 : 100,
+        charId: s.char?.id ?? 0, char: s.char?.state ?? null, charPlanet: s.char ? (s.char.aboard ? BOARD_PLANET : s.char.planet < 0 ? DECK_PLANET : s.char.planet) : -1, suit: s.char ? (s.char.hp / s.char.maxHp) * 100 : 100,
         roverId: s.mode === MODE.ROVER && s.rover ? s.rover.id : 0, rover: s.mode === MODE.ROVER && s.rover ? s.rover.state : null,
       },
     };
@@ -827,6 +875,7 @@ export class SystemInstance implements NpcWorld {
         return null;
       }
       case 'board': {
+        if (s.mode === MODE.BOARD) return this.boarding.leave(s);
         if (s.mode === MODE.DECK && s.char) {
           if (Math.hypot(s.char.state.p.x - PAD.x, s.char.state.p.z - PAD.z) > BOARD_REACH) return 'Подойдите к кораблю';
           this.recallPilot(s);
@@ -953,6 +1002,17 @@ export class SystemInstance implements NpcWorld {
         if (!err) this.marketTrade();
         return err;
       }
+      case 'refine': {
+        if (!atStation(s)) return 'Нужно пристыковаться';
+        const r = recipeOf(String(act.recipe));
+        if (!r) return null;
+        const { n, fee } = refine(r, p.cargo, p.credits, act.n === undefined ? MAX_BATCHES : Number(act.n));
+        if (!n) return p.credits < r.fee ? 'Недостаточно кредитов' : `Нужно: ${inputsText(r)}`;
+        p.credits -= fee;
+        s.sendPilot();
+        s.msg(`Плавильня: ${CARGO_NAMES[r.key].toLowerCase()} ×${n} — −${fee} кр`, 'good');
+        return null;
+      }
       case 'repair': {
         if (!atStation(s)) return 'Нужно пристыковаться';
         const missing = ship.combat.maxHull - ship.hull;
@@ -970,6 +1030,17 @@ export class SystemInstance implements NpcWorld {
         if (n <= 0) return p.missiles >= MAX_MISSILES ? 'Ракетный отсек полон' : 'Недостаточно кредитов';
         p.missiles += n;
         p.credits -= n * MISSILE_COST;
+        s.sendPilot();
+        return null;
+      }
+      case 'buyFuel': {
+        if (!atStation(s)) return 'Нужно пристыковаться';
+        const price = fuelPrice(this.def.id), room = tankOf(p.ship) - p.fuel;
+        const want = act.n === undefined ? room : Math.max(0, Math.floor(Number(act.n)) || 0);
+        const n = Math.min(room, want, Math.floor(p.credits / price));
+        if (n <= 0) return room <= 0 ? 'Топливный бак полон' : 'Недостаточно кредитов';
+        p.fuel += n;
+        p.credits -= n * price;
         s.sendPilot();
         return null;
       }
@@ -1043,7 +1114,7 @@ export class SystemInstance implements NpcWorld {
         if ((this.harvested.get(key) ?? 0) > this.time) return 'Ресурс уже собран';
         const np = vscale(v3(), node.dir, pl.radius + node.h);
         if (vdist(np, s.char.state.p) > HARVEST_RANGE + 1.5) return 'Слишком далеко';
-        if (cargoCount(p.cargo) >= combatStats(p.upgrades, p.ship).cargoCap) return 'Трюм полон';
+        if (holdRoom(p) <= 0) return 'Трюм полон';
         p.cargo[node.type]++;
         this.harvested.set(key, this.time + NODE_RESPAWN);
         this.events.push({ t: 'harvest', planet: pl.index, node: node.id, left: NODE_RESPAWN, by: s.id });
@@ -1062,6 +1133,15 @@ export class SystemInstance implements NpcWorld {
         if (awardTrophy(s, `log:${this.def.id}:${pl.index}:${w.site.id}`)) s.sendPilot();
         return null;
       }
+      case 'boardShip':
+        return this.boarding.board(s, Number(act.id));
+      case 'loot':
+        return s.mode === MODE.BOARD ? this.boarding.loot(s) : null;
+      case 'claim':
+        return s.mode === MODE.BOARD ? this.boarding.claim(s) : null;
+      case 'sellPrize':
+        if (!atStation(s)) return 'Нужно пристыковаться';
+        return this.boarding.sellPrize(s, String(act.id));
       case 'missile':
         if (s.mode !== MODE.SHIP) return null;
         return this.fireMissile(ship, act.target);
@@ -1085,6 +1165,7 @@ export class SystemInstance implements NpcWorld {
 
   /** Puts a pilot on foot back into their ship. */
   recallPilot(s: Session) {
+    const aboard = s.char?.aboard;
     if (s.char) {
       this.chars.delete(s.char.id);
       this.gone.push(s.char.id);
@@ -1092,6 +1173,7 @@ export class SystemInstance implements NpcWorld {
     }
     s.mode = MODE.SHIP;
     s.resync();
+    if (aboard) this.boarding.forget(s);
   }
 
   applyStats(s: Session) {
@@ -1111,7 +1193,7 @@ export class SystemInstance implements NpcWorld {
   setShip(s: Session, key: HullKey): string | null {
     const p = s.pilot;
     const cap = combatStats(p.upgrades, key).cargoCap;
-    if (cargoCount(p.cargo) > cap) return `Груз не поместится: в трюме ${cargoCount(p.cargo)}, а у этого корабля ${cap}`;
+    if (holdRoom(p, key) < 0) return `Груз не поместится: в трюме ${holdUsed(p)}, а у этого корабля ${cap}`;
     // the ship left in the hangar is serviced there, the one taken out keeps the damage share
     const wear = s.ship.hull / s.ship.combat.maxHull;
     p.ship = key;
@@ -1171,6 +1253,7 @@ export class SystemInstance implements NpcWorld {
   /** Dev teleports; planet targets accept `when` = day (default, station side) | dusk | night. */
   devTeleport(s: Session, target: string, when?: string): string {
     const ship = s.ship;
+    if (s.char?.aboard) this.recallPilot(s);
     if (s.char) {
       this.chars.delete(s.char.id);
       this.gone.push(s.char.id);

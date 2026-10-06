@@ -5,7 +5,7 @@ import { DEPOSIT_BASE, DEPOSIT_NAMES, depositPos, DRILL_RANGE, DRILL_SPEED, yiel
 import { getSystem, type PlanetDef, type SystemDef } from '../shared/galaxy/system-gen.ts';
 import { FWD, qlook, qrot, quat, v3, vcross, vdist, vlen, vnorm, vsub, type Quat, type V3 } from '../shared/math/vec.ts';
 import {
-  aimPitch, BLASTER_LEVEL, DRONE_LEVEL, DECK_FRAME, CFLAG, EFLAG, IFLAG, KIND, MODE, ROVER_SPEED_MAX, steerAngle, type EntityInfo, type EntityState, type GameEvent, type GroupMsg, type PilotInfo, type SelfState, type Shot, type Snapshot, type Welcome,
+  aimPitch, BLASTER_LEVEL, BOARD_FRAME, DRONE_LEVEL, DECK_FRAME, CFLAG, EFLAG, IFLAG, KIND, MODE, ROVER_SPEED_MAX, steerAngle, type EntityInfo, type EntityState, type GameEvent, type GroupMsg, type PilotInfo, type SelfState, type Shot, type Snapshot, type Welcome,
 } from '../shared/net/protocol.ts';
 import { heightAt, liquidOf, surfaceHeight, waterColors } from '../shared/planet/terrain.ts';
 import { resourceNode } from '../shared/planet/resources.ts';
@@ -49,6 +49,8 @@ import { AnomalyView, LootView, WreckView, type PoiView } from './world/poi-view
 import { SiteView } from './planet/sites-view.ts';
 import { WeatherView } from './world/weather.ts';
 import { StationInterior } from './world/station-interior.ts';
+import { ShipInteriorView } from './world/ship-interior.ts';
+import { BOARD_RANGE, BOARD_SPEED, SHIP_CHEST, SHIP_HATCH, SHIP_HELM, SHIP_REACH, SHIP_WALLS, shipRoomAt } from '../shared/boarding.ts';
 import { BOARD_REACH, DECK_WALLS, inCabin, nearTerminal, PAD, type TerminalKind } from '../shared/station/deck.ts';
 import { forecast, HAZARD_GEAR, HAZARD_NAMES, LAVA_HEAT, STORM_OF, WEATHER, weatherAt, type Weather, type WeatherKind, type WeatherOverride } from '../shared/weather.ts';
 import { CreatureView } from './entities/creature.ts';
@@ -64,6 +66,8 @@ import { GalaxyMap } from './ui/galaxy-map.ts';
 import { ArenaHud } from './ui/arena-hud.ts';
 import { ArenaView } from './world/arena-view.ts';
 import { arenaLayout, ARENA, TEAM_COLORS, type ArenaMsg } from '../shared/arena.ts';
+import { EVENT_ICONS, eventText, eventTitle, type GalaxyEventInfo } from '../shared/galaxy-events.ts';
+import { fuelPrice } from '../shared/jump.ts';
 
 interface Remote {
   info: EntityInfo | null;
@@ -117,6 +121,9 @@ export class Game {
   private myDmgT = 0;
   /** Destination system picked on the galaxy map (its next gate is a navigation point). */
   private routeTo: number | null = null;
+  /** The jump drive charging (performance.now() ms when it jumps). */
+  private charge: { system: number; end: number; total: number } | null = null;
+  private chargeEl = document.getElementById('jump-charge')!;
   private radar = new Radar(document.getElementById('radar') as HTMLCanvasElement);
   private sfx = new Sfx();
   private conn: NetClient;
@@ -154,9 +161,17 @@ export class Game {
   private weatherV = new WeatherView();
   /** The walkable inside of this system's station. */
   private interior: StationInterior | null = null;
+  /** The inside of the NPC ship the pilot boarded, and what the server says about it. */
+  private shipDeck = new ShipInteriorView();
+  private aboard = { id: 0, crew: 0, looted: false, claimed: false };
+  private boardHint = false;
   /** Recent chat lines by pilot name (speech bubbles over their heads). */
   private bubbles = new Map<string, { text: string; until: number }>();
   private wxOverrides = new Map<number, WeatherOverride>();
+  /** Galaxy events going on (from the server) and when they arrived. */
+  private galaxyEvents: GalaxyEventInfo[] = [];
+  private galaxyAt = 0;
+  private meteorT = 0;
   /** Weather where the camera is: kind, felt strength (fades with altitude), world wind. */
   private wx = { kind: 'clear' as WeatherKind, k: 0, wind: new THREE.Vector3(), dark: false };
   private wxBody: Weather = { kind: 'clear', k: 0, wind: v3() };
@@ -277,6 +292,8 @@ export class Game {
     this.hud.onContracts = () => { if (this.pilot) this.contracts.show(this.pilot); };
     this.contracts.onAction = (a) => { this.conn.action(a); this.sfx.beep(); };
     this.galaxyMap.onRoute = (to) => this.setRoute(to);
+    this.galaxyMap.onJump = (system, target) => this.conn.action({ a: 'jumpDrive', system, target });
+    this.galaxyMap.onCancelJump = () => this.conn.action({ a: 'jumpCancel' });
     this.hud.onTyping = (t) => { this.input.typing = t; };
     this.hud.onGroup = (w) => {
       this.conn.action(w === 'leave' ? { a: 'groupLeave' } : { a: 'groupAnswer', yes: w === 'yes' });
@@ -357,6 +374,7 @@ export class Game {
     } catch { /* storage unavailable */ }
     const arrived = this.routeTo === w.system;
     if (arrived) this.routeTo = null;
+    this.charge = null;
     if (!this.sys || this.sys.id !== w.system) this.buildSystem(w.system);
     for (const id of [...this.remotes.keys()]) this.removeRemote(id);
     this.infos.clear();
@@ -399,6 +417,7 @@ export class Game {
 
     const sys = getSystem(id);
     this.sys = sys;
+    this.hud.fuelCost = fuelPrice(sys.id);
     this.env = { star: sys.star, planets: sys.planets, fields: [...sys.fields], station: sys.station, time: 0 };
     this.dropArena();
     this.rots = sys.planets.map(() => quat());
@@ -422,6 +441,7 @@ export class Game {
     this.interior = new StationInterior(sys, facing);
     if (this.pilot) this.interior.cabin.set(this.pilot.trophies);
     this.world.add(this.interior.group);
+    this.world.add(this.shipDeck.group);
     this.gates = sys.gates.map((g) => new GateView(g, new THREE.Vector3(sys.station.pos.x - g.pos.x, sys.station.pos.y - g.pos.y, sys.station.pos.z - g.pos.z)));
     this.gates.forEach((g) => this.world.add(g.group));
     this.fields = sys.fields.map((f) => new FieldView(f));
@@ -476,8 +496,19 @@ export class Game {
     this.syncMap();
   }
 
+  /** The jump drive's charge banner. */
+  private updateCharge() {
+    const c = this.charge;
+    this.chargeEl.classList.toggle('hidden', !c);
+    if (!c) return;
+    const left = Math.max(0, (c.end - performance.now()) / 1000);
+    this.chargeEl.querySelector('.jc-text')!.textContent = `Прыжок в ${getGalaxy().stars[c.system].name} через ${left.toFixed(1)} с`;
+    (this.chargeEl.querySelector('.jc-bar i') as HTMLElement).style.width = `${Math.min(100, (1 - left / c.total) * 100)}%`;
+  }
+
   private syncMap() {
     if (this.sys) this.galaxyMap.update(this.sys.id, this.routeTo, (this.pilot?.career.active ?? []).map((c) => c.system));
+    if (this.pilot) this.galaxyMap.setDrive(this.pilot.fuel, this.pilot.fuelTank, this.charge?.system ?? null);
   }
 
   /** Navigation points for the map route and the targets of active contracts (another system: the next gate there). */
@@ -675,7 +706,7 @@ export class Game {
     const inStation = (m: number) => m === MODE.DOCKED || m === MODE.DECK;
     if (inStation(prev) && !inStation(mode)) { this.wardrobe.close(); this.contracts.close(); this.trophiesUi.close(); }
     if (mode === MODE.DECK) { this.wardrobe.close(); this.contracts.close(); this.trophiesUi.close(); }
-    if (mode === MODE.FOOT || mode === MODE.DECK) {
+    if (mode === MODE.FOOT || mode === MODE.DECK || mode === MODE.BOARD) {
       this.ctrl.footPitch = -0.12;
       if (!this.myAstro) {
         this.myAstro = this.makeAstronaut(() => this.charPos);
@@ -684,7 +715,9 @@ export class Game {
         this.world.add(this.myAstro.group);
       }
     }
-    if (mode !== MODE.FOOT && mode !== MODE.DECK && this.myAstro) { this.myAstro.dispose(); this.myAstro = null; }
+    if (mode !== MODE.FOOT && mode !== MODE.DECK && mode !== MODE.BOARD && this.myAstro) { this.myAstro.dispose(); this.myAstro = null; }
+    if (mode !== MODE.BOARD) this.aboard = { id: 0, crew: 0, looted: false, claimed: false };
+    if (prev === MODE.BOARD && mode === MODE.SHIP) this.ctrl.throttle = 0;
     if (mode === MODE.SHIP && prev === MODE.FOOT) this.ctrl.throttle = 0;
   }
 
@@ -843,6 +876,11 @@ export class Game {
         }
         case 'chat': this.hud.chat(e.from, e.text); this.bubbles.set(e.from, { text: e.text, until: this.time + 6 }); break;
         case 'msg': this.hud.toast(e.text, e.kind); this.hud.chat(null, e.text); break;
+        case 'charge':
+          this.charge = e.left > 0 ? { system: e.system, end: performance.now() + e.left * 1000, total: e.left } : null;
+          if (this.charge) { this.galaxyMap.close(); this.sfx.beep(); }
+          this.syncMap();
+          break;
         case 'mine': {
           // a mining laser hit an asteroid
           const pos = v3(e.pos[0], e.pos[1], e.pos[2]);
@@ -903,7 +941,8 @@ export class Game {
           this.hud.toast(e.text, 'good');
           this.hud.chat(null, e.text);
           this.sfx.pickup();
-          this.effects.flash(v3(e.pos[0], e.pos[1], e.pos[2]), new THREE.Color(0.6, 2.2, 2.6), 26, 0.5);
+          // a burst on the spot (small when it is the strongbox right next to us)
+          this.effects.flash(v3(e.pos[0], e.pos[1], e.pos[2]), new THREE.Color(0.6, 2.2, 2.6), this.pred.mode === MODE.BOARD ? 1.6 : 26, 0.5);
           break;
         }
         case 'missile':
@@ -912,6 +951,21 @@ export class Game {
           break;
         case 'weather':
           this.wxOverrides.set(e.planet, { kind: e.kind, k: e.k, until: e.until });
+          break;
+        case 'aboard':
+          if (e.id && !this.aboard.id && !this.boardHint) {
+            this.boardHint = true;
+            this.hud.toast('Абордаж: ЛКМ — бластер, ПКМ — прицел. Обезвредьте экипаж, затем F у сейфа в трюме и у штурвала на мостике. G у шлюза — назад в корабль', 'info');
+          }
+          this.aboard = { id: e.id, crew: e.crew, looted: e.looted, claimed: e.claimed };
+          break;
+        case 'galaxy':
+          this.galaxyEvents = e.list;
+          this.galaxyAt = performance.now();
+          this.galaxyMap.setEvents(e.list);
+          this.hud.setGalaxyEvents(e.list);
+          // news from the rest of the galaxy (the event's own system gets a banner from the server)
+          for (const ev of e.list) if (e.fresh?.includes(ev.id) && ev.system !== this.sys?.id) this.hud.chat(null, `${EVENT_ICONS[ev.kind]} ${eventTitle(ev)}. ${eventText(ev)}`);
           break;
         case 'strike': {
           const pl = this.sys?.planets[e.planet];
@@ -952,13 +1006,13 @@ export class Game {
   private fixedTick() {
     if (!this.pred.ready || !this.conn.open) return;
     const mode = this.pred.mode;
-    if (mode !== MODE.SHIP && mode !== MODE.FOOT && mode !== MODE.DECK && mode !== MODE.ROVER) return;
+    if (mode !== MODE.SHIP && mode !== MODE.FOOT && mode !== MODE.DECK && mode !== MODE.ROVER && mode !== MODE.BOARD) return;
     const m = this.ctrl.build(mode, this.timeline.serverNow);
     this.conn.input(m);
     this.pred.step(m);
     this.energy = Math.min(100, this.energy + ENERGY_REGEN * DT);
     this.fireCd -= DT;
-    if (mode === MODE.FOOT && m.flags & IFLAG.FIRE && this.fireCd <= 0) this.blasterBolt();
+    if ((mode === MODE.FOOT || mode === MODE.BOARD) && m.flags & IFLAG.FIRE && this.fireCd <= 0) this.blasterBolt();
     if (mode !== MODE.SHIP) return;
     const s = this.pred.ship;
     const w = worldPose(s, this.sys!.planets, m.t, this.shipW);
@@ -979,9 +1033,11 @@ export class Game {
   /** Local (predicted) hand-blaster bolt; the server does the hit test. */
   private blasterBolt() {
     const pl = this.sys!.planets[this.pred.charPlanet];
-    if (!pl) return;
+    const aboard = this.pred.mode === MODE.BOARD;
+    if (!pl && !aboard) return;
     this.fireCd = BLASTER.cooldown;
-    const up = vnorm(v3(), vsub(v3(), this.charPos, pl.center));
+    const du = aboard ? this.shipDeck.dirToWorld(v3(0, 1, 0)) : null;
+    const up = du ? v3(du.x, du.y, du.z) : vnorm(v3(), vsub(v3(), this.charPos, pl!.center));
     const c = Math.cos(this.ctrl.footPitch), s = Math.sin(this.ctrl.footPitch);
     const d = v3(this.charFwd.x * c + up.x * s, this.charFwd.y * c + up.y * s, this.charFwd.z * c + up.z * s);
     const right = vnorm(v3(), vcross(v3(), this.charFwd, up));
@@ -1010,7 +1066,7 @@ export class Game {
     else if (kind === 'wardrobe') this.wardrobe.show(this.pilot);
     else if (kind === 'trophies') this.trophiesUi.show(this.pilot);
     else {
-      this.hud.showStation(true, `${this.sys!.station.name} · ${name}`, true);
+      this.hud.showStation(true, `${this.sys!.station.name} · ${name}`, true, kind === 'refinery' ? '.st-refinery' : undefined);
       if (this.self) this.hud.renderStation(this.pilot, { hull: this.self.hull, max: this.self.maxHull });
     }
   }
@@ -1033,6 +1089,49 @@ export class Game {
     let y = a.y + (b.y - a.y) * k;
     if (y > ceil - 0.4) y = ceil - 0.4;
     const w = it.toWorld(st, v3(a.x + dx * k, y, a.z + dz * k), v3());
+    this.rig.pos.x = w.x; this.rig.pos.y = w.y; this.rig.pos.z = w.z;
+  }
+
+  /** A disabled NPC ship close enough to dock with. */
+  private nearHulk(): { id: number; name: string; dist: number } | null {
+    let best: { id: number; name: string; dist: number } | null = null;
+    for (const [id, r] of this.remotes) {
+      if (!r.visible || !r.state || !(r.state.flags & EFLAG.DISABLED) || !(r.view instanceof ShipView)) continue;
+      const d = vdist(r.p, this.shipW.p) - r.view.radius;
+      if (d < BOARD_RANGE && (!best || d < best.dist)) best = { id, name: r.info?.name ?? '', dist: d };
+    }
+    return best;
+  }
+
+  /** What the boarder stands at: the strongbox, the helm or the airlock. */
+  private boardSpot(): 'chest' | 'helm' | 'hatch' | null {
+    const c = this.pred.char?.p;
+    if (!c) return null;
+    if (Math.hypot(c.x - SHIP_CHEST.x, c.z - SHIP_CHEST.z) < SHIP_REACH) return 'chest';
+    if (Math.hypot(c.x - SHIP_HELM.x, c.z - SHIP_HELM.z) < SHIP_REACH) return 'helm';
+    if (Math.hypot(c.x - SHIP_HATCH.x, c.z - SHIP_HATCH.z) < SHIP_REACH + 1) return 'hatch';
+    return null;
+  }
+
+  /** Third-person camera aboard a boarded ship: kept inside its walls and under its ceilings. */
+  private boardClamp(pivot: V3) {
+    const d = this.shipDeck;
+    const a = d.toDeck(pivot), b = d.toDeck(this.rig.pos);
+    const dx = b.x - a.x, dz = b.z - a.z;
+    let tMin = 1;
+    for (const [x0, z0, x1, z1] of SHIP_WALLS) {
+      const ex = x1 - x0, ez = z1 - z0, den = dx * ez - dz * ex;
+      if (Math.abs(den) < 1e-9) continue;
+      const t = ((x0 - a.x) * ez - (z0 - a.z) * ex) / den, u = ((x0 - a.x) * dz - (z0 - a.z) * dx) / den;
+      if (t > 0 && t < tMin && u >= 0 && u <= 1) tMin = t;
+    }
+    const len = Math.hypot(dx, b.y - a.y, dz) || 1;
+    const k = tMin < 1 ? Math.max(0.08, tMin - 0.4 / len) : 1;
+    const ceil = d.ceil(a.x, a.z) ?? 3;
+    let y = a.y + (b.y - a.y) * k;
+    if (y > ceil - 0.3) y = ceil - 0.3;
+    if (y < 0.4) y = 0.4;
+    const w = d.toWorld(v3(a.x + dx * k, y, a.z + dz * k), v3());
     this.rig.pos.x = w.x; this.rig.pos.y = w.y; this.rig.pos.z = w.z;
   }
 
@@ -1159,7 +1258,7 @@ export class Game {
     if (i.hit('KeyG')) {
       if (mode === MODE.SHIP && this.pred.ship.landed) this.conn.action({ a: 'exit' });
       else if (mode === MODE.FOOT && this.nearMyRover(ROVER.reach)) this.conn.action({ a: 'drive' });
-      else if (mode === MODE.FOOT || mode === MODE.DECK) this.conn.action({ a: 'board' });
+      else if (mode === MODE.FOOT || mode === MODE.DECK || mode === MODE.BOARD) this.conn.action({ a: 'board' });
       else if (mode === MODE.DOCKED) this.conn.action({ a: 'disembark' });
       else if (mode === MODE.ROVER) this.conn.action({ a: 'leave' });
     }
@@ -1178,6 +1277,11 @@ export class Game {
     if (i.hit('KeyF') && mode === MODE.DECK && this.pred.char) {
       const t = nearTerminal(this.pred.char.p);
       if (t) this.openTerminal(t.kind, t.name);
+    } else if (mode === MODE.BOARD && i.hit('KeyF') && this.pred.char) {
+      const spot = this.boardSpot();
+      if (spot === 'chest') this.conn.action({ a: 'loot' });
+      else if (spot === 'helm') this.conn.action({ a: 'claim' });
+      else this.hud.toast('Сейф — в трюме, штурвал — на мостике', 'warn');
     } else if (mode !== MODE.ROVER && i.hit('KeyF')) {
       const carcass = mode === MODE.FOOT ? this.nearCarcass() : null;
       const log = mode === MODE.FOOT ? this.nearLog() : null;
@@ -1194,7 +1298,9 @@ export class Game {
       } else if (mode === MODE.SHIP) {
         const p = this.shipW.p;
         const wreck = this.nearWreck();
-        if (wreck) this.conn.action({ a: 'salvage', id: wreck.id });
+        const hulk = this.nearHulk();
+        if (hulk) this.conn.action({ a: 'boardShip', id: hulk.id });
+        else if (wreck) this.conn.action({ a: 'salvage', id: wreck.id });
         else if (vdist(p, this.sys!.station.pos) < DOCK_RANGE) this.conn.action({ a: 'dock' });
         else if (this.sys!.gates.some((g) => vdist(g.pos, p) < GATE_RANGE)) this.conn.action({ a: 'jump' });
       }
@@ -1320,7 +1426,7 @@ export class Game {
 
   /** Moves `obj` along its planet's world up by the ground fix of body position `bodyP`. */
   private liftToGround(obj: THREE.Object3D, frame: number, bodyP: V3, worldP: V3) {
-    if (!frame || frame === DECK_FRAME) return;
+    if (!frame || frame === DECK_FRAME || frame === BOARD_FRAME) return;
     const fix = this.groundFix(frame - 1, bodyP);
     if (!fix) return;
     const c = this.sys!.planets[frame - 1].center;
@@ -1337,6 +1443,7 @@ export class Game {
   private toWorld(frame: number, p: V3, out: V3): V3 {
     if (!frame) { out.x = p.x; out.y = p.y; out.z = p.z; return out; }
     if (frame === DECK_FRAME) return this.interior!.toWorld(this.sys!.station.pos, p, out);
+    if (frame === BOARD_FRAME) return this.shipDeck.toWorld(p, out);
     return toWorldPoint(this.sys!.planets[frame - 1], this.rots[frame - 1], p, out);
   }
 
@@ -1352,6 +1459,10 @@ export class Game {
     else Object.assign(this.shipQ, this.shipQF);
     worldPose(ship, sys.planets, now, this.shipW);
     const onDeck = mode === MODE.DECK && this.pred.charPose(alpha, this.charPosB, this.charFwdB);
+    // aboard a boarded ship: its deck rides on the ship's (interpolated) pose
+    const hulk = this.aboard.id ? this.remotes.get(this.aboard.id) : undefined;
+    if (hulk) { const hp = v3(), hq = quat(); if (hulk.buf.sample(this.timeline.renderTime, hp, hq)) this.shipDeck.setPose(hp, hq); }
+    const onBoard = mode === MODE.BOARD && !!hulk && this.pred.charPose(alpha, this.charPosB, this.charFwdB);
     const onFoot = mode === MODE.FOOT && this.pred.charPose(alpha, this.charPosB, this.charFwdB);
     const charPl = onFoot ? sys.planets[this.pred.charPlanet] : null;
     const driving = mode === MODE.ROVER && this.pred.charPlanet >= 0 && this.pred.roverPose(alpha, this.roverPosB, this.roverQB);
@@ -1371,11 +1482,15 @@ export class Game {
       it.toWorld(sys.station.pos, this.charPosB, this.charPos);
       const fw = it.dirToWorld(this.charFwdB);
       this.charFwd.x = fw.x; this.charFwd.y = fw.y; this.charFwd.z = fw.z;
+    } else if (onBoard) {
+      this.shipDeck.toWorld(this.charPosB, this.charPos);
+      const fw = this.shipDeck.dirToWorld(this.charFwdB);
+      this.charFwd.x = fw.x; this.charFwd.y = fw.y; this.charFwd.z = fw.z;
     }
     const speed = vlen(ship.v);
 
     // nearest planet to the player
-    const focus = onFoot || onDeck || roverPl ? this.charPos : this.shipPos;
+    const focus = onFoot || onDeck || onBoard || roverPl ? this.charPos : this.shipPos;
     this.nearPlanet = null;
     this.nearAlt = 1e12;
     for (const p of sys.planets) {
@@ -1439,6 +1554,13 @@ export class Game {
       const up = it.dirToWorld(v3(0, 1, 0));
       this.rig.foot(dt, this.charPos, up, this.charFwd, this.ctrl.footPitch, this.ctrl.footDist, this.input.mouse(2) ? this.aimK : 0, 1.5, () => 50);
       this.deckClamp(this.charPos);
+    } else if (onBoard) {
+      const wantAim = this.input.mouse(2) || this.time - this.lastShot < 1.5;
+      this.aimK += ((wantAim ? 1 : 0) - this.aimK) * (1 - Math.exp(-dt * 9));
+      this.ctrl.lookScale = 1 - 0.4 * this.aimK;
+      const du = this.shipDeck.dirToWorld(v3(0, 1, 0));
+      this.rig.foot(dt, this.charPos, v3(du.x, du.y, du.z), this.charFwd, this.ctrl.footPitch, Math.min(this.ctrl.footDist, 3.4), this.input.mouse(2) ? this.aimK : 0, 1.5, () => 50);
+      this.boardClamp(this.charPos);
     } else if (mode === MODE.DOCKED) {
       // in the hangar, slowly circling the ship on its pad
       const a = this.time * 0.07;
@@ -1514,6 +1636,13 @@ export class Game {
       it.group.quaternion.copy(it.q);
       it.update(dt, this.time, onDeck ? this.charPosB : null);
     }
+    const sd = this.shipDeck;
+    sd.group.visible = !!onBoard;
+    if (onBoard) {
+      this.place(sd.group, sd.toWorld(v3(0, 0, 0), v3()));
+      sd.group.quaternion.copy(sd.q);
+      sd.update(dt, this.time, this.charPosB, { alarm: this.aboard.crew > 0, looted: this.aboard.looted, cleared: this.aboard.crew === 0, claimed: this.aboard.claimed });
+    }
     this.gates.forEach((g) => { this.place(g.group, g.def.pos); g.update(dt); });
     this.fields.forEach((f) => this.place(f.group, f.def.center));
     if (propsPlanet) this.props.sync(this.origin, this.rots[propsPlanet.index]);
@@ -1569,6 +1698,21 @@ export class Game {
       this.myAstro.update(dt, { ...mv, ground: !!c.ground, jet: false, look: this.ctrl.footPitch, turn, aim: false, aimPitch: 0, climb: null, scramble: false, swim: 0, swimPitch: 0 });
       this.myAstro.visorUp = this.visorOverride ?? 1;
       this.myAstro.lightsOn = false;
+    }
+    if (this.myAstro && onBoard) {
+      // fighting through a boarded ship: the deck's up, aiming like on a planet
+      const du = this.shipDeck.dirToWorld(v3(0, 1, 0));
+      this.place(this.myAstro.group, this.charPos);
+      const q = qlook(quat(), this.charFwd, v3(du.x, du.y, du.z));
+      this.myAstro.group.quaternion.set(q.x, q.y, q.z, q.w);
+      const c = this.pred.char!;
+      const mv = moveParts(c.v, v3(0, 1, 0), this.charFwdB);
+      const cr = vcross(v3(), this.prevFwd, this.charFwdB);
+      const turn = dt > 0 ? -Math.asin(Math.max(-1, Math.min(1, cr.y))) / dt : 0;
+      this.prevFwd = { ...this.charFwdB };
+      this.myAstro.update(dt, { ...mv, ground: !!c.ground, jet: false, look: this.ctrl.footPitch, turn, aim: this.aimK > 0.5, aimPitch: this.ctrl.footPitch, climb: null, scramble: false, swim: 0, swimPitch: 0 });
+      this.myAstro.visorUp = this.visorOverride ?? 1;
+      this.myAstro.lightsOn = true;
     }
     if (this.myAstro && onFoot && charPl) {
       const up = vnorm(v3(), vsub(v3(), this.charPos, charPl.center));
@@ -1627,9 +1771,16 @@ export class Game {
       r.state = st;
       r.visible = !!st && r.buf.lastSeen > this.timeline.serverNow - 1.2;
       if (st) {
-        const pl = st.frame && st.frame !== DECK_FRAME ? sys.planets[st.frame - 1] : null;
+        const pl = st.frame && st.frame !== DECK_FRAME && st.frame !== BOARD_FRAME ? sys.planets[st.frame - 1] : null;
         const bv = v3(st.vx, st.vy, st.vz);
-        if (st.frame === DECK_FRAME) {
+        if (st.frame === BOARD_FRAME) {
+          // aboard the ship we boarded: crew and other boarders
+          this.shipDeck.toWorld(r.bp, r.p);
+          const wq = this.shipDeck.q.clone().multiply(new THREE.Quaternion(r.bq.x, r.bq.y, r.bq.z, r.bq.w));
+          r.q.x = wq.x; r.q.y = wq.y; r.q.z = wq.z; r.q.w = wq.w;
+          const wv = this.shipDeck.dirToWorld(bv);
+          r.v.x = wv.x; r.v.y = wv.y; r.v.z = wv.z;
+        } else if (st.frame === DECK_FRAME) {
           // walking on the station deck
           this.interior!.toWorld(sys.station.pos, r.bp, r.p);
           const wq = this.interior!.q.clone().multiply(new THREE.Quaternion(r.bq.x, r.bq.y, r.bq.z, r.bq.w));
@@ -1653,9 +1804,22 @@ export class Game {
       this.place(r.view.group, r.p);
       r.view.group.quaternion.set(r.q.x, r.q.y, r.q.z, r.q.w);
       if (r.view instanceof RoverView && mode === MODE.ROVER && id === this.pred.roverId) { r.view.group.visible = false; continue; }
+      // the boarded ship is drawn from the inside; whoever is aboard is not seen from outside
+      if (onBoard ? (id === this.aboard.id || st.frame !== BOARD_FRAME && !(r.view instanceof ShipView)) : st.frame === BOARD_FRAME) { r.view.group.visible = false; continue; }
       const grounded = r.view instanceof AstronautView || r.view instanceof CreatureView || r.view instanceof DroneView || r.view instanceof RoverView || (r.view instanceof ShipView && !!(st.flags & EFLAG.LANDED));
       if (grounded) this.liftToGround(r.view.group, st.frame, r.bp, r.p);
       if (r.view instanceof ShipView) {
+        if (st.flags & EFLAG.DISABLED) {
+          // knocked out: smoke trailing from the hull, now and then a spark
+          r.smokeT -= dt;
+          if (r.smokeT <= 0 && vdist(r.p, this.origin) < 3000) {
+            r.smokeT = 0.12;
+            const k = r.view.radius * 0.5;
+            const sp = v3(r.p.x + (Math.random() - 0.5) * k, r.p.y + (Math.random() - 0.5) * k, r.p.z + (Math.random() - 0.5) * k);
+            this.effects.smoke(sp);
+            if (Math.random() < 0.15) this.effects.spark(sp, new THREE.Color(1.6, 0.9, 0.3), 6);
+          }
+        }
         r.view.throttle = st.throttle;
         r.view.boost = !!(st.flags & EFLAG.BOOST);
         r.view.cruise = !!(st.flags & EFLAG.CRUISE);
@@ -1666,7 +1830,7 @@ export class Game {
           this.effects.damage(r.p, r.v, 1 - st.hull);
         }
       } else if (r.view instanceof AstronautView) {
-        const up = st.frame === DECK_FRAME ? v3(0, 1, 0) : vnorm(v3(), r.bp);
+        const up = st.frame === DECK_FRAME || st.frame === BOARD_FRAME ? v3(0, 1, 0) : vnorm(v3(), r.bp);
         const fwd = qrot(v3(), r.bq, FWD);
         const mv = moveParts(v3(st.vx, st.vy, st.vz), up, fwd);
         const climbing = !!(st.flags & CFLAG.CLIMB);
@@ -1690,6 +1854,12 @@ export class Game {
           climb: climbing ? { mode: cm, t: cm === 2 ? (st.throttle - 0.5) * 2 : st.throttle * 2 } : null, scramble: !!(st.flags & CFLAG.SCRAMBLE),
           swim, swimPitch: Math.atan2(mv.vUp, Math.hypot(mv.fwd, mv.side) + 1e-3),
         });
+        if (st.frame === BOARD_FRAME && st.flags & EFLAG.DEAD) {
+          // a downed crewman lies on the deck
+          r.view.group.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2));
+          const du = this.shipDeck.dirToWorld(v3(0, 1, 0));
+          r.view.group.position.addScaledVector(du, 0.25);
+        }
       } else if (r.view instanceof RoverView) {
         const rpl = st.frame ? sys.planets[st.frame - 1] : null;
         const susp = rpl ? roverWheelLengths(rpl, r.bp, r.bq, r.susp ??= [0, 0, 0, 0]) : [ROVER.modelLen, ROVER.modelLen, ROVER.modelLen, ROVER.modelLen];
@@ -1728,12 +1898,32 @@ export class Game {
     this.effects.setViewport(window.innerHeight, cam.fov);
     this.underwater.setViewport(window.innerHeight, cam.fov);
     this.weatherV.setViewport(window.innerHeight, cam.fov);
+    this.updateMeteors(dt, mode);
     this.effects.update(dt, this.origin);
     this.updateWeather(dt, onFoot);
 
     this.updateEnvironment(toSun, onFoot || roverPl ? this.charPos : this.shipPos);
     this.updateHud(self, mode, speed);
     this.r.render();
+  }
+
+  /** A meteor storm in this system: burning rocks streak past the ship, all from one side. */
+  private updateMeteors(dt: number, mode: number) {
+    const sys = this.sys;
+    if (!sys || mode !== MODE.SHIP || this.pred.ship.landed) return;
+    const age = performance.now() - this.galaxyAt;
+    const storm = this.galaxyEvents.find((e) => e.kind === 'storm' && e.system === sys.id && e.left > age);
+    if (!storm || (this.meteorT -= dt) > 0) return;
+    this.meteorT = 0.1 + Math.random() * 0.25;
+    // the storm's direction follows from its id, so every pilot sees the same sky; most rocks
+    // cross the view ahead of the ship, some pass anywhere around it
+    const a = storm.id * 2.399, dir = vnorm(v3(), v3(Math.cos(a), -0.35, Math.sin(a)));
+    const fwd = qrot(v3(), this.shipQ, FWD), r = () => Math.random() - 0.5;
+    const ahead = Math.random() < 0.7 ? 300 + Math.random() * 900 : 0, spread = ahead ? 700 : 1400;
+    const o = this.origin, sp = 300 + Math.random() * 250;
+    const c = v3(o.x + fwd.x * ahead + r() * spread, o.y + fwd.y * ahead + r() * spread * 0.5, o.z + fwd.z * ahead + r() * spread);
+    const at = v3(c.x - dir.x * sp * 2, c.y - dir.y * sp * 2, c.z - dir.z * sp * 2);
+    this.effects.meteor(at, v3(dir.x * sp, dir.y * sp, dir.z * sp), 6);
   }
 
   /**
@@ -1823,6 +2013,24 @@ export class Game {
     const [lamp0, lamp1] = this.wreckLights;
     const mode = this.pred.mode;
     this.indoorStation = mode === MODE.DOCKED || mode === MODE.DECK;
+    if (mode === MODE.BOARD && this.aboard.id) {
+      // aboard: a lamp in the room the camera is in and one in the corridor, red while the crew fights
+      this.indoorK = 1;
+      const d = this.shipDeck, cam = d.toDeck(this.origin);
+      const room = shipRoomAt(cam.x, cam.z) ?? shipRoomAt(this.charPosB.x, this.charPosB.z);
+      const put = (l: THREE.PointLight, x: number, y: number, z: number) => {
+        const w = d.toWorld(v3(x, y, z), v3());
+        l.position.set(w.x - this.origin.x, w.y - this.origin.y, w.z - this.origin.z);
+      };
+      if (room) put(lamp0, (room.x0 + room.x1) / 2, room.ceil - 0.4, (room.z0 + room.z1) / 2);
+      put(lamp1, 0, 2.6, Math.max(-9, Math.min(9, this.charPosB.z)));
+      const fight = this.aboard.crew > 0;
+      lamp0.color.set('#e4ecff'); lamp1.color.set(fight ? '#ff5038' : '#e8f0ff');
+      lamp0.distance = 26; lamp1.distance = 16;
+      lamp0.intensity = room && room.ceil > 4 ? 40 : 20;
+      lamp1.intensity = fight ? 6 + 10 * Math.max(0, Math.sin(this.time * 6)) : 10;
+      return;
+    }
     if (this.indoorStation && this.interior && this.sys) {
       // the same two lamps light the hangar and the promenade
       this.indoorK = 1;
@@ -2052,7 +2260,7 @@ export class Game {
     const sys = this.sys!, W = window.innerWidth, H = window.innerHeight;
     const ship = this.pred.ship;
     // distances from the pilot on foot, from the hangar's camera while docked
-    const me = mode === MODE.FOOT || mode === MODE.DECK || mode === MODE.ROVER ? this.charPos : mode === MODE.DOCKED ? this.rig.pos : this.shipPos;
+    const me = mode === MODE.FOOT || mode === MODE.DECK || mode === MODE.ROVER || mode === MODE.BOARD ? this.charPos : mode === MODE.DOCKED ? this.rig.pos : this.shipPos;
     const invCam = this.r.camera.quaternion.clone().invert();
 
     if (mode === MODE.SHIP) {
@@ -2094,8 +2302,9 @@ export class Game {
     }
     const items = this.navItems.map((n) => ({ name: n.name, dist: this.fmtDist(Math.max(0, vdist(n.pos, me) - (n.kind === 'planet' || n.kind === 'goal' ? n.radius : 0))) }));
     this.hud.navList(items, this.navIndex);
+    this.updateCharge();
     const nav = this.navItems[this.navIndex];
-    if (nav && mode !== MODE.DOCKED && mode !== MODE.DECK) {
+    if (nav && mode !== MODE.DOCKED && mode !== MODE.DECK && mode !== MODE.BOARD) {
       const sp = this.project(nav.pos);
       let x = sp.x, y = sp.y;
       const off = sp.behind || x < 30 || y < 30 || x > W - 30 || y > H - 30;
@@ -2135,11 +2344,11 @@ export class Game {
       const ally = team !== undefined ? !foe : !!r.info.owner && this.allies.has(r.info.owner);
       if (ally && team === undefined) seenAllies.add(r.info.owner!);
       blips.push({ x: c.x, y: c.y, z: c.z, kind: r.info.npc || foe ? 'npc' : ally ? 'ally' : 'player', sel: id === this.targetId });
-      if (d < 4000 && (mode !== MODE.DOCKED || r.info.kind === KIND.CHAR)) {
+      if (d < 4000 && (mode !== MODE.DOCKED || r.info.kind === KIND.CHAR) && (mode !== MODE.BOARD || r.state?.frame === BOARD_FRAME)) {
         const sp = this.project(v3(r.p.x, r.p.y, r.p.z));
         const said = r.info.kind === KIND.CHAR ? this.bubbles.get(r.info.name) : undefined;
         const bubble = said && said.until > this.time && d < 60 ? said.text : undefined;
-        if (!sp.behind) labels.push({ id, x: sp.x, y: sp.y - (r.info.kind === KIND.CHAR ? 46 : 18), text: r.info.wanted ? `${r.info.name} · РАЗЫСКИВАЕТСЯ` : r.info.name, sub: this.fmtDist(d), npc: foe || (!ally && (!!r.info.npc || !!r.info.wanted)), hull: r.state?.hull ?? 1, bubble, ally });
+        if (!sp.behind) labels.push({ id, x: sp.x, y: sp.y - (r.info.kind === KIND.CHAR ? 46 : 18), text: r.info.wanted ? `${r.info.name} · РАЗЫСКИВАЕТСЯ` : r.state && r.state.flags & EFLAG.DISABLED && r.info.kind === KIND.SHIP ? `${r.info.name} · ВЫВЕДЕН ИЗ СТРОЯ` : r.state?.frame === BOARD_FRAME && r.state.flags & EFLAG.DEAD ? `${r.info.name} · обезврежен` : r.info.name, sub: this.fmtDist(d), npc: foe || (!ally && (!!r.info.npc || !!r.info.wanted)), hull: r.state?.hull ?? 1, bubble, ally });
       }
     }
     // group mates out of view: where the server last saw them
@@ -2176,7 +2385,22 @@ export class Game {
 
     this.hud.clock(this.localClock());
     const air = this.pred.char?.air ?? 1;
-    this.hud.suit(mode === MODE.FOOT ? self.suit : null, air);
+    this.hud.suit(mode === MODE.FOOT || mode === MODE.BOARD ? self.suit : null, air);
+    // aboard: a reticle where the blaster points (walls stop it)
+    if (mode === MODE.BOARD && this.pred.char) {
+      const c = this.pred.char, pc = this.ctrl.footPitch;
+      const dir = v3(c.f.x * Math.cos(pc), Math.sin(pc), c.f.z * Math.cos(pc));
+      let reach = 40;
+      for (const [x0, z0, x1, z1] of SHIP_WALLS) {
+        const ex = x1 - x0, ez = z1 - z0, dx = dir.x * reach, dz = dir.z * reach, den = dx * ez - dz * ex;
+        if (Math.abs(den) < 1e-9) continue;
+        const t = ((x0 - c.p.x) * ez - (z0 - c.p.z) * ex) / den, u = ((x0 - c.p.x) * dz - (z0 - c.p.z) * dx) / den;
+        if (t > 0 && t < 1 && u >= 0 && u <= 1) reach *= t;
+      }
+      const at = this.shipDeck.toWorld(v3(c.p.x + dir.x * reach, 1.45 + dir.y * reach, c.p.z + dir.z * reach), v3());
+      const sp = this.project(at);
+      this.hud.aimCross(sp.behind ? null : sp);
+    } else this.hud.aimCross(null);
     if (mode === MODE.FOOT && air < 0.25 && this.lastAir >= 0.25) this.hud.toast('Кончается воздух — всплывайте!', 'warn');
     this.lastAir = air;
 
@@ -2187,6 +2411,7 @@ export class Game {
       const anomaly = this.scan ? this.pois.find((p) => p.id === this.scan!.id) : null;
       if (ship.landed) prompt = '<kbd>G</kbd> выйти из корабля · <kbd>W</kbd> взлёт';
       else if (anomaly && this.scan) prompt = `Сканирование аномалии: ${Math.round(this.scan.k * 100)}% — оставайтесь внутри`;
+      else if (this.nearHulk()) prompt = vlen(this.shipW.v) > BOARD_SPEED ? `${this.nearHulk()!.name} выведен из строя — сбросьте скорость до ${BOARD_SPEED} м/с для абордажа` : `<kbd>F</kbd> абордаж: ${this.nearHulk()!.name}`;
       else if (wreck) prompt = vlen(this.shipW.v) > SALVAGE_MAX_SPEED ? `Обломки рядом — сбросьте скорость до ${SALVAGE_MAX_SPEED} м/с` : `<kbd>F</kbd> разобрать обломки (осталось: ${wreck.charges})`;
       else if (vdist(this.shipW.p, sys.station.pos) < DOCK_RANGE) prompt = '<kbd>F</kbd> стыковка со станцией';
       else if (sys.gates.some((g) => vdist(g.pos, this.shipW.p) < GATE_RANGE)) prompt = '<kbd>F</kbd> прыжок через врата';
@@ -2217,6 +2442,13 @@ export class Game {
       else if (dep && vlen(rv.v) > DRILL_SPEED) prompt = `${DEPOSIT_NAMES[dep.kind]} рядом — остановитесь, чтобы бурить`;
       else if (dep) prompt = `<kbd>F</kbd> бурить: ${DEPOSIT_NAMES[dep.kind]} (${yieldText(dep.yield, CARGO_NAMES)}) · ${bed}`;
       else prompt = `${kmh} км/ч · <kbd>Space</kbd> ручник · <kbd>Shift</kbd> ускорение · <kbd>G</kbd> выйти`;
+    } else if (mode === MODE.BOARD && this.pred.char) {
+      const spot = this.boardSpot(), a = this.aboard, room = shipRoomAt(this.pred.char.p.x, this.pred.char.p.z)?.name ?? '';
+      const fight = a.crew > 0 ? `Экипаж на борту: ${a.crew}` : 'Экипаж обезврежен';
+      if (spot === 'chest') prompt = a.crew > 0 ? 'Сейф заперт — сначала обезвредьте экипаж' : a.looted ? 'Сейф пуст' : '<kbd>F</kbd> забрать добычу из сейфа';
+      else if (spot === 'helm') prompt = a.crew > 0 ? 'Штурвал: сначала обезвредьте экипаж' : a.claimed ? 'Корабль ваш — призовая команда поведёт его на верфь' : '<kbd>F</kbd> захватить корабль';
+      else if (spot === 'hatch') prompt = `<kbd>G</kbd> вернуться в свой корабль · ${fight}`;
+      else prompt = `${room} · ${fight}${a.crew === 0 && !a.looted ? ' · сейф в трюме' : ''}${a.crew === 0 && !a.claimed ? ' · штурвал на мостике' : ''}`;
     } else if (mode === MODE.DECK && this.pred.char) {
       const c = this.pred.char.p;
       const t = nearTerminal(c);

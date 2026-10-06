@@ -8,7 +8,7 @@
 import type { CharInput, CharState } from '../sim/character.ts';
 
 export const DECK_Y = -12;
-export type TerminalKind = 'trade' | 'upgrades' | 'contracts' | 'wardrobe' | 'trophies';
+export type TerminalKind = 'trade' | 'upgrades' | 'contracts' | 'wardrobe' | 'trophies' | 'refinery';
 export interface Terminal { kind: TerminalKind; x: number; z: number; name: string }
 export interface Room { name: string; x0: number; z0: number; x1: number; z1: number; ceil: number }
 
@@ -35,7 +35,13 @@ export const TERMINALS: Terminal[] = [
   { kind: 'contracts', x: 19, z: -24, name: 'Контракты' },
   { kind: 'wardrobe', x: 19, z: -2, name: 'Гардероб' },
   { kind: 'trophies', x: -20.6, z: -42.2, name: 'Коллекция' },
+  { kind: 'refinery', x: 19, z: -33.5, name: 'Плавильня' },
 ];
+/**
+ * The smelter against the promenade's back wall right of the airlock (its control
+ * terminal stands in front of it, see TERMINALS); matches tools/blender/build_refinery.py.
+ */
+export const REFINERY = { x0: 9, x1: 25, z0: -40, z1: -36, furnace: { x: 13, z: -37.6 }, press: { x: 21.5, z: -38 } };
 export const TERMINAL_REACH = 2.6;
 export const BOARD_REACH = 13;
 
@@ -58,9 +64,19 @@ export const DECK_POSTS: { x: number; z: number; r: number }[] = [
   // cabin: the bed (two posts along it), the desk, the display table with medals
   { x: CABIN.bed.x, z: CABIN.bed.z - 1, r: 1 }, { x: CABIN.bed.x, z: CABIN.bed.z + 1, r: 1 },
   { x: CABIN.desk.x, z: CABIN.desk.z, r: 0.9 }, { x: CABIN.table.x, z: CABIN.table.z, r: 0.85 },
+  // the smelter: furnace, crucible stand and press along the back wall
+  ...[10.5, 13, 15.5, 18, 20.5, 23].map((x) => ({ x, z: -38.2, r: 1.9 })),
 ];
 
 const WALK = 4.4, RUN = 7.5, GRAVITY = 9.8, JUMP = 4.2, R = 0.35;
+
+/** A walkable interior: its rooms (ceilings), walls as segments and round fixtures. */
+export interface DeckLayout {
+  rooms: Room[];
+  walls: [number, number, number, number][];
+  posts: { x: number; z: number; r: number }[];
+}
+export const STATION_DECK: DeckLayout = { rooms: ROOMS, walls: DECK_WALLS, posts: DECK_POSTS };
 
 /** The room a deck point is in (null outside the deck). */
 export function roomAt(x: number, z: number): Room | null {
@@ -74,7 +90,7 @@ export const nearTerminal = (p: { x: number; z: number }) => TERMINALS.find((t) 
  * fixtures to bump into. Uses the same input and state as walking on a planet
  * (the heading turns about +y).
  */
-export function stepDeck(c: CharState, inp: CharInput, dt: number): void {
+export function stepDeck(c: CharState, inp: CharInput, dt: number, deck: DeckLayout = STATION_DECK): void {
   c.air = Math.min(1, c.air + 0.3 * dt);
   c.swim = 0; c.scramble = 0; c.climbMode = 0;
   const th = -inp.yawDelta, cs = Math.cos(th), sn = Math.sin(th);
@@ -96,13 +112,13 @@ export function stepDeck(c: CharState, inp: CharInput, dt: number): void {
   } else c.v.y -= GRAVITY * dt;
   c.p.x += c.v.x * dt; c.p.y += c.v.y * dt; c.p.z += c.v.z * dt;
   // fixtures and walls push the pilot back out
-  for (const o of DECK_POSTS) push(c, o.x, o.z, o.r + R);
-  for (const [x0, z0, x1, z1] of DECK_WALLS) {
+  for (const o of deck.posts) push(c, o.x, o.z, o.r + R);
+  for (const [x0, z0, x1, z1] of deck.walls) {
     const ex = x1 - x0, ez = z1 - z0, l2 = ex * ex + ez * ez;
     const t = Math.max(0, Math.min(1, ((c.p.x - x0) * ex + (c.p.z - z0) * ez) / l2));
     push(c, x0 + ex * t, z0 + ez * t, R + 0.15);
   }
-  const room = roomAt(c.p.x, c.p.z);
+  const room = deck.rooms.find((r) => c.p.x >= r.x0 && c.p.x <= r.x1 && c.p.z >= r.z0 && c.p.z <= r.z1);
   if (room && c.p.y > room.ceil - 2) { c.p.y = room.ceil - 2; if (c.v.y > 0) c.v.y = 0; }
   if (c.p.y <= 0) { c.p.y = 0; c.v.y = 0; c.ground = 1; } else c.ground = 0;
 }

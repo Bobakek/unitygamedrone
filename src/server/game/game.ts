@@ -19,7 +19,14 @@ import { SystemInstance, type GameContext } from './system.ts';
 import { Groups } from './groups.ts';
 import { ArenaDesk, ArenaInstance } from './arena.ts';
 import { marketQuote, type MarketQuote } from '../../shared/market.ts';
-import type { V3 } from '../../shared/math/vec.ts';
+import { CARGO_KEYS, type CargoKey } from '../../shared/economy.ts';
+import { eventInfo, eventPriceMods, galaxyEventsAt, GALAXY_EVENT_KINDS, type GalaxyEvent, type GalaxyEventKind } from '../../shared/galaxy-events.ts';
+import { AMBUSH_CHANCE, ARRIVAL_RANGE, JUMP_CHARGE, jumpCost, type JumpTarget } from '../../shared/jump.ts';
+import { getGalaxy } from '../../shared/galaxy/galaxy.ts';
+import { SAFE_ZONE_RADIUS } from '../../shared/constants.ts';
+import { NpcBrain } from './npc.ts';
+import { Rng } from '../../shared/math/rng.ts';
+import type { V3, Quat } from '../../shared/math/vec.ts';
 
 export interface GameOptions {
   store: PilotStorage;
@@ -57,6 +64,10 @@ export class Game implements GameContext {
   readonly now: () => number;
   readonly groups = new Groups(this);
   readonly arena = new ArenaDesk(this);
+  /** Events started by the dev command, on top of the scheduled ones. */
+  private forced: GalaxyEvent[] = [];
+  private eventsKey = '';
+  private eventsCache: { at: number; list: GalaxyEvent[] } = { at: -1, list: [] };
 
   constructor(opts: GameOptions) {
     this.store = opts.store;
@@ -97,10 +108,39 @@ export class Game implements GameContext {
     return !!p && p.kind === 'convoy' && !!p.ship;
   }
 
+  /** Galaxy events going on now (scheduled from the wall clock, plus dev ones). */
+  galaxyEvents(): GalaxyEvent[] {
+    const now = this.now();
+    // the schedule is pure but not free: work it out at most twice a second
+    const at = Math.floor(now / 500);
+    if (this.eventsCache.at !== at) {
+      this.forced = this.forced.filter((e) => e.end > now);
+      const list = galaxyEventsAt(now).filter((e) => !this.forced.some((f) => f.system === e.system));
+      this.eventsCache = { at, list: [...list, ...this.forced] };
+    }
+    return this.eventsCache.list;
+  }
+
+  private galaxyMsg(fresh?: number[]) {
+    const now = this.now();
+    return { t: 'galaxy' as const, list: this.galaxyEvents().map((e) => eventInfo(e, now)), fresh };
+  }
+
+  /** Tells every pilot when events begin or end. */
+  private stepGalaxy() {
+    const list = this.galaxyEvents();
+    const key = list.map((e) => e.id).join(',');
+    if (key === this.eventsKey) return;
+    const old = new Set(this.eventsKey.split(',').filter(Boolean).map(Number));
+    this.eventsKey = key;
+    const data = encodeJson(MSG.EVENTS, { ev: [this.galaxyMsg(list.filter((e) => !old.has(e.id)).map((e) => e.id))] });
+    for (const s of this.sessions.values()) s.send(data);
+  }
+
   quotes(systems: number[]): MarketQuote[] {
     // a system without a running instance has seen no trade: its plain prices
     return systems.filter((i) => i >= 0 && i < SYSTEM_COUNT)
-      .map((i) => this.systems.find((x) => x.def.id === i)?.market.quote() ?? marketQuote(i, boardEpoch(this.now())));
+      .map((i) => this.systems.find((x) => x.def.id === i)?.market.quote() ?? marketQuote(i, boardEpoch(this.now()), {}, eventPriceMods(i, this.galaxyEvents())));
   }
 
   crew(s: Session, at: V3, range: number): Session[] {
@@ -191,6 +231,7 @@ export class Game implements GameContext {
     s.sendJson(MSG.WELCOME, w);
     s.sendJson(MSG.INFO, { list: s.system.allInfos() });
     s.sendJson(MSG.WORLD, { pois: s.system.world.list() });
+    s.sendJson(MSG.EVENTS, { ev: [this.galaxyMsg()] });
     const ov = s.system.weather.activeOverrides();
     if (ov.length) s.sendJson(MSG.EVENTS, { ev: ov.map((o) => ({ t: 'weather', ...o })) });
   }
@@ -227,6 +268,8 @@ export class Game implements GameContext {
           if (err) s.msg(err, 'warn');
           break;
         }
+        if (act.a === 'jumpDrive') { const err = this.chargeDrive(s, Number(act.system), Number(act.target)); if (err) s.msg(err, 'warn'); break; }
+        if (act.a === 'jumpCancel') { if (s.charge) this.stopCharge(s, 'Прыжок отменён'); break; }
         const err = act.a.startsWith('group') ? this.groupAction(s, act) : s.system.handleAction(s, act);
         if (err) s.msg(err, 'warn');
         break;
@@ -276,7 +319,7 @@ export class Game implements GameContext {
       case 'arena': say(this.arena.inArena(s) || this.arena.queued(s) ? this.arena.leave(s) : this.arena.join(s)); return;
       case 'g': case 'p': { const t = args.join(' ').trim(); if (t) this.groups.say(s, t); return; }
       case 'help':
-        s.msg('Команды: /who, /help, /arena — арена 3×3 (запись на станции, повторно — выйти), группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|rock|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|cabin|shelf|window|ramp>, /trophies, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /cargo <вид> <n>, /ship <fighter|hauler|miner>' : ''));
+        s.msg('Команды: /who, /help, /arena — арена 3×3 (запись на станции, повторно — выйти), группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|rock|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /gevent <raid|storm|shortage|end> [товар] [мин], /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|refinery|smelter|cabin|shelf|window|ramp>, /trophies, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /raid, /cargo <вид> <n>, /ship <fighter|hauler|miner>, /disable [freighter], /aboard <pirate|freighter|clear|hatch|chest|helm|комната>' : ''));
         return;
       case 'who':
         s.msg(`Онлайн (${this.sessions.size}): ${[...this.sessions.values()].map((o) => o.pilot.name).join(', ')}`);
@@ -295,6 +338,13 @@ export class Game implements GameContext {
         break;
       }
       case 'system': this.transfer(s, Number(args[0]) || 0); break;
+      case 'disable': s.msg(sys.boarding.devSpawn(s, args[0] === 'freighter')); break;
+      case 'aboard': {
+        // dev: /aboard [pirate|freighter] boards at once, /aboard clear knocks out the crew, /aboard <spot> walks there
+        const a = args[0] ?? 'pirate';
+        s.msg(a === 'pirate' || a === 'freighter' ? sys.boarding.devBoard(s, a === 'freighter') : a === 'clear' ? sys.boarding.devClear(s) : sys.boarding.devGo(s, a));
+        break;
+      }
       case 'wear': {
         // dev: grant and wear a suit part anywhere
         const it = item(args[0] ?? '');
@@ -336,9 +386,15 @@ export class Game implements GameContext {
         const kind = args[0] as ContractKind;
         const def = sys.contracts.board().offers.find((o) => o.kind === kind && !s.pilot.career.active.some((a) => a.id === o.id));
         if (!CONTRACT_KINDS.includes(kind) || !def) { s.msg(`Нет такого предложения. Виды: ${CONTRACT_KINDS.join(', ')}`, 'warn'); break; }
-        s.pilot.career.active.push({ ...structuredClone(def), have: 0 });
+        s.pilot.career.active.push({ ...structuredClone(def), have: 0, due: def.time ? this.now() + def.time : undefined });
         s.sendPilot();
         s.msg(`Контракт выдан: ${def.title}`);
+        break;
+      }
+      case 'raid': {
+        // dev: pirates come for the freight in the hold right now
+        if (s.mode !== MODE.SHIP) { s.msg('Нужно быть в корабле', 'warn'); break; }
+        sys.contracts.raid(s);
         break;
       }
       case 'finish': {
@@ -358,7 +414,7 @@ export class Game implements GameContext {
       }
       case 'cargo': {
         const k = args[0] as keyof typeof s.pilot.cargo;
-        if (!(k in s.pilot.cargo)) { s.msg('/cargo ore|crystal|relic|bio <n>', 'warn'); break; }
+        if (!(k in s.pilot.cargo)) { s.msg(`/cargo ${Object.keys(s.pilot.cargo).join('|')} <n>`, 'warn'); break; }
         s.pilot.cargo[k] += Number(args[1]) || 1;
         s.sendPilot();
         break;
@@ -380,7 +436,7 @@ export class Game implements GameContext {
         // a terminal, the promenade's window on the planet, or the ramp
         const t = TERMINALS.find((x) => x.kind === args[0]);
         // named spots: x, z and which way to face
-        const spots: Record<string, [number, number, number, number]> = { window: [4, 4, 0, 1], cabin: [-15, -42, 0, -1], shelf: [-18.8, -51, -1, 0] };
+        const spots: Record<string, [number, number, number, number]> = { window: [4, 4, 0, 1], cabin: [-15, -42, 0, -1], shelf: [-18.8, -51, -1, 0], smelter: [16.5, -30, 0, -1] };
         const spot = spots[args[0]];
         const to = t ? { x: t.x + (t.x < 0 ? 1.8 : -1.8), z: t.z } : spot ? { x: spot[0], z: spot[1] } : RAMP;
         ch.state.p = v3(to.x, 0, to.z);
@@ -430,8 +486,25 @@ export class Game implements GameContext {
         s.msg(sys.world.devSpawn(kind, s.ship));
         break;
       }
+      case 'gevent': s.msg(this.devGalaxyEvent(sys.def.id, args)); break;
       default: s.msg('Неизвестная команда', 'warn');
     }
+  }
+
+  /** Dev: starts a galaxy event in a system right now (or ends the dev ones there). */
+  devGalaxyEvent(system: number, args: string[]): string {
+    const kind = args[0] as GalaxyEventKind | 'end';
+    const now = this.now();
+    this.eventsCache.at = -1;
+    if (kind === 'end') { this.forced = this.forced.filter((e) => e.system !== system); return 'События сняты'; }
+    if (!GALAXY_EVENT_KINDS.includes(kind)) return `/gevent ${GALAXY_EVENT_KINDS.join('|')}|end [${CARGO_KEYS.join('|')}] [минут]`;
+    const good = CARGO_KEYS.includes(args[1] as CargoKey) ? args[1] as CargoKey : undefined;
+    const minutes = Number(args[good ? 2 : 1]) || 10;
+    this.forced = this.forced.filter((e) => e.system !== system);
+    const e: GalaxyEvent = { id: -this.nextId(), kind, system, start: now, end: now + minutes * 60000 };
+    if (kind === 'shortage') e.good = good ?? 'crystal';
+    this.forced.push(e);
+    return `Событие запущено на ${minutes} мин`;
   }
 
   private jump(s: Session) {
@@ -441,17 +514,99 @@ export class Game implements GameContext {
     this.transfer(s, gate.target);
   }
 
-  transfer(s: Session, target: number) {
+  /** Why the pilot's ship cannot start the jump drive right now (null: it can). */
+  private driveBlocked(s: Session): string | null {
+    const ship = s.ship, d = s.system.def;
+    if (this.arena.inArena(s)) return 'На арене прыжок недоступен';
+    if (s.mode !== MODE.SHIP || ship.docked) return 'Прыжок возможен только в полёте';
+    if (ship.dead) return 'Корабль уничтожен';
+    const p = ship.world.p;
+    if (vdist(p, d.station.pos) < SAFE_ZONE_RADIUS) return 'Отлетите из зоны станции';
+    for (const pl of d.planets) if (vdist(p, pl.center) < pl.radius * 2.5) return `Слишком близко к планете ${pl.name}`;
+    if (vdist(p, d.star.pos) < d.star.radius * 3) return 'Слишком близко к звезде';
+    return null;
+  }
+
+  /** Starts charging the jump drive for a jump to `system`, coming out at its station (-1) or planet `target`. */
+  chargeDrive(s: Session, system: number, target: JumpTarget): string | null {
+    if (!Number.isInteger(system) || system < 0 || system >= SYSTEM_COUNT) return null;
+    if (system === s.system.def.id) return 'Вы уже в этой системе';
+    const cost = jumpCost(s.system.def.id, system);
+    if (cost < 0) return 'Слишком далеко для прыжкового двигателя';
+    if (s.pilot.fuel < cost) return `Не хватает топлива: нужно ${cost}, есть ${s.pilot.fuel}`;
+    const planets = this.system(system).def.planets.length;
+    if (!Number.isInteger(target) || target < -1 || target >= planets) target = -1;
+    const blocked = this.driveBlocked(s);
+    if (blocked) return blocked;
+    s.charge = { system, target, at: this.time, until: this.time + JUMP_CHARGE };
+    s.sendJson(MSG.EVENTS, { ev: [{ t: 'charge', left: JUMP_CHARGE, system }] });
+    s.msg(`Прыжковый двигатель заряжается: ${getGalaxy().stars[system].name}, ${cost} топл.`);
+    return null;
+  }
+
+  private stopCharge(s: Session, why: string) {
+    const system = s.charge?.system ?? 0;
+    s.charge = null;
+    s.sendJson(MSG.EVENTS, { ev: [{ t: 'charge', left: 0, system }] });
+    s.msg(why, 'warn');
+  }
+
+  private stepCharge(s: Session) {
+    const c = s.charge!;
+    if (s.ship.lastHit > c.at) { this.stopCharge(s, 'Попадание сбило зарядку прыжкового двигателя'); return; }
+    const blocked = this.driveBlocked(s);
+    if (blocked) { this.stopCharge(s, `Прыжок прерван: ${blocked.toLowerCase()}`); return; }
+    if (this.time < c.until) return;
+    const cost = jumpCost(s.system.def.id, c.system);
+    if (cost < 0 || s.pilot.fuel < cost) { this.stopCharge(s, 'Не хватает топлива'); return; }
+    s.charge = null;
+    s.pilot.fuel -= cost;
+    s.sendJson(MSG.EVENTS, { ev: [{ t: 'charge', left: 0, system: c.system }] });
+    const to = this.system(c.system);
+    const at = this.arrival(to, c.target);
+    this.transfer(s, c.system, at);
+    // the far rim: a pirate patrol may pick up the jump flash
+    if (to.def.security === 'frontier' && Math.random() < AMBUSH_CHANCE) {
+      const rng = new Rng((Math.random() * 2 ** 31) | 0);
+      for (let i = 0; i < 2; i++) {
+        const pos = v3(at.p.x + rng.range(-900, 900), at.p.y + rng.range(-300, 300), at.p.z + rng.range(-900, 900));
+        const pirate = to.spawnPirate(pos);
+        pirate.transient = true;
+        pirate.npc = new NpcBrain(pos, 2500, rng);
+      }
+      s.msg('Выход из прыжка засекли пираты!', 'warn');
+    }
+  }
+
+  /** A point a few kilometres from the station or a planet of `sys`, facing it. */
+  private arrival(sys: SystemInstance, target: JumpTarget): { p: V3; q: Quat } {
+    const d = sys.def, pl = target >= 0 ? d.planets[target] : undefined;
+    const center = pl ? pl.center : d.station.pos;
+    const base = pl ? pl.radius * 1.6 : 0;
+    for (let tries = 0; ; tries++) {
+      const dir = vnorm(v3(), v3(Math.random() * 2 - 1, (Math.random() * 2 - 1) * 0.3, Math.random() * 2 - 1));
+      const r = base + ARRIVAL_RANGE[0] + Math.random() * (ARRIVAL_RANGE[1] - ARRIVAL_RANGE[0]);
+      const p = v3(center.x + dir.x * r, center.y + dir.y * r, center.z + dir.z * r);
+      const clear = d.planets.every((o) => o === pl || vdist(p, o.center) > o.radius * 2) && vdist(p, d.star.pos) > d.star.radius * 3;
+      if (clear || tries > 30) return { p, q: qlook(quat(), vscale(v3(), dir, -1), v3(0, 1, 0)) };
+    }
+  }
+
+  transfer(s: Session, target: number, at?: { p: V3; q: Quat }) {
     if (this.arena.inArena(s)) return;
     if (target < 0 || target >= SYSTEM_COUNT || target === s.system.def.id) return;
     const from = s.system.def.id;
+    s.charge = null;
     s.system.removeSession(s);
     const to = this.system(target);
-    const gate = to.def.gates.find((g) => g.target === from) ?? to.def.gates[0];
-    const away = vnorm(v3(), vsub(v3(), to.def.station.pos, gate.pos));
-    const p = v3(gate.pos.x + away.x * 600, gate.pos.y + away.y * 600, gate.pos.z + away.z * 600);
+    if (!at) {
+      const gate = to.def.gates.find((g) => g.target === from) ?? to.def.gates[0];
+      const away = vnorm(v3(), vsub(v3(), to.def.station.pos, gate.pos));
+      at = { p: v3(gate.pos.x + away.x * 600, gate.pos.y + away.y * 600, gate.pos.z + away.z * 600), q: qlook(quat(), away, v3(0, 1, 0)) };
+    }
     s.ship.state.v = v3();
-    to.addSession(s, { p, q: qlook(quat(), away, v3(0, 1, 0)) });
+    to.addSession(s, at);
+    to.contracts.onArrive(s);
     s.resync();
     this.sendWelcome(s);
     this.store.save(s.pilot);
@@ -469,8 +624,9 @@ export class Game implements GameContext {
     for (const a of [...this.arena.arenas.values()]) a.step();
     for (const sys of this.instances.values()) this.flush(sys);
     for (const a of this.arena.arenas.values()) this.flush(a);
-    if (this.tick % TICK_RATE === 0) this.groups.step();
+    if (this.tick % TICK_RATE === 0) { this.groups.step(); this.stepGalaxy(); }
     for (const s of this.sessions.values()) {
+      if (s.charge) this.stepCharge(s);
       if (this.time - s.lastSave > 30) { s.lastSave = this.time; this.store.save(s.pilot); }
     }
   }

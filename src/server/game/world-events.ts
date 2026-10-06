@@ -1,5 +1,6 @@
 import { SAFE_ZONE_RADIUS } from '../../shared/constants.ts';
-import { cargoCount, combatStats, FREIGHTER_COMBAT, FREIGHTER_FLIGHT, type Cargo } from '../../shared/economy.ts';
+import { holdRoom } from '../../shared/contracts.ts';
+import { FREIGHTER_COMBAT, FREIGHTER_FLIGHT, type Cargo } from '../../shared/economy.ts';
 import {
   ANOMALY_SCAN_TIME, describeLoot, EVENT_REWARD, SALVAGE_MAX_SPEED, SALVAGE_RANGE, type LootContents, type Poi, type PoiKind,
 } from '../../shared/events.ts';
@@ -187,17 +188,36 @@ export class WorldEvents {
     }
   }
 
-  onKill(target: ShipEntity, killer?: ShipEntity) {
+  /** A convoy ship was destroyed, or (`captured`) boarded and taken: no cargo spills then, it went with the ship. */
+  onKill(target: ShipEntity, killer?: ShipEntity, captured = false) {
     for (const poi of this.pois.values()) {
       if (poi.kind !== 'convoy' || poi.ship !== target.id) continue;
       if (killer?.session) this.sys.contracts.onFreighterKill(killer.session, poi.id);
       poi.ship = 0;
-      poi.name = 'Обломки конвоя';
-      poi.until = this.sys.time + 240;
+      poi.name = captured ? 'Конвой разбит' : 'Обломки конвоя';
+      poi.until = this.sys.time + (captured ? 60 : 240);
       this.dirty = true;
+      if (captured) { this.announce('Грузовик захвачен', `${killer?.name ?? 'Пилот'} взял ${target.name} на абордаж`, 'good'); continue; }
       this.spill(target);
       this.announce('Грузовик уничтожен', 'Контейнеры с грузом дрейфуют на месте боя — соберите их', 'good');
     }
+  }
+
+  /** Dev: a lone convoy freighter (no escort, no event) at `p`. */
+  devFreighter(p: V3): ShipEntity {
+    const rng = this.rng;
+    const brain = new NpcBrain(p, 500, new Rng(rng.int(0, 1e9)));
+    brain.role = 'hauler';
+    brain.arrived = true;
+    const f: ShipEntity = {
+      id: this.sys.nextId(), name: `Грузовик «${makeName(rng)}»`, bp: freighterBlueprint(rng.int(0, 1e9)),
+      state: newShip(p, quat()), world: newPose(), flight: FREIGHTER_FLIGHT, combat: FREIGHTER_COMBAT,
+      hull: FREIGHTER_COMBAT.maxHull, shield: FREIGHTER_COMBAT.maxShield, energy: 100, lastHit: -99, fireCooldown: 0, gun: 0,
+      throttle: 0, boosting: false, dead: false, respawnAt: 0, docked: false, god: false, session: null,
+      npc: brain, lastInput: emptyInput(), transient: true, bounty: EVENT_REWARD.freighterBounty,
+    };
+    this.sys.addNpc(f);
+    return f;
   }
 
   private spill(f: ShipEntity) {
@@ -227,8 +247,7 @@ export class WorldEvents {
   // ------------------------------------------------------------------ rewards
   /** Gives as much of `c` as fits; returns what was actually taken (null if nothing). */
   private grant(s: Session, c: LootContents): LootContents | null {
-    const cap = combatStats(s.pilot.upgrades, s.pilot.ship).cargoCap;
-    let free = cap - cargoCount(s.pilot.cargo);
+    let free = holdRoom(s.pilot);
     const got: LootContents = { credits: c.credits, cargo: {} };
     for (const k of ['relic', 'crystal', 'ore'] as const) {
       const n = Math.min(free, c.cargo[k] ?? 0);
@@ -332,6 +351,14 @@ export class WorldEvents {
     }
   }
 
+  /** A meteor fragment drifting in a storm (see galaxy-effects.ts). */
+  dropFragment(p: V3, contents: LootContents) {
+    const r = this.rng;
+    const l: Loot = { id: this.sys.nextId(), p, v: v3(r.range(-3, 3), r.range(-3, 3), r.range(-3, 3)), contents, until: this.sys.time + 150 };
+    this.loot.set(l.id, l);
+    this.sys.infos.push({ id: l.id, kind: KIND.LOOT, name: 'Осколок метеорита' });
+  }
+
   private dropLoot(l: Loot) {
     this.loot.delete(l.id);
     this.sys.gone.push(l.id);
@@ -344,7 +371,7 @@ export class WorldEvents {
       // Survivors jump out with the convoy (unless they are busy fighting).
       for (const id of [poi.ship ?? 0, ...poi.escorts]) {
         const e = this.sys.ships.get(id);
-        if (!e || e.dead) continue;
+        if (!e || e.dead || e.disabled) continue;
         if (id !== poi.ship && e.npc?.state === 'attack') continue;
         this.sys.despawn(e);
       }

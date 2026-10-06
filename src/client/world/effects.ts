@@ -11,6 +11,7 @@ const MAX_SHARDS = 400;
 const LIGHTS = 4;
 interface Blast { x: number; y: number; z: number; t: number; k: number }
 interface Glow { light: THREE.PointLight; x: number; y: number; z: number; life: number; max: number; power: number }
+interface Meteor { x: number; y: number; z: number; vx: number; vy: number; vz: number; life: number }
 
 const MAX_BOLTS = 800;
 const MAX_PARTICLES = 5000;
@@ -39,6 +40,7 @@ export class Effects {
   private pMat: THREE.ShaderMaterial;
   private flashes: Flash[] = [];
   private shards: Shard[] = [];
+  private meteors: Meteor[] = [];
   private shardMesh: THREE.InstancedMesh;
   private e = new THREE.Euler();
   private m = new THREE.Matrix4();
@@ -267,6 +269,11 @@ export class Effects {
     }
   }
 
+  /** A burning meteor streaking past (meteor storms): a hot head leaving a fading trail. */
+  meteor(p: V3, v: V3, life = 4) {
+    if (this.meteors.length < 40) this.meteors.push({ x: p.x, y: p.y, z: p.z, vx: v.x, vy: v.y, vz: v.z, life });
+  }
+
   smoke(p: V3) {
     this.particle({ x: p.x, y: p.y, z: p.z, vx: (Math.random() - 0.5) * 3, vy: (Math.random() - 0.5) * 3, vz: (Math.random() - 0.5) * 3, life: 1.2, max: 1.2, size: 2.2, r: 0.5, g: 0.45, b: 0.42, drag: 0.8 });
   }
@@ -291,6 +298,18 @@ export class Effects {
       const t = g.life / g.max;
       g.light.intensity = g.power * t * t;
       g.light.position.set(g.x - origin.x, g.y - origin.y, g.z - origin.z);
+    }
+    for (let i = this.meteors.length - 1; i >= 0; i--) {
+      const m = this.meteors[i];
+      m.life -= dt;
+      if (m.life <= 0) { this.meteors.splice(i, 1); continue; }
+      const steps = 3;
+      for (let k = 0; k < steps; k++) {
+        const f = k / steps;
+        this.particle({ x: m.x + m.vx * dt * f, y: m.y + m.vy * dt * f, z: m.z + m.vz * dt * f, vx: 0, vy: 0, vz: 0, life: 1.1, max: 1.1, size: 22, r: 2, g: 0.9 + Math.random() * 0.4, b: 0.3, drag: 0 });
+      }
+      this.particle({ x: m.x, y: m.y, z: m.z, vx: 0, vy: 0, vz: 0, life: 0.06, max: 0.06, size: 45, r: 2.4, g: 2, b: 1.4, drag: 0 });
+      m.x += m.vx * dt; m.y += m.vy * dt; m.z += m.vz * dt;
     }
     // bolts
     let n = 0;
