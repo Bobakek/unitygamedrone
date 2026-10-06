@@ -30,6 +30,7 @@
 | ![Все скафандры, шлемы и светофильтры](docs/screenshots/outfits.png) | ![Гардероб на станции](docs/screenshots/wardrobe.png) |
 | ![Доска контрактов на станции](docs/screenshots/contracts.png) | ![Звание и репутация у фракций](docs/screenshots/reputation.png) |
 | ![Активные контракты в HUD и навигации](docs/screenshots/contracts-hud.png) | ![Снаряжение фракций: флот, Гильдия, Синдикат](docs/screenshots/faction-suits.png) |
+| ![Рынок станции: цены здесь и за вратами](docs/screenshots/market.png) | ![Группа пилотов: панель, союзник зелёным, чат группы](docs/screenshots/group.png) |
 | ![Гроза с молнией на земной планете](docs/screenshots/weather-storm.png) | ![Метель на ледяной планете](docs/screenshots/weather-blizzard.png) |
 | ![Песчаная буря в пустыне](docs/screenshots/weather-sandstorm.png) | ![Кислотный дождь на инопланетном мире](docs/screenshots/weather-acid.png) |
 | ![Разбившийся корабль на ледяной планете](docs/screenshots/wreck-outside.png) | ![Тёмный трюм с фонарями и дроном-охранником](docs/screenshots/wreck-hold.png) |
