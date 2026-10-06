@@ -95,11 +95,12 @@ export class SystemInstance implements NpcWorld {
   readonly mining: AsteroidMining;
   readonly weather: WeatherDesk;
 
-  constructor(private ctx: GameContext, id: number) {
+  /** `quiet`: no pirates of its own (arena matches reuse a system's space without its life). */
+  constructor(protected ctx: GameContext, id: number, quiet = false) {
     this.def = getSystem(id);
-    this.env = { star: this.def.star, planets: this.def.planets, fields: this.def.fields, station: this.def.station, time: 0 };
+    this.env = { star: this.def.star, planets: this.def.planets, fields: [...this.def.fields], station: this.def.station, time: 0 };
     this.rng = new Rng(hashInts(this.def.seed, 0xabc));
-    for (let i = 0; i < this.def.pirates; i++) this.spawnPirate();
+    if (!quiet) for (let i = 0; i < this.def.pirates; i++) this.spawnPirate();
     this.world = new WorldEvents(this);
     this.outposts = new Outposts(this);
     this.fauna = new Fauna(this);
@@ -468,7 +469,7 @@ export class SystemInstance implements NpcWorld {
     }
   }
 
-  private processInputs(s: Session) {
+  protected processInputs(s: Session) {
     // One input per tick on average; a small budget lets a lagging client catch up
     // without allowing a speed hack by flooding inputs.
     s.budget = Math.min(6, s.budget + 1);
@@ -611,7 +612,12 @@ export class SystemInstance implements NpcWorld {
     }
   }
 
-  private stepLasers() {
+  /** Cover that stops a laser on the segment p0→p1: the hit parameter in 0..1, or −1 (see arena.ts). */
+  protected coverHit(_p0: V3, _p1: V3): number {
+    return -1;
+  }
+
+  protected stepLasers() {
     const dt = DT;
     const reach = LASER.speed * dt + 60;
     for (let i = this.lasers.length - 1; i >= 0; i--) {
@@ -623,6 +629,13 @@ export class SystemInstance implements NpcWorld {
         if (vdistSq(sh.world.p, L.p) > reach * reach) continue;
         const tt = segmentSphere(L.p, p1, sh.world.p, sh.flight.radius + 1.5);
         if (tt >= 0 && tt < bestT) { bestT = tt; hit = sh; }
+      }
+      const cover = this.coverHit(L.p, p1);
+      if (cover >= 0 && cover < bestT) {
+        const hp = v3(L.p.x + (p1.x - L.p.x) * cover, L.p.y + (p1.y - L.p.y) * cover, L.p.z + (p1.z - L.p.z) * cover);
+        this.events.push({ t: 'mine', pos: [hp.x, hp.y, hp.z], by: L.owner });
+        this.lasers.splice(i, 1);
+        continue;
       }
       // mining lasers stop at asteroids (and drill them) unless a ship is hit first
       const rock = L.mine > 0 ? this.mining.hitTest(L.p, p1) : null;
@@ -645,7 +658,7 @@ export class SystemInstance implements NpcWorld {
     }
   }
 
-  private stepMissiles() {
+  protected stepMissiles() {
     const dt = DT;
     for (const m of this.missiles.values()) {
       const tg = this.ships.get(m.target);

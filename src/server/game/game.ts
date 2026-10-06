@@ -17,6 +17,7 @@ import { boardEpoch, CONTRACT_KINDS, FACTIONS, newCareer, rankOf, RANKS, type Co
 import { Session, type Transport } from './session.ts';
 import { SystemInstance, type GameContext } from './system.ts';
 import { Groups } from './groups.ts';
+import { ArenaDesk, ArenaInstance } from './arena.ts';
 import { marketQuote, type MarketQuote } from '../../shared/market.ts';
 import type { V3 } from '../../shared/math/vec.ts';
 
@@ -55,6 +56,7 @@ export class Game implements GameContext {
   private log: (m: string) => void;
   readonly now: () => number;
   readonly groups = new Groups(this);
+  readonly arena = new ArenaDesk(this);
 
   constructor(opts: GameOptions) {
     this.store = opts.store;
@@ -180,10 +182,11 @@ export class Game implements GameContext {
     return s;
   }
 
-  private sendWelcome(s: Session) {
+  sendWelcome(s: Session) {
     const w: Welcome = {
       playerId: s.id, shipId: s.ship.id, token: s.pilot.token, pilot: s.pilotInfo(), system: s.system.def.id,
       dev: this.dev, tick: this.tick, time: this.time, harvested: s.system.harvestedList(), motd: MOTD,
+      arena: s.system instanceof ArenaInstance || undefined,
     };
     s.sendJson(MSG.WELCOME, w);
     s.sendJson(MSG.INFO, { list: s.system.allInfos() });
@@ -195,6 +198,7 @@ export class Game implements GameContext {
   private disconnect(s: Session) {
     if (s.closed) return;
     s.closed = true;
+    this.arena.drop(s);
     s.system.removeSession(s);
     this.sessions.delete(s.id);
     this.groups.drop(s);
@@ -218,6 +222,11 @@ export class Game implements GameContext {
       case MSG.ACTION: {
         const act = decodeJson<Action>(data);
         if (act.a === 'jump') { this.jump(s); break; }
+        if (act.a === 'arena' || act.a === 'arenaLeave') {
+          const err = act.a === 'arena' ? this.arena.join(s) : this.arena.leave(s);
+          if (err) s.msg(err, 'warn');
+          break;
+        }
         const err = act.a.startsWith('group') ? this.groupAction(s, act) : s.system.handleAction(s, act);
         if (err) s.msg(err, 'warn');
         break;
@@ -264,9 +273,10 @@ export class Game implements GameContext {
       case 'leave': say(this.groups.leave(s)); return;
       case 'kick': say(this.groups.kick(s, args.join(' '))); return;
       case 'group': s.msg(this.groups.list(s)); return;
+      case 'arena': say(this.arena.inArena(s) || this.arena.queued(s) ? this.arena.leave(s) : this.arena.join(s)); return;
       case 'g': case 'p': { const t = args.join(' ').trim(); if (t) this.groups.say(s, t); return; }
       case 'help':
-        s.msg('Команды: /who, /help, группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|rock|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|cabin|shelf|window|ramp>, /trophies, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /cargo <вид> <n>, /ship <fighter|hauler|miner>' : ''));
+        s.msg('Команды: /who, /help, /arena — арена 3×3 (запись на станции, повторно — выйти), группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|rock|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|cabin|shelf|window|ramp>, /trophies, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /cargo <вид> <n>, /ship <fighter|hauler|miner>' : ''));
         return;
       case 'who':
         s.msg(`Онлайн (${this.sessions.size}): ${[...this.sessions.values()].map((o) => o.pilot.name).join(', ')}`);
@@ -425,13 +435,14 @@ export class Game implements GameContext {
   }
 
   private jump(s: Session) {
-    if (s.mode !== MODE.SHIP) return;
+    if (s.mode !== MODE.SHIP || this.arena.inArena(s)) return;
     const gate = s.system.gateInRange(s.ship.world.p);
     if (!gate) { s.msg('Подлетите ближе к вратам', 'warn'); return; }
     this.transfer(s, gate.target);
   }
 
   transfer(s: Session, target: number) {
+    if (this.arena.inArena(s)) return;
     if (target < 0 || target >= SYSTEM_COUNT || target === s.system.def.id) return;
     const from = s.system.def.id;
     s.system.removeSession(s);
@@ -454,7 +465,10 @@ export class Game implements GameContext {
       if (sys.sessions.size) this.busyAt.set(sys.def.id, this.time);
       if (!this.asleep(sys)) sys.step();
     }
+    this.arena.step();
+    for (const a of [...this.arena.arenas.values()]) a.step();
     for (const sys of this.instances.values()) this.flush(sys);
+    for (const a of this.arena.arenas.values()) this.flush(a);
     if (this.tick % TICK_RATE === 0) this.groups.step();
     for (const s of this.sessions.values()) {
       if (this.time - s.lastSave > 30) { s.lastSave = this.time; this.store.save(s.pilot); }

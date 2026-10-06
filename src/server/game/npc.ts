@@ -41,7 +41,7 @@ export class NpcBrain {
 const tmp = v3(), aim = v3(), fwd = v3(), local = v3(), slotW = v3();
 
 /** Converts a world-space aim point into yaw/pitch stick input for `ship`. */
-function steer(ship: ShipEntity, point: V3, inp: ShipInput) {
+export function steer(ship: ShipEntity, point: V3, inp: ShipInput) {
   vsub(tmp, point, ship.world.p);
   // world → local: rotate by inverse quaternion
   const q = ship.world.q;

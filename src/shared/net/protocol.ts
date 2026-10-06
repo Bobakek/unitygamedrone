@@ -12,7 +12,7 @@ import { Reader, Writer } from './buffer.ts';
 
 export const MSG = {
   HELLO: 1, INPUT: 2, ACTION: 3, CHAT: 4, PING: 5,
-  WELCOME: 20, SNAPSHOT: 21, INFO: 22, GONE: 23, SHOTS: 24, EVENTS: 25, PILOT: 26, PONG: 27, ERROR: 28, WORLD: 29, BOARD: 30, MARKET: 31, GROUP: 32,
+  WELCOME: 20, SNAPSHOT: 21, INFO: 22, GONE: 23, SHOTS: 24, EVENTS: 25, PILOT: 26, PONG: 27, ERROR: 28, WORLD: 29, BOARD: 30, MARKET: 31, GROUP: 32, ARENA: 33,
 } as const;
 
 export const KIND = { SHIP: 1, CHAR: 2, MISSILE: 3, LOOT: 4, CREATURE: 5, ROVER: 6 } as const;
@@ -75,6 +75,8 @@ export interface Harvested { planet: number; node: number; left: number }
 export interface Welcome {
   playerId: number; shipId: number; token: string; pilot: PilotInfo; system: number;
   dev: boolean; tick: number; time: number; harvested: Harvested[]; motd: string;
+  /** The pilot is in an arena match (see arena.ts and MSG.ARENA). */
+  arena?: boolean;
 }
 export type GameEvent =
   | { t: 'hit'; target: number; pos: [number, number, number]; shield: boolean; dmg: number; by: number }
@@ -102,7 +104,9 @@ export type GameEvent =
   /** The local pilot's rover drill on deposit `id`: `left` seconds to go, 0 = done, -1 = stopped. */
   | { t: 'drill'; id: number; left: number }
   /** A mining laser of ship `by` hit an asteroid; `good` = a unit went into its hold. */
-  | { t: 'mine'; pos: [number, number, number]; by: number; good?: CargoKey };
+  | { t: 'mine'; pos: [number, number, number]; by: number; good?: CargoKey }
+  /** A ship warped in at an arena start point (team colour). */
+  | { t: 'warp'; id: number; pos: [number, number, number]; team: number };
 
 export type Action =
   | { a: 'exit' } | { a: 'board' } | { a: 'dock' } | { a: 'undock' } | { a: 'jump' }
@@ -124,7 +128,9 @@ export type Action =
   /** The pilot on foot read the ship's log on a wreck's bridge (a trophy for the cabin). */
   | { a: 'readLog' }
   /** Shipyard (docked): buy a ship class, switch to an owned one. */
-  | { a: 'buyShip'; ship: HullKey } | { a: 'setShip'; ship: HullKey };
+  | { a: 'buyShip'; ship: HullKey } | { a: 'setShip'; ship: HullKey }
+  /** Arena 3×3: sign up (docked) or leave the queue / the match. */
+  | { a: 'arena' } | { a: 'arenaLeave' };
 
 export function encodeJson(type: number, payload: unknown): Uint8Array {
   const body = new TextEncoder().encode(JSON.stringify(payload));
