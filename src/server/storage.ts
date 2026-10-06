@@ -2,6 +2,7 @@ import type { Cargo, Upgrades } from '../shared/economy.ts';
 import type { Outfit } from '../shared/outfit.ts';
 import type { Career } from '../shared/contracts.ts';
 import type { Trophy } from '../shared/station/trophies.ts';
+import type { HullKey } from '../shared/ships/hulls.ts';
 
 /** Browser-safe pilot storage contract (SQLite on the server, localStorage in offline mode). */
 export interface PilotRecord {
@@ -15,6 +16,8 @@ export interface PilotRecord {
   roverBed: Cargo;
   /** Trophies shown in the pilot's cabin. */
   trophies: Trophy[];
+  /** The ship class flown and the ships owned (always including the fighter). */
+  ship: HullKey; ships: HullKey[];
 }
 
 export interface PilotStorage {

@@ -1,7 +1,8 @@
 import { hueToHex } from '../color.ts';
 import { hashString, Rng } from '../math/rng.ts';
+import type { HullKey } from './hulls.ts';
 
-export type ShipClass = 'fighter' | 'pirate' | 'freighter' | 'turret';
+export type ShipClass = HullKey | 'pirate' | 'freighter' | 'turret';
 
 export interface Blueprint {
   cls: ShipClass;
@@ -9,13 +10,13 @@ export interface Blueprint {
   hull: string; hull2: string; accent: string; glass: string; engine: string; glow: string;
 }
 
-/** Player ship look, derived from the pilot name so everyone sees the same colours. */
-export function playerBlueprint(name: string): Blueprint {
+/** Player ship look, derived from the pilot name so everyone sees the same colours on any ship class. */
+export function playerBlueprint(name: string, cls: HullKey = 'fighter'): Blueprint {
   const seed = hashString(name.toLowerCase());
   const rng = new Rng(seed);
   const hue = rng.float();
   return {
-    cls: 'fighter', seed,
+    cls, seed,
     hull: '#ece6da',
     hull2: hueToHex(hue, 0.62, 0.52),
     accent: hueToHex((hue + 0.08 + rng.range(0.25, 0.45)) % 1, 0.8, 0.6),

@@ -7,6 +7,7 @@ import type { Outfit } from '../outfit.ts';
 import type { Career, ContractDef } from '../contracts.ts';
 import type { WeatherKind } from '../weather.ts';
 import type { Trophy } from '../station/trophies.ts';
+import type { HullKey } from '../ships/hulls.ts';
 import { Reader, Writer } from './buffer.ts';
 
 export const MSG = {
@@ -57,6 +58,8 @@ export interface PilotInfo {
   roverBed: Cargo; roverBedCap: number;
   /** Trophies shown in the pilot's cabin. */
   trophies: Trophy[];
+  /** Ship class flown and ships owned. */
+  ship: HullKey; ships: HullKey[];
 }
 /** A member of the pilot's group; `pos` (world) only for members in the same system. */
 export interface GroupMember {
@@ -97,7 +100,9 @@ export type GameEvent =
   /** The server forced a planet's weather until `until` (dev). */
   | { t: 'weather'; planet: number; kind: WeatherKind; k: number; until: number }
   /** The local pilot's rover drill on deposit `id`: `left` seconds to go, 0 = done, -1 = stopped. */
-  | { t: 'drill'; id: number; left: number };
+  | { t: 'drill'; id: number; left: number }
+  /** A mining laser of ship `by` hit an asteroid; `good` = a unit went into its hold. */
+  | { t: 'mine'; pos: [number, number, number]; by: number; good?: CargoKey };
 
 export type Action =
   | { a: 'exit' } | { a: 'board' } | { a: 'dock' } | { a: 'undock' } | { a: 'jump' }
@@ -117,7 +122,9 @@ export type Action =
   /** Rover: drill out the deposit `id` (the haul goes into the rover's bed). */
   | { a: 'drill'; id: number }
   /** The pilot on foot read the ship's log on a wreck's bridge (a trophy for the cabin). */
-  | { a: 'readLog' };
+  | { a: 'readLog' }
+  /** Shipyard (docked): buy a ship class, switch to an owned one. */
+  | { a: 'buyShip'; ship: HullKey } | { a: 'setShip'; ship: HullKey };
 
 export function encodeJson(type: number, payload: unknown): Uint8Array {
   const body = new TextEncoder().encode(JSON.stringify(payload));

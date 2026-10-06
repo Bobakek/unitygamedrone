@@ -1,4 +1,5 @@
 import { MAX_NAME, PROTOCOL_VERSION, SYSTEM_COUNT, TICK_RATE } from '../../shared/constants.ts';
+import { HULL_KEYS, isHull } from '../../shared/ships/hulls.ts';
 import { qlook, qrot, quat, v3, vdist, vnorm, vscale, vsub } from '../../shared/math/vec.ts';
 import { planetSites, siteDir } from '../../shared/planet/sites.ts';
 import { RAMP, TERMINALS } from '../../shared/station/deck.ts';
@@ -265,7 +266,7 @@ export class Game implements GameContext {
       case 'group': s.msg(this.groups.list(s)); return;
       case 'g': case 'p': { const t = args.join(' ').trim(); if (t) this.groups.say(s, t); return; }
       case 'help':
-        s.msg('Команды: /who, /help, группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|cabin|shelf|window|ramp>, /trophies, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /cargo <вид> <n>' : ''));
+        s.msg('Команды: /who, /help, группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|rock|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|cabin|shelf|window|ramp>, /trophies, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /cargo <вид> <n>, /ship <fighter|hauler|miner>' : ''));
         return;
       case 'who':
         s.msg(`Онлайн (${this.sessions.size}): ${[...this.sessions.values()].map((o) => o.pilot.name).join(', ')}`);
@@ -334,6 +335,15 @@ export class Game implements GameContext {
         const c = s.pilot.career.active[0];
         if (!c) { s.msg('Нет активных контрактов', 'warn'); break; }
         sys.contracts.devFinish(s, c);
+        break;
+      }
+      case 'ship': {
+        // dev: grant a ship class and fly it at once, anywhere
+        const k = args[0];
+        if (!isHull(k)) { s.msg(`/ship ${HULL_KEYS.join('|')}`, 'warn'); break; }
+        if (!s.pilot.ships.includes(k)) s.pilot.ships.push(k);
+        const err = sys.setShip(s, k);
+        if (err) s.msg(err, 'warn');
         break;
       }
       case 'cargo': {

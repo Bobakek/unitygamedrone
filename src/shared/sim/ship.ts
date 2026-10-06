@@ -36,12 +36,14 @@ export interface ShipInput {
 export interface ShipStats {
   maxSpeed: number; boostSpeed: number; accel: number; strafe: number;
   turn: number; roll: number; cruiseSpeed: number; radius: number;
+  /** Height of the ship's origin above the ground when it stands on its landing gear. */
+  land: number;
 }
 
 export const CRUISE_SPOOL = 2;
 export const LAND_ASSIST_ALT = 250;
 export const BASE_STATS: ShipStats = {
-  maxSpeed: 220, boostSpeed: 380, accel: 110, strafe: 70, turn: 1.6, roll: 2.4, cruiseSpeed: 3200, radius: 5,
+  maxSpeed: 220, boostSpeed: 380, accel: 110, strafe: 70, turn: 1.6, roll: 2.4, cruiseSpeed: 3200, radius: 5, land: SHIP_LAND_HEIGHT,
 };
 
 export const emptyInput = (): ShipInput => ({ yaw: 0, pitch: 0, roll: 0, throttle: 0, strafeX: 0, strafeY: 0, boost: false, cruise: false });
@@ -188,11 +190,11 @@ function collideTerrain(s: ShipState, pl: PlanetDef, st: ShipStats, inp: ShipInp
     }
   }
   const alt = vlen(s.p) - ground;
-  if (alt < SHIP_LAND_HEIGHT + 3.5 && vlen(s.v) < 25 && vdot(s.v, d) < 2 && inp.throttle <= 0.05 && !cruiseNow) {
+  if (alt < st.land + 3.5 && vlen(s.v) < 25 && vdot(s.v, d) < 2 && inp.throttle <= 0.05 && !cruiseNow) {
     s.landed = pl.index + 1;
     s.v.x = s.v.y = s.v.z = 0;
     s.cruise = 0;
-    vscale(s.p, d, ground + SHIP_LAND_HEIGHT);
+    vscale(s.p, d, ground + st.land);
     qrot(f, s.q, FWD); qrot(r, s.q, RIGHT);
     vaddScaled(f, f, d, -vdot(f, d));
     if (vlen(f) < 1e-3) vaddScaled(f, r, d, -vdot(r, d));

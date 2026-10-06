@@ -1,4 +1,4 @@
-import { DOCK_RANGE, DT, EXIT_RANGE, GATE_RANGE, HARVEST_RANGE, INTEREST_RADIUS, NODE_RESPAWN, SAFE_ZONE_RADIUS, SHIP_LAND_HEIGHT } from '../../shared/constants.ts';
+import { DOCK_RANGE, DT, EXIT_RANGE, GATE_RANGE, HARVEST_RANGE, INTEREST_RADIUS, NODE_RESPAWN, SAFE_ZONE_RADIUS } from '../../shared/constants.ts';
 import {
   BOUNTY, CARGO_KEYS, CARGO_NAMES, combatStats, emptyCargo, flightStats, MAX_LEVEL, MAX_MISSILES, MISSILE_COST, PIRATE_COMBAT, PIRATE_FLIGHT,
   REPAIR_COST_PER_HP, UPGRADE_COST, UPGRADE_KEYS, cargoCount, type CargoKey, type UpgradeKey,
@@ -33,6 +33,8 @@ import { item, lookCode, owns, repNeedText, repOk, SLOT_NAMES } from '../../shar
 import { isPirateFriend, isWanted, WANTED_BOUNTY } from '../../shared/contracts.ts';
 import { ContractDesk } from './contracts.ts';
 import { StationMarket } from './market.ts';
+import { AsteroidMining } from './mining.ts';
+import { HULLS, isHull, type HullKey } from '../../shared/ships/hulls.ts';
 import { GROUP_BONUS, SHARE_RANGE } from './groups.ts';
 import type { MarketQuote } from '../../shared/market.ts';
 import { BOARD_REACH, inCabin, PAD, RAMP, stepDeck } from '../../shared/station/deck.ts';
@@ -90,6 +92,7 @@ export class SystemInstance implements NpcWorld {
   readonly fauna: Fauna;
   readonly contracts: ContractDesk;
   readonly market: StationMarket;
+  readonly mining: AsteroidMining;
   readonly weather: WeatherDesk;
 
   constructor(private ctx: GameContext, id: number) {
@@ -102,6 +105,7 @@ export class SystemInstance implements NpcWorld {
     this.fauna = new Fauna(this);
     this.contracts = new ContractDesk(this);
     this.market = new StationMarket(this);
+    this.mining = new AsteroidMining(this);
     this.weather = new WeatherDesk(this);
   }
 
@@ -177,10 +181,10 @@ export class SystemInstance implements NpcWorld {
   }
 
   createPlayerShip(pilot: PilotRecord, pos: V3, q: Quat): ShipEntity {
-    const c = combatStats(pilot.upgrades);
+    const c = combatStats(pilot.upgrades, pilot.ship);
     const ship: ShipEntity = {
-      id: this.ctx.nextId(), name: pilot.name, bp: playerBlueprint(pilot.name),
-      state: newShip(pos, q), world: newPose(), flight: flightStats(pilot.upgrades), combat: c,
+      id: this.ctx.nextId(), name: pilot.name, bp: playerBlueprint(pilot.name, pilot.ship),
+      state: newShip(pos, q), world: newPose(), flight: flightStats(pilot.upgrades, pilot.ship), combat: c,
       hull: c.maxHull, shield: c.maxShield, energy: 100, lastHit: -99, fireCooldown: 0, gun: 0,
       throttle: 0, boosting: false, dead: false, respawnAt: 0, docked: false, god: false, session: null, npc: null, lastInput: emptyInput(),
     };
@@ -226,6 +230,7 @@ export class SystemInstance implements NpcWorld {
 
   removeSession(s: Session) {
     this.sessions.delete(s);
+    this.mining.forget(s);
     this.removeRover(s);
     if (s.char) {
       this.chars.delete(s.char.id);
@@ -259,7 +264,7 @@ export class SystemInstance implements NpcWorld {
     const p = v3(w.p.x + tmp.x, w.p.y + tmp.y, w.p.z + tmp.z);
     qrot(tmp2, w.q, FWD);
     const v = v3(w.v.x + tmp2.x * LASER.speed, w.v.y + tmp2.y * LASER.speed, w.v.z + tmp2.z * LASER.speed);
-    this.lasers.push({ owner: ship.id, p, v, life: LASER.life, dmg: ship.combat.laserDamage });
+    this.lasers.push({ owner: ship.id, p, v, life: LASER.life, dmg: ship.combat.laserDamage, mine: ship.session ? HULLS[ship.session.pilot.ship].mining : 0 });
     this.shots.push({ shooter: ship.id, px: p.x, py: p.y, pz: p.z, vx: v.x, vy: v.y, vz: v.z, level: ship.session ? ship.session.pilot.upgrades.weapons : 0 });
   }
 
@@ -564,7 +569,7 @@ export class SystemInstance implements NpcWorld {
     if (!s.rover) return;
     this.removeRover(s);
     const bed = s.pilot.roverBed, hold = s.pilot.cargo;
-    let room = combatStats(s.pilot.upgrades).cargoCap - cargoCount(hold);
+    let room = combatStats(s.pilot.upgrades, s.pilot.ship).cargoCap - cargoCount(hold);
     const moved: Partial<Record<CargoKey, number>> = {};
     for (const k of CARGO_KEYS) {
       const n = Math.min(room, bed[k]);
@@ -618,6 +623,15 @@ export class SystemInstance implements NpcWorld {
         if (vdistSq(sh.world.p, L.p) > reach * reach) continue;
         const tt = segmentSphere(L.p, p1, sh.world.p, sh.flight.radius + 1.5);
         if (tt >= 0 && tt < bestT) { bestT = tt; hit = sh; }
+      }
+      // mining lasers stop at asteroids (and drill them) unless a ship is hit first
+      const rock = L.mine > 0 ? this.mining.hitTest(L.p, p1) : null;
+      if (rock && rock.t < bestT) {
+        const by = this.ships.get(L.owner)?.session;
+        const hp = v3(L.p.x + (p1.x - L.p.x) * rock.t, L.p.y + (p1.y - L.p.y) * rock.t, L.p.z + (p1.z - L.p.z) * rock.t);
+        if (by && by.system === this) this.mining.drill(by, rock, L.dmg * L.mine, hp);
+        this.lasers.splice(i, 1);
+        continue;
       }
       if (hit) {
         const hp = v3(L.p.x + (p1.x - L.p.x) * bestT, L.p.y + (p1.y - L.p.y) * bestT, L.p.z + (p1.z - L.p.z) * bestT);
@@ -971,6 +985,27 @@ export class SystemInstance implements NpcWorld {
         s.msg(`${SLOT_NAMES[it.slot]}: ${it.name}`);
         return null;
       }
+      case 'buyShip': {
+        if (!atStation(s)) return 'Нужно пристыковаться';
+        if (!isHull(act.ship)) return null;
+        const h = HULLS[act.ship];
+        if (p.ships.includes(h.key)) return 'Этот корабль уже ваш';
+        if (p.credits < h.price) return 'Недостаточно кредитов';
+        p.credits -= h.price;
+        p.ships.push(h.key);
+        s.msg(`Куплен корабль: ${h.name}`, 'good');
+        // a new ship is taken out at once, unless the cargo does not fit into it
+        const err = this.setShip(s, h.key);
+        if (err) { s.sendPilot(); s.msg(`${err}. Корабль ждёт в ангаре.`, 'warn'); }
+        return null;
+      }
+      case 'setShip': {
+        if (!atStation(s)) return 'Нужно пристыковаться';
+        if (!isHull(act.ship)) return null;
+        if (!p.ships.includes(act.ship)) return 'Сначала купите этот корабль';
+        if (p.ship === act.ship) return null;
+        return this.setShip(s, act.ship);
+      }
       case 'upgrade': {
         if (!atStation(s)) return 'Нужно пристыковаться';
         const key = act.key as UpgradeKey;
@@ -995,7 +1030,7 @@ export class SystemInstance implements NpcWorld {
         if ((this.harvested.get(key) ?? 0) > this.time) return 'Ресурс уже собран';
         const np = vscale(v3(), node.dir, pl.radius + node.h);
         if (vdist(np, s.char.state.p) > HARVEST_RANGE + 1.5) return 'Слишком далеко';
-        if (cargoCount(p.cargo) >= combatStats(p.upgrades).cargoCap) return 'Трюм полон';
+        if (cargoCount(p.cargo) >= combatStats(p.upgrades, p.ship).cargoCap) return 'Трюм полон';
         p.cargo[node.type]++;
         this.harvested.set(key, this.time + NODE_RESPAWN);
         this.events.push({ t: 'harvest', planet: pl.index, node: node.id, left: NODE_RESPAWN, by: s.id });
@@ -1048,10 +1083,30 @@ export class SystemInstance implements NpcWorld {
 
   applyStats(s: Session) {
     const ship = s.ship;
-    ship.flight = flightStats(s.pilot.upgrades);
-    ship.combat = combatStats(s.pilot.upgrades);
+    ship.flight = flightStats(s.pilot.upgrades, s.pilot.ship);
+    ship.combat = combatStats(s.pilot.upgrades, s.pilot.ship);
     ship.hull = ship.combat.maxHull;
     ship.shield = ship.combat.maxShield;
+    if (ship.bp.cls !== s.pilot.ship) {
+      // everyone around sees the new hull
+      ship.bp = playerBlueprint(s.pilot.name, s.pilot.ship);
+      this.infos.push(this.shipInfo(ship));
+    }
+  }
+
+  /** Takes an owned ship out of the station's hangar (docked); returns an error text. */
+  setShip(s: Session, key: HullKey): string | null {
+    const p = s.pilot;
+    const cap = combatStats(p.upgrades, key).cargoCap;
+    if (cargoCount(p.cargo) > cap) return `Груз не поместится: в трюме ${cargoCount(p.cargo)}, а у этого корабля ${cap}`;
+    // the ship left in the hangar is serviced there, the one taken out keeps the damage share
+    const wear = s.ship.hull / s.ship.combat.maxHull;
+    p.ship = key;
+    this.applyStats(s);
+    s.ship.hull = Math.max(1, s.ship.combat.maxHull * Math.min(1, wear));
+    s.sendPilot();
+    s.msg(`Ваш корабль: ${HULLS[key].name}`, 'good');
+    return null;
   }
 
   gateInRange(p: V3) {
@@ -1133,6 +1188,13 @@ export class SystemInstance implements NpcWorld {
       const out = vnorm(v3(), vsub(v3(), this.def.station.pos, f.center));
       const p = v3(f.center.x + out.x * (f.radius + 2500), f.center.y + out.y * (f.radius + 2500) + 400, f.center.z + out.z * (f.radius + 2500));
       ship.state = newShip(p, qlook(quat(), vscale(v3(), out, -1), v3(0, 1, 0)));
+    } else if (target === 'rock') {
+      // the outermost asteroid towards the station, nose on it from 70 m (mining tests)
+      const f = this.def.fields[0];
+      const out = vnorm(v3(), vsub(v3(), this.def.station.pos, f.center));
+      const rock = f.rocks.reduce((a, b) => (vdot(vsub(tmp, b, f.center), out) > vdot(vsub(tmp2, a, f.center), out) ? b : a));
+      const p = v3(rock.x + out.x * (rock.r + 70), rock.y + out.y * (rock.r + 70) + rock.r * 0.4, rock.z + out.z * (rock.r + 70));
+      ship.state = newShip(p, qlook(quat(), vnorm(v3(), vsub(v3(), rock, p)), v3(0, 1, 0)));
     } else {
       const idx = Number(target.replace(/\D/g, ''));
       const pl = this.def.planets[idx];
@@ -1172,7 +1234,7 @@ export class SystemInstance implements NpcWorld {
       const frame = pl.index + 1;
       if (land || site) {
         const off = vnorm(v3(), v3(d.x + tangent.x * (14 / pl.radius), d.y + tangent.y * (14 / pl.radius), d.z + tangent.z * (14 / pl.radius)));
-        const g = pl.radius + surfaceHeight(pl, off.x, off.y, off.z) + SHIP_LAND_HEIGHT;
+        const g = pl.radius + surfaceHeight(pl, off.x, off.y, off.z) + ship.flight.land;
         ship.state = newShip(vscale(v3(), off, g), qlook(quat(), vscale(v3(), tangent, -1), off));
         ship.state.landed = frame;
       } else if (target.startsWith('low')) {
@@ -1220,7 +1282,7 @@ export class SystemInstance implements NpcWorld {
         ship.docked = false;
         ship.dead = false;
         const L = at(d, t, -45);
-        const g = pl.radius + surfaceHeight(pl, L.x, L.y, L.z) + SHIP_LAND_HEIGHT;
+        const g = pl.radius + surfaceHeight(pl, L.x, L.y, L.z) + ship.flight.land;
         const tl = vnorm(v3(), v3(t.x - L.x * vdot(t, L), t.y - L.y * vdot(t, L), t.z - L.z * vdot(t, L)));
         ship.state = newShip(vscale(v3(), L, g), qlook(quat(), vscale(v3(), tl, -1), L));
         ship.state.landed = ship.state.frame = pl.index + 1;

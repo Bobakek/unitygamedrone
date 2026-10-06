@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import type { Blueprint } from '../../shared/ships/blueprint.ts';
-import { buildShip, type BuiltShip } from './ship-builder.ts';
+import { buildShip } from './ship-builder.ts';
+import { isGlbShip, loadGlbShip } from './glb-ship.ts';
+import { HULLS, isHull } from '../../shared/ships/hulls.ts';
 import { glowTexture } from '../world/textures.ts';
 
 const hullMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.55, metalness: 0.12 });
@@ -28,23 +30,60 @@ export class ShipView {
   private shield: THREE.Mesh;
   private shieldU: { c: { value: THREE.Color }; k: { value: number } };
   private shieldFlash = 0;
-  readonly built: BuiltShip;
+  private ownMats: THREE.Material[] = [];
+  private gone = false;
+  /** Engine exits (flames) in model space and the bounding radius. */
+  engines: { pos: THREE.Vector3; r: number }[] = [];
+  radius: number;
   throttle = 0;
   boost = false;
   cruise = false;
   landed = false;
 
   constructor(public bp: Blueprint) {
-    this.built = buildShip(bp);
-    for (const [g, m] of [[this.built.hull, hullMat], [this.built.metal, metalMat], [this.built.glass, glassMat]] as const) {
+    this.shieldU = { c: { value: new THREE.Color('#59c7ff') }, k: { value: 0 } };
+    if (isGlbShip(bp.cls)) {
+      // modelled in Blender: loads in the background, flames and shield come with it
+      this.radius = (isHull(bp.cls) ? HULLS[bp.cls].radius : 8) * 1.25;
+      this.shield = this.makeShield();
+      loadGlbShip(bp).then((m) => {
+        if (this.gone) { m.materials.forEach((x) => x.dispose()); return; }
+        this.ownMats = m.materials;
+        this.group.add(m.object);
+        this.radius = m.radius;
+        this.shield.geometry.dispose();
+        this.shield.geometry = new THREE.IcosahedronGeometry(this.radius * 1.05, 3);
+        this.addEngines(m.engines);
+      });
+      return;
+    }
+    const built = buildShip(bp);
+    for (const [g, m] of [[built.hull, hullMat], [built.metal, metalMat], [built.glass, glassMat]] as const) {
       const mesh = new THREE.Mesh(g, m);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       this.group.add(mesh);
     }
-    this.group.add(new THREE.Mesh(this.built.glow, glowMat));
-    const gc = new THREE.Color(bp.glow);
-    for (const e of this.built.engines) {
+    this.group.add(new THREE.Mesh(built.glow, glowMat));
+    this.radius = built.radius;
+    this.shield = this.makeShield();
+    this.addEngines(built.engines);
+  }
+
+  private makeShield() {
+    const shield = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(this.radius * 1.05, 3),
+      new THREE.ShaderMaterial({ uniforms: this.shieldU, vertexShader: FRESNEL_VS, fragmentShader: SHIELD_FS, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false }),
+    );
+    shield.visible = false;
+    this.group.add(shield);
+    return shield;
+  }
+
+  private addEngines(engines: { pos: THREE.Vector3; r: number }[]) {
+    this.engines = engines;
+    const gc = new THREE.Color(this.bp.glow);
+    for (const e of engines) {
       const m = new THREE.MeshBasicMaterial({ color: gc.clone().multiplyScalar(1.6), transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
       const cone = new THREE.Mesh(new THREE.ConeGeometry(e.r * 0.9, 1, 8, 1, true).rotateX(Math.PI / 2).translate(0, 0, 0.5), m);
       cone.position.copy(e.pos);
@@ -56,13 +95,6 @@ export class ShipView {
       this.sprites.push(sp);
       this.group.add(cone, sp);
     }
-    this.shieldU = { c: { value: new THREE.Color('#59c7ff') }, k: { value: 0 } };
-    this.shield = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(this.built.radius * 1.05, 3),
-      new THREE.ShaderMaterial({ uniforms: this.shieldU, vertexShader: FRESNEL_VS, fragmentShader: SHIELD_FS, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false }),
-    );
-    this.shield.visible = false;
-    this.group.add(this.shield);
   }
 
   hit(shield: boolean) {
@@ -78,7 +110,7 @@ export class ShipView {
       this.flames[i].scale.set(1, 1, len * flicker);
       this.flames[i].visible = on;
       this.flameMats[i].opacity = 0.15 + 0.3 * t;
-      this.sprites[i].scale.setScalar(this.built.engines[i].r * (on ? 2 + t * 2.5 : 1.3));
+      this.sprites[i].scale.setScalar(this.engines[i].r * (on ? 2 + t * 2.5 : 1.3));
     }
     if (this.shieldFlash > 0) {
       this.shieldFlash = Math.max(0, this.shieldFlash - dt * 3);
@@ -88,7 +120,9 @@ export class ShipView {
   }
 
   dispose() {
+    this.gone = true;
     this.group.removeFromParent();
+    this.ownMats.forEach((m) => m.dispose());
     this.flameMats.forEach((m) => m.dispose());
     this.flames.forEach((f) => f.geometry.dispose());
     this.shield.geometry.dispose();

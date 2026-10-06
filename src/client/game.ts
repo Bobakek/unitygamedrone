@@ -229,7 +229,7 @@ export class Game {
   /** Planet body→world rotations at the current render time. */
   private rots: Quat[] = [];
   private rotsT = new THREE.Quaternion();
-  private stats = flightStats(defaultUpgrades());
+  private stats = flightStats(defaultUpgrades(), 'fighter');
   private harvestPos: V3 | null = null;
   private prevFwd = v3(0, 0, -1);
   /** Smoothed rifle aim (RMB on foot or recent shots) — drives camera and pose. */
@@ -359,7 +359,7 @@ export class Game {
     this.targetId = 0;
     this.navIndex = 0;
     if (!this.myShip) {
-      this.myShip = new ShipView(playerBlueprint(w.pilot.name));
+      this.myShip = new ShipView(playerBlueprint(w.pilot.name, w.pilot.ship));
       this.world.add(this.myShip.group);
     }
     this.setPilot(w.pilot);
@@ -560,7 +560,13 @@ export class Game {
 
   private setPilot(p: PilotInfo) {
     this.pilot = p;
-    this.stats = flightStats(p.upgrades);
+    this.stats = flightStats(p.upgrades, p.ship);
+    if (this.myShip && this.myShip.bp.cls !== p.ship) {
+      // took another ship out of the hangar
+      this.myShip.dispose();
+      this.myShip = new ShipView(playerBlueprint(p.name, p.ship));
+      this.world.add(this.myShip.group);
+    }
     this.gear = gearStats(validOutfit(p.outfit, p.items));
     this.myAstro?.dress(validOutfit(p.outfit, p.items), p.name);
     if (this.wardrobe.open) this.wardrobe.setPilot(p);
@@ -646,7 +652,11 @@ export class Game {
     for (const i of list) {
       this.infos.set(i.id, i);
       const r = this.remotes.get(i.id);
-      if (r) r.info = i;
+      if (r) {
+        // a pilot switched ships: rebuild the view
+        if (r.view instanceof ShipView && i.bp && r.view.bp.cls !== i.bp.cls) { r.view.dispose(); r.view = null; }
+        r.info = i;
+      }
     }
   }
 
@@ -750,6 +760,18 @@ export class Game {
         case 'kill': this.hud.feed(`${e.killer} ✕ ${e.victim}`); break;
         case 'chat': this.hud.chat(e.from, e.text); this.bubbles.set(e.from, { text: e.text, until: this.time + 6 }); break;
         case 'msg': this.hud.toast(e.text, e.kind); this.hud.chat(null, e.text); break;
+        case 'mine': {
+          // a mining laser hit an asteroid
+          const pos = v3(e.pos[0], e.pos[1], e.pos[2]);
+          this.effects.consumeBolt(e.by, pos);
+          this.effects.spark(pos, e.good === 'crystal' ? new THREE.Color(0.5, 1.1, 1.6) : new THREE.Color(1.5, 0.75, 0.3), e.good ? 18 : 8);
+          if (e.good) this.effects.flash(pos, new THREE.Color(1.2, 0.8, 0.4), 6, 0.35);
+          if (e.by === myShip) {
+            this.sfx.hit(false);
+            if (e.good) { this.sfx.pickup(); this.hud.feed(`+1 ${CARGO_NAMES[e.good].toLowerCase()}`); }
+          }
+          break;
+        }
         case 'harvest': {
           this.harvested.set(`${e.planet}:${e.node}`, this.timeline.serverNow + e.left);
           this.harvestVersion++;
@@ -860,7 +882,8 @@ export class Game {
     if (m.flags & 1 && this.fireCd <= 0 && this.energy >= LASER.cost && !s.landed && !isCruising(s) && vdist(w.p, this.sys!.station.pos) > SAFE_ZONE_RADIUS) {
       this.fireCd = LASER.cooldown;
       this.energy -= LASER.cost;
-      const g = GUN_OFFSETS.fighter[this.gun++ % 2];
+      const guns = GUN_OFFSETS[this.myShip?.bp.cls ?? 'fighter'];
+      const g = guns[this.gun++ % guns.length];
       const off = qrot(v3(), w.q, g), f = qrot(v3(), w.q, FWD);
       const p = v3(w.p.x + off.x, w.p.y + off.y, w.p.z + off.z);
       this.effects.bolt(p, v3(w.v.x + f.x * LASER.speed, w.v.y + f.y * LASER.speed, w.v.z + f.z * LASER.speed), this.shotColor(this.self!.shipId, this.pilot?.upgrades.weapons ?? 1), this.self!.shipId);
@@ -1273,7 +1296,7 @@ export class Game {
     }
 
     // camera
-    if (mode === MODE.SHIP) this.rig.ship(dt, this.shipPos, this.shipQ, speed, isCruising(ship), !!ship.landed);
+    if (mode === MODE.SHIP) this.rig.ship(dt, this.shipPos, this.shipQ, speed, isCruising(ship), !!ship.landed, this.stats.radius);
     else if (onFoot && charPl) {
       const up = vnorm(v3(), vsub(v3(), this.charPos, charPl.center));
       const wantAim = this.input.mouse(2) || this.time - this.lastShot < 1.5;
@@ -1416,11 +1439,15 @@ export class Game {
     ms.group.visible = mode === MODE.SHIP || mode === MODE.FOOT || mode === MODE.ROVER || inside;
     if (inside) {
       // parked on its pad in the hangar, nose towards the bay
-      this.place(ms.group, it.toWorld(sys.station.pos, v3(PAD.x, 2.4, PAD.z), v3()));
+      // big hulls are shown scaled down to fit the hangar
+      const k = Math.min(1, 7 / this.stats.radius);
+      this.place(ms.group, it.toWorld(sys.station.pos, v3(PAD.x, (this.stats.land + 0.65) * k, PAD.z), v3()));
       ms.group.quaternion.copy(it.q);
+      ms.group.scale.setScalar(k);
     } else {
       this.place(ms.group, this.shipPos);
       ms.group.quaternion.set(this.shipQ.x, this.shipQ.y, this.shipQ.z, this.shipQ.w);
+      ms.group.scale.setScalar(1);
     }
     if (ship.landed && !inside) this.liftToGround(ms.group, ship.frame, this.shipPosF, this.shipPos);
     ms.throttle = Math.abs(this.ctrl.throttle);
@@ -1946,7 +1973,7 @@ export class Game {
       const sp = this.project(t.p);
       const d = vdist(t.p, this.origin);
       if (!sp.behind) {
-        const r = t.view instanceof ShipView ? t.view.built.radius : 6;
+        const r = t.view instanceof ShipView ? t.view.radius : 6;
         const size = (r / Math.max(1, d)) * (H / (2 * Math.tan((this.r.camera.fov * Math.PI) / 360))) * 2.4;
         this.hud.target({ x: sp.x, y: sp.y, size, name: t.info?.name ?? '?', info: `${this.fmtDist(vdist(t.p, this.shipW.p))} · ${Math.round(Math.hypot(t.state.vx, t.state.vy, t.state.vz))} м/с`, shield: t.state.shield, hull: t.state.hull, lock: this.locked ? 2 : this.lockT > 0 ? 1 : 0 });
         const lp = leadPoint(this.shipW.p, this.shipW.v, t.p, t.v, LASER.speed, v3());

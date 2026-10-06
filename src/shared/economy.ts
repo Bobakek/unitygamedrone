@@ -1,5 +1,6 @@
 import { BASE_STATS, type ShipStats } from './sim/ship.ts';
 import type { ResourceType } from './planet/resources.ts';
+import { HULLS, type HullKey } from './ships/hulls.ts';
 
 export type UpgradeKey = 'weapons' | 'shields' | 'hull' | 'engine' | 'cargo';
 export const UPGRADE_KEYS: readonly UpgradeKey[] = ['weapons', 'shields', 'hull', 'engine', 'cargo'];
@@ -28,19 +29,28 @@ export interface CombatStats {
   maxHull: number; maxShield: number; shieldRegen: number; laserDamage: number; cargoCap: number;
 }
 
-export function combatStats(u: Upgrades): CombatStats {
+/** Combat numbers of a player ship of class `ship` with the pilot's upgrades. */
+export function combatStats(u: Upgrades, ship: HullKey): CombatStats {
+  const h = HULLS[ship] ?? HULLS.fighter;
   return {
-    maxHull: 100 + (u.hull - 1) * 45,
-    maxShield: 80 + (u.shields - 1) * 40,
-    shieldRegen: 9 + (u.shields - 1) * 3,
-    laserDamage: 9 + (u.weapons - 1) * 3.5,
-    cargoCap: 12 + (u.cargo - 1) * 10,
+    maxHull: Math.round((100 + (u.hull - 1) * 45) * h.hull),
+    maxShield: Math.round((80 + (u.shields - 1) * 40) * h.shield),
+    shieldRegen: (9 + (u.shields - 1) * 3) * h.shield,
+    laserDamage: (9 + (u.weapons - 1) * 3.5) * h.laser,
+    cargoCap: h.cargo + (u.cargo - 1) * h.cargoPerLevel,
   };
 }
 
-export function flightStats(u: Upgrades): ShipStats {
+export function flightStats(u: Upgrades, ship: HullKey): ShipStats {
+  const h = HULLS[ship] ?? HULLS.fighter;
   const e = u.engine - 1;
-  return { ...BASE_STATS, maxSpeed: BASE_STATS.maxSpeed + e * 20, boostSpeed: BASE_STATS.boostSpeed + e * 30, accel: BASE_STATS.accel + e * 12, turn: BASE_STATS.turn + e * 0.1 };
+  return {
+    ...BASE_STATS,
+    maxSpeed: (BASE_STATS.maxSpeed + e * 20) * h.speed, boostSpeed: (BASE_STATS.boostSpeed + e * 30) * h.speed,
+    accel: (BASE_STATS.accel + e * 12) * h.accel, strafe: BASE_STATS.strafe * h.accel,
+    turn: (BASE_STATS.turn + e * 0.1) * h.turn, roll: BASE_STATS.roll * h.turn,
+    cruiseSpeed: BASE_STATS.cruiseSpeed * h.cruise, radius: h.radius, land: h.land,
+  };
 }
 
 /** NPC pirate stats — slightly weaker than a starter player ship. */

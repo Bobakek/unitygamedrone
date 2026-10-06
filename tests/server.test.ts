@@ -280,15 +280,15 @@ describe('game server', () => {
     a.action({ a: 'drill', id: target.id });
     await waitFor(() => a.events.some((e) => e.t === 'msg' && /выработана/.test(e.text)));
     // back at the ship the haul goes into the hold with the rover
-    const hold0 = cargoCount(s.pilot.cargo);
+    const hold0 = cargoCount(s.pilot.cargo), cap = s.pilotInfo().cargoCap;
     a.action({ a: 'leave' });
     await waitFor(() => s.mode === MODE.FOOT);
     rover.state.p = { ...s.ship.state.p };
     s.char!.state.p = { ...s.ship.state.p };
     a.action({ a: 'rover' });
     await waitFor(() => !s.rover);
-    expect(cargoCount(s.pilot.cargo)).toBe(Math.min(hold0 + want, 12));
-    expect(cargoCount(s.pilot.roverBed)).toBe(Math.max(0, hold0 + want - 12));
+    expect(cargoCount(s.pilot.cargo)).toBe(Math.min(hold0 + want, cap));
+    expect(cargoCount(s.pilot.roverBed)).toBe(Math.max(0, hold0 + want - cap));
     a.close();
     await waitFor(() => game.sessions.size === 0);
     expect(cargoCount(store.find('Prospector')!.roverBed) + cargoCount(store.find('Prospector')!.cargo)).toBe(hold0 + want);

@@ -86,4 +86,6 @@ export interface Laser {
   v: V3;
   life: number;
   dmg: number;
+  /** Mining power of the shooter's ship (0: the laser passes through asteroids). */
+  mine: number;
 }

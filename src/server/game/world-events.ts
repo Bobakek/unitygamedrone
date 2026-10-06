@@ -227,7 +227,7 @@ export class WorldEvents {
   // ------------------------------------------------------------------ rewards
   /** Gives as much of `c` as fits; returns what was actually taken (null if nothing). */
   private grant(s: Session, c: LootContents): LootContents | null {
-    const cap = combatStats(s.pilot.upgrades).cargoCap;
+    const cap = combatStats(s.pilot.upgrades, s.pilot.ship).cargoCap;
     let free = cap - cargoCount(s.pilot.cargo);
     const got: LootContents = { credits: c.credits, cargo: {} };
     for (const k of ['relic', 'crystal', 'ore'] as const) {
