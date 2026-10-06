@@ -126,7 +126,7 @@ describe('boarding', () => {
     // out through the airlock: the prize crew takes the ship away
     expect(sys.handleAction(s, { a: 'board' })).toMatch(/шлюз/);
     s.char!.state.p = v3(SHIP_HATCH.x, 0, SHIP_HATCH.z - 0.5);
-    const id = h.ship.id;
+    const id = h.ship!.id;
     expect(sys.handleAction(s, { a: 'board' })).toBeNull();
     expect(s.mode).toBe(MODE.SHIP);
     expect(s.char).toBeNull();
@@ -150,7 +150,7 @@ describe('boarding', () => {
     sys.devTeleport(s, 'open');
     sys.boarding.devSpawn(s, false);
     const h = [...sys.boarding.hulks.values()].at(-1)!;
-    const ship = h.ship, crew = h.crew.map((c) => c.id);
+    const ship = h.ship!, crew = h.crew.map((c) => c.id);
     tick(DISABLE_TIME + 1);
     expect(ship.disabled).toBe(false);
     expect(ship.hull).toBeGreaterThan(ship.combat.maxHull * DISABLE_HULL);
@@ -166,7 +166,7 @@ describe('boarding', () => {
     expect(h.crew.length).toBeGreaterThanOrEqual(5);
     expect(cargoCount(h.loot)).toBeGreaterThan(10);
     // blowing the hulk up with someone aboard throws them back to their ship
-    sys.kill(h.ship, 0);
+    sys.kill(h.ship!, 0);
     expect(s.mode).toBe(MODE.SHIP);
     expect(sys.boarding.hulks.size).toBe(0);
   });

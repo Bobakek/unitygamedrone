@@ -42,6 +42,8 @@ export interface ShipEntity {
   disabled?: boolean;
   /** Sim time it was disabled: bolts already in flight then can't finish it off. */
   disabledAt?: number;
+  /** A tower or the shield generator of this pirate base (baseKey, see outposts.ts). */
+  base?: number;
 }
 
 export interface CharEntity {
@@ -50,7 +52,7 @@ export interface CharEntity {
   /** Body-frame state of planet `planet` (deck coordinates on a station deck or aboard a ship). */
   state: CharState;
   planet: number;
-  /** Aboard this disabled ship (its deck coordinates, see boarding.ts). */
+  /** Aboard this disabled ship or base bunker (its deck coordinates, see boarding.ts). */
   aboard?: number;
   session: Session;
   /** Suit integrity (of `maxHp`, set by the outfit), time of the last injury and blaster cooldown. */

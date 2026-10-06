@@ -14,6 +14,7 @@ export const GUN_OFFSETS: Record<ShipClass, V3[]> = {
   pirate: [{ x: -0.9, y: -0.8, z: -7 }, { x: 0.9, y: -0.8, z: -7 }],
   freighter: [{ x: 0, y: 5, z: -20 }],
   turret: [{ x: -0.7, y: 0.1, z: -3.4 }, { x: 0.7, y: 0.1, z: -3.4 }],
+  generator: [],
 };
 export const SHIELD_DELAY = 3;
 

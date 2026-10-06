@@ -231,7 +231,7 @@ export class Game implements GameContext {
     s.sendJson(MSG.WELCOME, w);
     s.sendJson(MSG.INFO, { list: s.system.allInfos() });
     s.sendJson(MSG.WORLD, { pois: s.system.world.list() });
-    s.sendJson(MSG.EVENTS, { ev: [this.galaxyMsg()] });
+    s.sendJson(MSG.EVENTS, { ev: [this.galaxyMsg(), { t: 'bases', list: s.system.outposts.infos() }] });
     const ov = s.system.weather.activeOverrides();
     if (ov.length) s.sendJson(MSG.EVENTS, { ev: ov.map((o) => ({ t: 'weather', ...o })) });
   }
@@ -319,7 +319,7 @@ export class Game implements GameContext {
       case 'arena': say(this.arena.inArena(s) || this.arena.queued(s) ? this.arena.leave(s) : this.arena.join(s)); return;
       case 'g': case 'p': { const t = args.join(' ').trim(); if (t) this.groups.say(s, t); return; }
       case 'help':
-        s.msg('Команды: /who, /help, /arena — арена 3×3 (запись на станции, повторно — выйти), группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|rock|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /gevent <raid|storm|shortage|end> [товар] [мин], /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|refinery|smelter|cabin|shelf|window|ramp>, /trophies, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /raid, /cargo <вид> <n>, /ship <fighter|hauler|miner>, /disable [freighter], /aboard <pirate|freighter|clear|hatch|chest|helm|комната>' : ''));
+        s.msg('Команды: /who, /help, /arena — арена 3×3 (запись на станции, повторно — выйти), группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|rock|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /gevent <raid|storm|shortage|end> [товар] [мин], /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|refinery|smelter|cabin|shelf|window|ramp>, /trophies, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /raid, /cargo <вид> <n>, /ship <fighter|hauler|miner>, /disable [freighter], /aboard <pirate|freighter|clear|hatch|chest|helm|комната>, /base <door|open|capture|raid|expire>' : ''));
         return;
       case 'who':
         s.msg(`Онлайн (${this.sessions.size}): ${[...this.sessions.values()].map((o) => o.pilot.name).join(', ')}`);
@@ -339,6 +339,12 @@ export class Game implements GameContext {
       }
       case 'system': this.transfer(s, Number(args[0]) || 0); break;
       case 'disable': s.msg(sys.boarding.devSpawn(s, args[0] === 'freighter')); break;
+      case 'base': {
+        // dev: /base open|capture|raid|expire|door — the nearest pirate base
+        const a = args[0] ?? 'door', o = sys.outposts;
+        s.msg(a === 'open' ? o.devOpen(s) : a === 'capture' ? o.devCapture(s) : a === 'raid' ? o.devRaid(s) : a === 'expire' ? o.devExpire(s) : o.devDoor(s));
+        break;
+      }
       case 'aboard': {
         // dev: /aboard [pirate|freighter] boards at once, /aboard clear knocks out the crew, /aboard <spot> walks there
         const a = args[0] ?? 'pirate';
