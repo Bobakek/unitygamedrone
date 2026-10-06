@@ -6,6 +6,7 @@ import type { Cargo, CargoKey, Upgrades } from '../economy.ts';
 import type { Outfit } from '../outfit.ts';
 import type { Career, ContractDef } from '../contracts.ts';
 import type { WeatherKind } from '../weather.ts';
+import type { Trophy } from '../station/trophies.ts';
 import type { HullKey } from '../ships/hulls.ts';
 import { Reader, Writer } from './buffer.ts';
 
@@ -53,6 +54,8 @@ export interface PilotInfo {
   items: string[]; outfit: Outfit;
   /** Experience, reputation and contracts. */
   career: Career;
+  /** Trophies shown in the pilot's cabin. */
+  trophies: Trophy[];
   /** Ship class flown and ships owned. */
   ship: HullKey; ships: HullKey[];
 }
@@ -112,6 +115,8 @@ export type Action =
   | { a: 'groupLeave' } | { a: 'groupKick'; name: string }
   /** Rover: unload it from / load it into the landed ship, take the wheel, step out, put it back on its wheels. */
   | { a: 'rover' } | { a: 'drive' } | { a: 'leave' } | { a: 'flip' }
+  /** The pilot on foot read the ship's log on a wreck's bridge (a trophy for the cabin). */
+  | { a: 'readLog' }
   /** Shipyard (docked): buy a ship class, switch to an owned one. */
   | { a: 'buyShip'; ship: HullKey } | { a: 'setShip'; ship: HullKey };
 

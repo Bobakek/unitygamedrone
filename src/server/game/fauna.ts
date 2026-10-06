@@ -11,6 +11,7 @@ import { segmentSphere } from '../../shared/sim/weapons.ts';
 import type { Session } from './session.ts';
 import type { PlanetDef } from '../../shared/galaxy/system-gen.ts';
 import type { SystemInstance } from './system.ts';
+import { awardTrophy } from './trophies.ts';
 
 const ALERT = 40;
 /** Suit damage per second once the air has run out. */
@@ -601,6 +602,7 @@ export class Fauna {
     if (free <= 0) return 'Трюм полон';
     const n = Math.min(free, c.sp.samples + s.gear().samples);
     s.pilot.cargo.bio += n;
+    awardTrophy(s, `specimen:${c.sp.id}`);
     s.sendPilot();
     this.remove(c);
     const pl = this.sys.def.planets[c.planet];

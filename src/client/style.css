@@ -338,3 +338,20 @@ button.ghost:hover { color: var(--ink); border-color: var(--cyan); }
 .gp-leave { margin-top: 6px !important; width: 100%; }
 .label.ally { color: #9dff7a; }
 .label.ally .lb-bar i { background: #9dff7a; }
+
+/* the trophy collection in the cabin */
+.tr-card { width: min(760px, 94vw); max-height: 90vh; overflow: auto; background: rgba(14, 12, 8, 0.95); border: 1px solid rgba(255, 210, 122, 0.4); border-radius: 14px; padding: 20px 24px; box-shadow: 0 0 40px rgba(255, 190, 90, 0.12); }
+.tr-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.tr-top h2 { color: #ffd27a; }
+.tr-count { color: var(--dim); font-size: 13px; }
+.tr-body h3 { color: #ffd27a !important; }
+.tr-body h3 small { color: var(--dim); font-weight: 400; margin-left: 6px; }
+.tr-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 6px; }
+.tr-item { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 8px; background: rgba(255, 255, 255, 0.04); }
+.tr-item i { flex: none; width: 22px; height: 22px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, var(--c), var(--c) 45%, var(--c2)); border: 2px solid var(--c2); }
+.tr-item div { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tr-item b { font-size: 13px; font-weight: 600; }
+.tr-item span { font-size: 11px; color: var(--dim); }
+.tr-item button { flex: none; padding: 4px 10px; font-size: 12px; }
+.tr-empty { color: var(--dim); font-size: 13px; line-height: 1.5; }
+.tr-close { margin-top: 14px; width: 100%; }
