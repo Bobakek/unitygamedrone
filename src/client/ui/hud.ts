@@ -309,6 +309,15 @@ export class Hud {
     while (this.chatLog.children.length > 8) this.chatLog.firstElementChild!.remove();
   }
 
+  /** A line about the pirate base the pilot is at or holds (null: none). */
+  baseStatus(text: string | null) {
+    const el = $('.pp-base');
+    el.classList.toggle('hidden', !text);
+    if (!text || el.textContent === text) return;
+    el.textContent = text;
+    el.classList.toggle('mine', text.startsWith('⚑'));
+  }
+
   prompt(html: string | null) {
     this.promptEl.style.display = html ? 'block' : 'none';
     if (html) this.promptEl.innerHTML = html;

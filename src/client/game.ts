@@ -50,8 +50,9 @@ import { AnomalyView, LootView, WreckView, type PoiView } from './world/poi-view
 import { SiteView } from './planet/sites-view.ts';
 import { WeatherView } from './world/weather.ts';
 import { StationInterior } from './world/station-interior.ts';
-import { ShipInteriorView } from './world/ship-interior.ts';
-import { BOARD_RANGE, BOARD_SPEED, SHIP_CHEST, SHIP_HATCH, SHIP_HELM, SHIP_REACH, SHIP_WALLS, shipRoomAt } from '../shared/boarding.ts';
+import { BUNKER_INTERIOR, ShipInteriorView } from './world/ship-interior.ts';
+import { BOARD_RANGE, BOARD_SPEED, roomAt, SHIP_LAYOUT, SHIP_REACH, type BoardLayout } from '../shared/boarding.ts';
+import { basePocket, baseKey, BUNKER, BUNKER_LAYOUT, DOOR_REACH, type BaseInfo } from '../shared/base-assault.ts';
 import { BOARD_REACH, DECK_WALLS, inCabin, nearTerminal, PAD, type TerminalKind } from '../shared/station/deck.ts';
 import { forecast, HAZARD_GEAR, HAZARD_NAMES, LAVA_HEAT, STORM_OF, WEATHER, weatherAt, type Weather, type WeatherKind, type WeatherOverride } from '../shared/weather.ts';
 import { CreatureView } from './entities/creature.ts';
@@ -173,9 +174,15 @@ export class Game {
   private weatherV = new WeatherView();
   /** The walkable inside of this system's station. */
   private interior: StationInterior | null = null;
-  /** The inside of the NPC ship the pilot boarded, and what the server says about it. */
-  private shipDeck = new ShipInteriorView();
-  private aboard = { id: 0, crew: 0, looted: false, claimed: false };
+  /** The inside of the NPC ship the pilot boarded (or the base bunker they stormed), and what the server says about it. */
+  private shipView = new ShipInteriorView();
+  private bunkerView = new ShipInteriorView(BUNKER_INTERIOR);
+  private aboard: { id: number; crew: number; looted: boolean; claimed: boolean; base?: [number, number] } = { id: 0, crew: 0, looted: false, claimed: false };
+  /** The pirate bases of this system (see base-assault.ts). */
+  private bases: BaseInfo[] = [];
+  private baseHint = false;
+  private get shipDeck(): ShipInteriorView { return this.aboard.base ? this.bunkerView : this.shipView; }
+  private get boardLayout(): BoardLayout { return this.aboard.base ? BUNKER_LAYOUT : SHIP_LAYOUT; }
   private boardHint = false;
   /** Recent chat lines by pilot name (speech bubbles over their heads). */
   private bubbles = new Map<string, { text: string; until: number }>();
@@ -463,7 +470,7 @@ export class Game {
     this.interior = new StationInterior(sys, facing);
     if (this.pilot) this.interior.cabin.set(this.pilot.trophies);
     this.world.add(this.interior.group);
-    this.world.add(this.shipDeck.group);
+    this.world.add(this.shipView.group, this.bunkerView.group);
     this.gates = sys.gates.map((g) => new GateView(g, new THREE.Vector3(sys.station.pos.x - g.pos.x, sys.station.pos.y - g.pos.y, sys.station.pos.z - g.pos.z)));
     this.gates.forEach((g) => this.world.add(g.group));
     this.fields = sys.fields.map((f) => new FieldView(f));
@@ -1037,11 +1044,20 @@ export class Game {
           this.wxOverrides.set(e.planet, { kind: e.kind, k: e.k, until: e.until });
           break;
         case 'aboard':
-          if (e.id && !this.aboard.id && !this.boardHint) {
+          if (e.id && !e.base && !this.aboard.id && !this.boardHint) {
             this.boardHint = true;
             this.hud.toast('Абордаж: ЛКМ — бластер, ПКМ — прицел. Обезвредьте экипаж, затем F у сейфа в трюме и у штурвала на мостике. G у шлюза — назад в корабль', 'info');
           }
-          this.aboard = { id: e.id, crew: e.crew, looted: e.looted, claimed: e.claimed };
+          if (e.id && e.base && !this.baseHint) {
+            this.baseHint = true;
+            this.hud.toast('Штурм бункера: обезвредьте гарнизон, затем F у пульта в командном пункте — база ваша. Сейф — на складе. G у лифта — наверх', 'info');
+          }
+          this.aboard = { id: e.id, crew: e.crew, looted: e.looted, claimed: e.claimed, base: e.base };
+          this.pred.boardDeck = this.boardLayout.deck;
+          break;
+        case 'bases':
+          this.bases = e.list;
+          this.sitesState();
           break;
         case 'galaxy':
           this.galaxyEvents = e.list;
@@ -1191,9 +1207,10 @@ export class Game {
   private boardSpot(): 'chest' | 'helm' | 'hatch' | null {
     const c = this.pred.char?.p;
     if (!c) return null;
-    if (Math.hypot(c.x - SHIP_CHEST.x, c.z - SHIP_CHEST.z) < SHIP_REACH) return 'chest';
-    if (Math.hypot(c.x - SHIP_HELM.x, c.z - SHIP_HELM.z) < SHIP_REACH) return 'helm';
-    if (Math.hypot(c.x - SHIP_HATCH.x, c.z - SHIP_HATCH.z) < SHIP_REACH + 1) return 'hatch';
+    const L = this.boardLayout;
+    if (Math.hypot(c.x - L.chest.x, c.z - L.chest.z) < SHIP_REACH) return 'chest';
+    if (Math.hypot(c.x - L.helm.x, c.z - L.helm.z) < SHIP_REACH) return 'helm';
+    if (Math.hypot(c.x - L.hatch.x, c.z - L.hatch.z) < SHIP_REACH + 1) return 'hatch';
     return null;
   }
 
@@ -1203,7 +1220,7 @@ export class Game {
     const a = d.toDeck(pivot), b = d.toDeck(this.rig.pos);
     const dx = b.x - a.x, dz = b.z - a.z;
     let tMin = 1;
-    for (const [x0, z0, x1, z1] of SHIP_WALLS) {
+    for (const [x0, z0, x1, z1] of this.boardLayout.walls) {
       const ex = x1 - x0, ez = z1 - z0, den = dx * ez - dz * ex;
       if (Math.abs(den) < 1e-9) continue;
       const t = ((x0 - a.x) * ez - (z0 - a.z) * ex) / den, u = ((x0 - a.x) * dz - (z0 - a.z) * dx) / den;
@@ -1388,7 +1405,9 @@ export class Game {
     } else if (mode !== MODE.ROVER && i.hit('KeyF')) {
       const carcass = mode === MODE.FOOT ? this.nearCarcass() : null;
       const log = mode === MODE.FOOT ? this.nearLog() : null;
-      if (log) { this.openLog(log); this.conn.action({ a: 'readLog' }); }
+      const door = mode === MODE.FOOT ? this.atBunkerDoor() : null;
+      if (door) this.conn.action({ a: 'enterBase' });
+      else if (log) { this.openLog(log); this.conn.action({ a: 'readLog' }); }
       else if (carcass) { this.conn.action({ a: 'sample', id: carcass.id }); this.sfx.mining(); }
       else if (mode === MODE.FOOT) {
         const n = this.nearestNode();
@@ -1614,6 +1633,8 @@ export class Game {
       if (!r.visible || r.info?.kind !== KIND.SHIP) continue;
       const myTeam = this.arenaHud.state.team;
       if (myTeam !== undefined && this.teamOf(id) === myTeam) continue;
+      // our own base's towers are not targets
+      if (r.info.base !== undefined && this.baseMine(r.info.base)) continue;
       const to = new THREE.Vector3(r.p.x - this.origin.x, r.p.y - this.origin.y, r.p.z - this.origin.z);
       const d = to.length();
       if (d > 8000) continue;
@@ -1737,9 +1758,11 @@ export class Game {
     worldPose(ship, sys.planets, now, this.shipW);
     const onDeck = mode === MODE.DECK && this.pred.charPose(alpha, this.charPosB, this.charFwdB);
     // aboard a boarded ship: its deck rides on the ship's (interpolated) pose
-    const hulk = this.aboard.id ? this.remotes.get(this.aboard.id) : undefined;
+    const hulk = this.aboard.id && !this.aboard.base ? this.remotes.get(this.aboard.id) : undefined;
     if (hulk) { const hp = v3(), hq = quat(); if (hulk.buf.sample(this.timeline.renderTime, hp, hq)) this.shipDeck.setPose(hp, hq); }
-    const onBoard = mode === MODE.BOARD && !!hulk && this.pred.charPose(alpha, this.charPosB, this.charFwdB);
+    // a base's bunker is kept in its own pocket, level and still
+    if (this.aboard.base) this.shipDeck.setPose(basePocket(sys.station.pos, this.aboard.base[0], this.aboard.base[1], v3()), quat());
+    const onBoard = mode === MODE.BOARD && (!!hulk || !!this.aboard.base) && this.pred.charPose(alpha, this.charPosB, this.charFwdB);
     const onFoot = mode === MODE.FOOT && this.pred.charPose(alpha, this.charPosB, this.charFwdB);
     const charPl = onFoot ? sys.planets[this.pred.charPlanet] : null;
     const driving = mode === MODE.ROVER && this.pred.charPlanet >= 0 && this.pred.roverPose(alpha, this.roverPosB, this.roverQB);
@@ -1900,7 +1923,7 @@ export class Game {
       cl.group.visible = !this.camUnder;
       // ruins and outposts ride the planet group; built lazily on approach
       const near = vdist(this.origin, p.center) < p.radius * 3;
-      if (near && !this.siteViews[i]) this.siteViews[i] = planetSites(p).map((s) => { const v = new SiteView(p, s); pv.group.add(v.group); return v; });
+      if (near && !this.siteViews[i]) { this.siteViews[i] = planetSites(p).map((s) => { const v = new SiteView(p, s); pv.group.add(v.group); return v; }); this.sitesState(); }
       if (near) for (const v of this.siteViews[i]!) { v.update(this.time); v.ground(pv); }
     });
     this.place(this.station!.group, sys.station.pos);
@@ -1914,6 +1937,7 @@ export class Game {
       it.update(dt, this.time, onDeck ? this.charPosB : null);
     }
     const sd = this.shipDeck;
+    this.shipView.group.visible = this.bunkerView.group.visible = false;
     sd.group.visible = !!onBoard;
     if (onBoard) {
       this.place(sd.group, sd.toWorld(v3(0, 0, 0), v3()));
@@ -2297,13 +2321,14 @@ export class Game {
       // aboard: a lamp in the room the camera is in and one in the corridor, red while the crew fights
       this.indoorK = 1;
       const d = this.shipDeck, cam = d.toDeck(this.origin);
-      const room = shipRoomAt(cam.x, cam.z) ?? shipRoomAt(this.charPosB.x, this.charPosB.z);
+      const L = this.boardLayout, hub = L.rooms.find((r) => r.key === L.hub)!;
+      const room = roomAt(L, cam.x, cam.z) ?? roomAt(L, this.charPosB.x, this.charPosB.z);
       const put = (l: THREE.PointLight, x: number, y: number, z: number) => {
         const w = d.toWorld(v3(x, y, z), v3());
         l.position.set(w.x - this.origin.x, w.y - this.origin.y, w.z - this.origin.z);
       };
       if (room) put(lamp0, (room.x0 + room.x1) / 2, room.ceil - 0.4, (room.z0 + room.z1) / 2);
-      put(lamp1, 0, 2.6, Math.max(-9, Math.min(9, this.charPosB.z)));
+      put(lamp1, 0, Math.min(2.6, hub.ceil - 0.4), Math.max(hub.z0 + 1, Math.min(hub.z1 - 1, this.charPosB.z)));
       const fight = this.aboard.crew > 0;
       lamp0.color.set('#e4ecff'); lamp1.color.set(fight ? '#ff5038' : '#e8f0ff');
       lamp0.distance = 26; lamp1.distance = 16;
@@ -2532,6 +2557,76 @@ export class Game {
     return { planet: np.name, hours: (((12 + (h / (Math.PI * 2)) * 24) % 24) + 24) % 24 };
   }
 
+  /** Is the base with this key (baseKey) held by the local pilot or their group? */
+  private baseMine(key: number): boolean {
+    const b = this.bases.find((x) => baseKey(x.planet, x.site) === key);
+    return !!b && b.state === 'held' && this.ownsBase(b);
+  }
+
+  private ownsBase(b: BaseInfo): boolean {
+    const me = this.pilot?.name;
+    return !!b.owners?.some((o) => o === me || this.group.members.some((m) => m.name === o));
+  }
+
+  /** Time left until a server time, as m:ss. */
+  private fmtLeft(until: number): string {
+    const s = Math.max(0, Math.round(until - this.timeline.serverNow));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }
+
+  /** Bases changed: their site views show the dome, door lamps and flag. */
+  private sitesState() {
+    this.siteViews.forEach((list, i) => {
+      for (const v of list ?? []) if (v.site.kind === 'base') { const b = this.bases.find((x) => x.planet === i && x.site === v.site.id); v.setBase(b, !!b && this.ownsBase(b)); }
+    });
+  }
+
+  /** A pirate base whose blast door the pilot on foot stands at. */
+  private atBunkerDoor(): BaseInfo | null {
+    const pl = this.sys?.planets[this.pred.charPlanet];
+    const c = this.pred.char;
+    if (!pl || !c || this.pred.mode !== MODE.FOOT) return null;
+    const l = Math.hypot(c.p.x, c.p.y, c.p.z) || 1;
+    for (const s of planetSites(pl)) {
+      if (s.kind !== 'base' || (s.dir.x * c.p.x + s.dir.y * c.p.y + s.dir.z * c.p.z) / l < Math.cos(120 / pl.radius)) continue;
+      const q = sitePlane(pl, s, c.p);
+      if (Math.hypot(q.x - BUNKER.door.x, q.z - BUNKER.door.z) > DOOR_REACH) continue;
+      return this.bases.find((b) => b.planet === pl.index && b.site === s.id) ?? null;
+    }
+    return null;
+  }
+
+  /** The base the pilot is at or holds, for the status line. */
+  private baseStatus(): string | null {
+    const sys = this.sys;
+    if (!sys) return null;
+    const near = this.nearPlanet && this.nearAlt < 6000 ? this.nearPlanet : null;
+    let best: { b: BaseInfo; d: number } | null = null;
+    for (const b of this.bases) {
+      const mine = b.state === 'held' && this.ownsBase(b);
+      const pl = sys.planets[b.planet];
+      const s = planetSites(pl)[b.site];
+      if (!s) continue;
+      const w = toWorldPoint(pl, this.rots[pl.index], v3(s.dir.x * (pl.radius + s.h), s.dir.y * (pl.radius + s.h), s.dir.z * (pl.radius + s.h)), v3());
+      const d = vdist(w, this.aboard.base ? w : this.charOrShip());
+      if (!mine && (pl !== near || d > 5000)) continue;
+      if (!best || (mine ? -1 : d) < best.d) best = { b, d: mine ? -1 : d };
+    }
+    if (!best) return null;
+    const b = best.b;
+    if (b.state === 'held') {
+      const who = this.ownsBase(b) ? 'ваша' : `держит ${b.owners?.[0] ?? '?'}`;
+      return `⚑ ${b.name}: ${who} · ещё ${this.fmtLeft(b.until ?? 0)}${b.raid ? ` · налёт: ${b.raid}` : ''}${b.depot ? ` · на складе ${b.depot} ед.` : ''}`;
+    }
+    if (b.state === 'open') return `☠ ${b.name}: оборона подавлена — бункер открыт, гарнизон ${b.garrison}`;
+    return `☠ ${b.name}: ${b.shield ? 'щит активен · ' : ''}турелей ${b.towers} · гарнизон ${b.garrison}`;
+  }
+
+  private charOrShip(): V3 {
+    const m = this.pred.mode;
+    return m === MODE.FOOT || m === MODE.ROVER ? this.charPos : this.shipPos;
+  }
+
   private fmtDist(d: number) {
     return d >= 1000 ? `${(d / 1000).toFixed(d >= 10000 ? 0 : 1)} км` : `${Math.round(d)} м`;
   }
@@ -2628,9 +2723,11 @@ export class Game {
       // on the arena: team mates green, the other team red
       const team = r.info.kind === KIND.SHIP ? this.teamOf(id) : undefined;
       const foe = team !== undefined && team !== this.arenaHud.state.team;
-      const ally = team !== undefined ? !foe : !!r.info.owner && this.allies.has(r.info.owner);
-      if (ally && team === undefined) seenAllies.add(r.info.owner!);
-      blips.push({ x: c.x, y: c.y, z: c.z, kind: r.info.npc || foe ? 'npc' : ally ? 'ally' : 'player', sel: id === this.targetId });
+      // towers of a base the pilot (or their group) holds fight on their side
+      const ourTower = r.info.base !== undefined && this.baseMine(r.info.base);
+      const ally = team !== undefined ? !foe : ourTower || (!!r.info.owner && this.allies.has(r.info.owner));
+      if (ally && team === undefined && r.info.owner) seenAllies.add(r.info.owner);
+      blips.push({ x: c.x, y: c.y, z: c.z, kind: ourTower ? 'ally' : r.info.npc || foe ? 'npc' : ally ? 'ally' : 'player', sel: id === this.targetId });
       if (d < 4000 && (mode !== MODE.DOCKED || r.info.kind === KIND.CHAR) && (mode !== MODE.BOARD || r.state?.frame === BOARD_FRAME)) {
         const sp = this.project(v3(r.p.x, r.p.y, r.p.z));
         const said = r.info.kind === KIND.CHAR ? this.bubbles.get(r.info.name) : undefined;
@@ -2678,7 +2775,7 @@ export class Game {
       const c = this.pred.char, pc = this.ctrl.footPitch;
       const dir = v3(c.f.x * Math.cos(pc), Math.sin(pc), c.f.z * Math.cos(pc));
       let reach = 40;
-      for (const [x0, z0, x1, z1] of SHIP_WALLS) {
+      for (const [x0, z0, x1, z1] of this.boardLayout.walls) {
         const ex = x1 - x0, ez = z1 - z0, dx = dir.x * reach, dz = dir.z * reach, den = dx * ez - dz * ex;
         if (Math.abs(den) < 1e-9) continue;
         const t = ((x0 - c.p.x) * ez - (z0 - c.p.z) * ex) / den, u = ((x0 - c.p.x) * dz - (z0 - c.p.z) * dx) / den;
@@ -2713,7 +2810,10 @@ export class Game {
     } else if (mode === MODE.FOOT) {
       const n = this.nearestNode();
       const carcass = this.nearCarcass();
-      if (this.nearLog()) prompt = '<kbd>F</kbd> бортовой журнал';
+      const door = this.atBunkerDoor();
+      if (door) prompt = door.state === 'held' ? (this.ownsBase(door) ? '<kbd>F</kbd> спуститься в бункер — склад и пульт' : 'Бункер заперт: базу держит другой пилот')
+        : door.state === 'open' ? `<kbd>F</kbd> штурмовать бункер · гарнизон: ${door.garrison}` : door.shield ? 'Дверь закрыта силовым куполом — уничтожьте генератор щита' : `Бункер заблокирован, пока стреляют турели: ${door.towers}`;
+      else if (this.nearLog()) prompt = '<kbd>F</kbd> бортовой журнал';
       else if (carcass) prompt = carcass.drone ? '<kbd>F</kbd> разобрать дрона' : `<kbd>F</kbd> взять биообразцы: ${carcass.name}`;
       else if (n) prompt = `<kbd>F</kbd> собрать: ${RESOURCE_NAMES[n.type]}`;
       else if (this.footByDeposit()) prompt = `${DEPOSIT_NAMES[this.footByDeposit()!.kind]}: без бура не добыть — приезжайте на ровере`;
@@ -2737,9 +2837,15 @@ export class Game {
       else if (dep) prompt = `<kbd>F</kbd> бурить: ${DEPOSIT_NAMES[dep.kind]} (${yieldText(dep.yield, CARGO_NAMES)}) · ${bed}`;
       else prompt = `${kmh} км/ч · <kbd>Space</kbd> ручник · <kbd>Shift</kbd> ускорение · <kbd>G</kbd> выйти`;
     } else if (mode === MODE.BOARD && this.pred.char) {
-      const spot = this.boardSpot(), a = this.aboard, room = shipRoomAt(this.pred.char.p.x, this.pred.char.p.z)?.name ?? '';
-      const fight = a.crew > 0 ? `Экипаж на борту: ${a.crew}` : 'Экипаж обезврежен';
-      if (spot === 'chest') prompt = a.crew > 0 ? 'Сейф заперт — сначала обезвредьте экипаж' : a.looted ? 'Сейф пуст' : '<kbd>F</kbd> забрать добычу из сейфа';
+      const spot = this.boardSpot(), a = this.aboard, room = roomAt(this.boardLayout, this.pred.char.p.x, this.pred.char.p.z)?.name ?? '';
+      const fight = a.base ? (a.crew > 0 ? `Гарнизон: ${a.crew}` : 'Гарнизон обезврежен') : a.crew > 0 ? `Экипаж на борту: ${a.crew}` : 'Экипаж обезврежен';
+      if (a.base) {
+        const b = this.bases.find((x) => x.planet === a.base![0] && x.site === a.base![1]);
+        if (spot === 'chest') prompt = a.crew > 0 ? 'Сейф заперт — сначала обезвредьте гарнизон' : a.looted ? 'Склад пуст — добыча пополняется каждые пару минут' : '<kbd>F</kbd> забрать добычу со склада';
+        else if (spot === 'helm') prompt = a.crew > 0 ? 'Пульт: сначала обезвредьте гарнизон' : a.claimed || b?.state === 'held' ? `База ваша${b?.until ? ` ещё ${this.fmtLeft(b.until)}` : ''}` : '<kbd>F</kbd> захватить базу';
+        else if (spot === 'hatch') prompt = `<kbd>G</kbd> подняться на лифте · ${fight}`;
+        else prompt = `${room} · ${fight}${a.crew === 0 && !a.looted ? ' · сейф на складе' : ''}${a.crew === 0 && !a.claimed && b?.state !== 'held' ? ' · пульт в командном пункте' : ''}`;
+      } else if (spot === 'chest') prompt = a.crew > 0 ? 'Сейф заперт — сначала обезвредьте экипаж' : a.looted ? 'Сейф пуст' : '<kbd>F</kbd> забрать добычу из сейфа';
       else if (spot === 'helm') prompt = a.crew > 0 ? 'Штурвал: сначала обезвредьте экипаж' : a.claimed ? 'Корабль ваш — призовая команда поведёт его на верфь' : '<kbd>F</kbd> захватить корабль';
       else if (spot === 'hatch') prompt = `<kbd>G</kbd> вернуться в свой корабль · ${fight}`;
       else prompt = `${room} · ${fight}${a.crew === 0 && !a.looted ? ' · сейф в трюме' : ''}${a.crew === 0 && !a.claimed ? ' · штурвал на мостике' : ''}`;
@@ -2752,5 +2858,6 @@ export class Game {
       else if (Math.hypot(c.x - PAD.x, c.z - PAD.z) < BOARD_REACH) prompt = '<kbd>G</kbd> сесть в корабль';
     }
     this.hud.prompt(prompt);
+    this.hud.baseStatus(mode === MODE.DOCKED || mode === MODE.DECK || mode === MODE.DEAD ? null : this.baseStatus());
   }
 }

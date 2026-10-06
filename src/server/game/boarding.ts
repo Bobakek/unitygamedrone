@@ -1,12 +1,13 @@
 import {
-  BOARD_RANGE, BOARD_SPEED, CREW, DISABLE_HULL, DISABLE_TIME, deckReach, deckSight, deckWaypoint, FLOOR_Y, MAX_PRIZES, PRIZE_NAMES, PRIZE_VALUE,
-  SHIP_CHEST, SHIP_DECK, SHIP_HATCH, SHIP_HELM, SHIP_REACH, SHIP_ROOMS, shipRoomAt, type PrizeKind,
+  BOARD_RANGE, BOARD_SPEED, CREW, DISABLE_HULL, DISABLE_TIME, deckReach, deckSight, deckWaypoint, MAX_PRIZES, PRIZE_NAMES, PRIZE_VALUE,
+  roomAt, SHIP_LAYOUT, SHIP_REACH, type BoardLayout, type PrizeKind,
 } from '../../shared/boarding.ts';
+import { BUNKER_LAYOUT, COMMANDER, COMMANDER_POST, GARRISON, GARRISON_POSTS } from '../../shared/base-assault.ts';
 import { BOUNTY, CARGO_NAMES, cargoCount, combatStats, emptyCargo, type Cargo, type CargoKey } from '../../shared/economy.ts';
 import { BLASTER } from '../../shared/fauna.ts';
 import { makeName } from '../../shared/galaxy/names.ts';
 import { hashInts, Rng } from '../../shared/math/rng.ts';
-import { qlook, qrot, quat, v3, vdist, vlen, type V3 } from '../../shared/math/vec.ts';
+import { qlook, qrot, quat, v3, vdist, vlen, type Quat, type V3 } from '../../shared/math/vec.ts';
 import {
   aimByte, BLASTER_LEVEL, BOARD_FRAME, CFLAG, DRONE_LEVEL, EFLAG, KIND, MODE, MSG, type EntityInfo, type EntityState, type GameEvent,
 } from '../../shared/net/protocol.ts';
@@ -31,9 +32,18 @@ export interface CrewMember {
   pitch: number; shotAt: number;
 }
 
-/** A disabled ship and everything aboard it. */
+/** A disabled ship (or a pirate base's bunker) and everything aboard it. */
 export interface Hulk {
-  ship: ShipEntity; kind: PrizeKind;
+  /** Ship id, or an id of its own for a bunker (CharEntity.aboard). */
+  id: number;
+  /** The boarded ship (null: a bunker). */
+  ship: ShipEntity | null;
+  kind: PrizeKind | 'base';
+  layout: BoardLayout;
+  /** A bunker's base (planet and site index). */
+  base?: { planet: number; site: number };
+  /** World pose of the deck's anchor (a ship: its own pose, kept up to date by the system). */
+  pose: { p: V3; q: Quat };
   /** System time when the crew restarts it (paused while someone is aboard). */
   until: number;
   crew: CrewMember[];
@@ -85,7 +95,9 @@ export class Boarding {
     if (kind === 'freighter') { loot.ore = r.int(6, 12); loot.crystal = r.int(4, 8); loot.relic = r.int(1, 3); loot.bio = r.int(0, 4); }
     else { loot.ore = r.int(1, 4); loot.crystal = r.int(0, 3); loot.relic = r.float() < 0.3 ? 1 : 0; }
     const credits = kind === 'freighter' ? r.int(150, 350) : r.int(60, 160);
-    const h: Hulk = { ship, kind, until: t + DISABLE_TIME, crew: [], alerted: false, loot, credits, looted: false, claimed: false, boarders: new Set() };
+    const h: Hulk = {
+      id: ship.id, ship, kind, layout: SHIP_LAYOUT, pose: ship.world, until: t + DISABLE_TIME, crew: [], alerted: false, loot, credits, looted: false, claimed: false, boarders: new Set(),
+    };
     // the captain on the bridge, the rest at their posts
     const n = kind === 'freighter' ? r.int(4, 5) : r.int(2, 3);
     h.crew.push(this.crewman(true, kind, BRIDGE_POST));
@@ -94,13 +106,45 @@ export class Boarding {
     return h;
   }
 
-  private crewman(captain: boolean, kind: PrizeKind, post: { x: number; z: number }): CrewMember {
+  /**
+   * The command bunker of a pirate base: the garrison at its posts, the commander in the
+   * command post, plunder in the armory's strongbox. `pose` is where its deck is kept.
+   */
+  openBunker(planet: number, site: number, pose: { p: V3; q: Quat }): Hulk {
     const r = this.rng;
-    const look = lookCode(captain ? CAPTAIN_LOOK : kind === 'pirate' ? PIRATE_LOOK : HAULER_LOOK);
+    const loot = emptyCargo();
+    loot.ore = r.int(4, 8); loot.crystal = r.int(3, 6); loot.relic = r.int(1, 2); loot.bio = r.int(0, 3);
+    const h: Hulk = {
+      id: this.sys.nextId(), ship: null, kind: 'base', layout: BUNKER_LAYOUT, base: { planet, site }, pose,
+      until: Infinity, crew: [], alerted: false, loot, credits: r.int(250, 450), looted: false, claimed: false, boarders: new Set(),
+    };
+    h.crew.push(this.crewman(true, 'base', COMMANDER_POST));
+    for (let i = 0; i < GARRISON; i++) h.crew.push(this.crewman(false, 'base', GARRISON_POSTS[i % GARRISON_POSTS.length]));
+    this.hulks.set(h.id, h);
+    return h;
+  }
+
+  /** The bunker of a base, if it has been opened. */
+  bunker(planet: number, site: number): Hulk | null {
+    for (const h of this.hulks.values()) if (h.base && h.base.planet === planet && h.base.site === site) return h;
+    return null;
+  }
+
+  /** The base went back to the pirates: the bunker (and the garrison in it) is forgotten. */
+  closeBunker(h: Hulk, why: string) {
+    const aboard = [...h.boarders];
+    this.drop(h);
+    for (const s of aboard) s.msg(why, 'warn');
+  }
+
+  private crewman(captain: boolean, kind: PrizeKind | 'base', post: { x: number; z: number }): CrewMember {
+    const r = this.rng;
+    const look = lookCode(captain ? CAPTAIN_LOOK : kind === 'freighter' ? HAULER_LOOK : PIRATE_LOOK);
     const a = r.range(0, Math.PI * 2);
-    const hp = captain ? CREW.captainHp : CREW.hp;
+    const hp = captain ? (kind === 'base' ? COMMANDER.hp : CREW.captainHp) : CREW.hp;
+    const title = captain ? (kind === 'base' ? 'Комендант' : 'Капитан') : kind === 'freighter' ? 'Матрос' : kind === 'base' ? 'Боевик' : 'Пират';
     const c: CrewMember = {
-      id: this.sys.nextId(), name: `${captain ? 'Капитан' : kind === 'pirate' ? 'Пират' : 'Матрос'} ${makeName(r)}`, captain, look,
+      id: this.sys.nextId(), name: `${title} ${makeName(r)}`, captain, look,
       state: newChar(v3(post.x, 0, post.z), v3(Math.sin(a), 0, Math.cos(a))), hp, maxHp: hp, dead: false, post, cool: r.range(0, 1), seen: -1, last: null, pitch: 0, shotAt: -99,
     };
     this.sys.infos.push(this.crewInfo(c));
@@ -120,15 +164,21 @@ export class Boarding {
     return s.char?.aboard ? this.hulks.get(s.char.aboard) ?? null : null;
   }
 
-  /** Ship-local deck point → world. */
-  toWorld(ship: ShipEntity, x: number, y: number, z: number, out: V3): V3 {
-    qrot(out, ship.world.q, v3(x, y + FLOOR_Y, z));
-    out.x += ship.world.p.x; out.y += ship.world.p.y; out.z += ship.world.p.z;
+  /** Deck point → world. */
+  toWorld(h: Hulk, x: number, y: number, z: number, out: V3): V3 {
+    qrot(out, h.pose.q, v3(x, y + h.layout.floorY, z));
+    out.x += h.pose.p.x; out.y += h.pose.p.y; out.z += h.pose.p.z;
     return out;
   }
 
-  private dirToWorld(ship: ShipEntity, d: V3, out: V3): V3 {
-    return qrot(out, ship.world.q, d);
+  /** World position of someone aboard (null: not aboard anything). */
+  charWorld(c: CharEntity, out: V3): V3 | null {
+    const h = c.aboard ? this.hulks.get(c.aboard) : undefined;
+    return h ? this.toWorld(h, c.state.p.x, c.state.p.y, c.state.p.z, out) : null;
+  }
+
+  private dirToWorld(h: Hulk, d: V3, out: V3): V3 {
+    return qrot(out, h.pose.q, d);
   }
 
   // ------------------------------------------------------------------ boarding and leaving
@@ -150,10 +200,22 @@ export class Boarding {
     ship.state.q = { ...t.world.q };
     ship.state.v = v3();
     this.sys.syncWorld(ship);
-    // through the airlock, facing the bow
-    const hp = s.gear().hp;
+    this.enter(s, h);
+    const alive = h.crew.filter((x) => !x.dead).length;
+    s.msg(alive ? `На борту: ${t.name}. Экипаж — ${alive} чел., будьте готовы к бою` : `На борту: ${t.name}. Экипажа нет`, alive ? 'warn' : 'info');
+    return null;
+  }
+
+  /** Through the airlock (or out of the lift), facing in; the pilot's on-foot or ship-borne self stays put. */
+  enter(s: Session, h: Hulk) {
+    if (s.char) {
+      this.sys.chars.delete(s.char.id);
+      this.sys.gone.push(s.char.id);
+      s.char = null;
+    }
+    const hp = s.gear().hp, L = h.layout;
     const c: CharEntity = {
-      id: this.sys.nextId(), name: s.pilot.name, state: newChar(v3(SHIP_HATCH.x, 0, SHIP_HATCH.z - 0.5), v3(0, 0, -1)), planet: -1, aboard: id,
+      id: this.sys.nextId(), name: s.pilot.name, state: newChar(v3(L.hatch.x, 0, L.hatch.z - 0.5), v3(0, 0, -1)), planet: -1, aboard: h.id,
       session: s, hp, maxHp: hp, hurtAt: -99, cool: 0, pitch: 0, aim: false, shotAt: -99, drown: 0,
     };
     s.char = c;
@@ -163,18 +225,16 @@ export class Boarding {
     s.resync();
     h.boarders.add(s);
     this.tell(s, h);
-    const alive = h.crew.filter((x) => !x.dead).length;
-    s.msg(alive ? `На борту: ${t.name}. Экипаж — ${alive} чел., будьте готовы к бою` : `На борту: ${t.name}. Экипажа нет`, alive ? 'warn' : 'info');
-    return null;
   }
 
   /** Back through the airlock into the pilot's own ship. */
   leave(s: Session): string | null {
     const h = this.of(s);
     if (!h || !s.char) return null;
-    const p = s.char.state.p;
-    if (Math.hypot(p.x - SHIP_HATCH.x, p.z - SHIP_HATCH.z) > SHIP_REACH + 1) return 'Вернитесь к шлюзу';
-    this.sys.recallPilot(s);
+    const p = s.char.state.p, L = h.layout;
+    if (Math.hypot(p.x - L.hatch.x, p.z - L.hatch.z) > SHIP_REACH + 1) return h.base ? 'Вернитесь к лифту' : 'Вернитесь к шлюзу';
+    if (h.base) this.sys.exitBunker(s, h.base.planet, h.base.site);
+    else this.sys.recallPilot(s);
     return null;
   }
 
@@ -185,15 +245,15 @@ export class Boarding {
       // a fresh while before the crew can restart it
       h.until = Math.max(h.until, this.sys.time + 30);
       s.sendJson(MSG.EVENTS, { ev: [{ t: 'aboard', id: 0, crew: 0, looted: false, claimed: false } satisfies GameEvent] });
-      if (h.claimed && !h.boarders.size) this.prizeAway(h);
+      if (h.claimed && !h.boarders.size && h.ship) this.prizeAway(h);
     }
   }
 
   private tell(s: Session, h: Hulk) {
-    s.sendJson(MSG.EVENTS, { ev: [{ t: 'aboard', id: h.ship.id, crew: h.crew.filter((c) => !c.dead).length, looted: h.looted, claimed: h.claimed } satisfies GameEvent] });
+    s.sendJson(MSG.EVENTS, { ev: [{ t: 'aboard', id: h.id, crew: h.crew.filter((c) => !c.dead).length, looted: h.looted, claimed: h.claimed, base: h.base ? [h.base.planet, h.base.site] : undefined } satisfies GameEvent] });
   }
 
-  private tellAll(h: Hulk) {
+  tellAll(h: Hulk) {
     for (const s of h.boarders) this.tell(s, h);
   }
 
@@ -201,10 +261,10 @@ export class Boarding {
   loot(s: Session): string | null {
     const h = this.of(s);
     if (!h || !s.char) return null;
-    const p = s.char.state.p;
-    if (Math.hypot(p.x - SHIP_CHEST.x, p.z - SHIP_CHEST.z) > SHIP_REACH) return 'Подойдите к сейфу в трюме';
-    if (h.crew.some((c) => !c.dead)) return 'Сейф заперт: сначала обезвредьте экипаж';
-    if (h.looted) return 'Трюм уже пуст';
+    const p = s.char.state.p, L = h.layout;
+    if (Math.hypot(p.x - L.chest.x, p.z - L.chest.z) > SHIP_REACH) return h.base ? 'Подойдите к сейфу на складе' : 'Подойдите к сейфу в трюме';
+    if (h.crew.some((c) => !c.dead)) return h.base ? 'Сейф заперт: сначала обезвредьте гарнизон' : 'Сейф заперт: сначала обезвредьте экипаж';
+    if (h.looted) return h.base ? 'Склад пуст: новая добыча приходит каждые пару минут' : 'Трюм уже пуст';
     const pl = s.pilot;
     let free = combatStats(pl.upgrades, pl.ship).cargoCap - cargoCount(pl.cargo);
     const got: Partial<Record<CargoKey, number>> = {};
@@ -220,7 +280,7 @@ export class Boarding {
     h.looted = left === 0;
     s.sendPilot();
     const txt = [yieldText(got, CARGO_NAMES), credits ? `+${credits} кр` : ''].filter(Boolean).join(', ');
-    this.toWorld(h.ship, SHIP_CHEST.x, 1.2, SHIP_CHEST.z, wp);
+    this.toWorld(h, L.chest.x, 1.2, L.chest.z, wp);
     s.sendJson(MSG.EVENTS, { ev: [{ t: 'loot', text: `Добыча: ${txt || 'ничего'}`, pos: [wp.x, wp.y, wp.z] }] });
     if (left) s.msg(`В трюм не влезло ещё ${left} ед. — освободите место и возвращайтесь`, 'warn');
     this.tellAll(h);
@@ -231,18 +291,27 @@ export class Boarding {
     const h = this.of(s);
     if (!h || !s.char) return null;
     const p = s.char.state.p;
-    if (Math.hypot(p.x - SHIP_HELM.x, p.z - SHIP_HELM.z) > SHIP_REACH) return 'Подойдите к штурвалу на мостике';
-    if (h.crew.some((c) => !c.dead)) return 'На борту ещё остался экипаж';
-    if (h.claimed) return 'Корабль уже ваш';
+    if (Math.hypot(p.x - h.layout.helm.x, p.z - h.layout.helm.z) > SHIP_REACH) return h.base ? 'Подойдите к пульту в командном пункте' : 'Подойдите к штурвалу на мостике';
+    if (h.crew.some((c) => !c.dead)) return h.base ? 'В бункере ещё остался гарнизон' : 'На борту ещё остался экипаж';
+    if (h.claimed) return h.base ? 'База уже ваша' : 'Корабль уже ваш';
+    if (h.base) {
+      const err = this.sys.outposts.capture(s, h.base.planet, h.base.site);
+      if (err) return err;
+      h.claimed = true;
+      this.tellAll(h);
+      return null;
+    }
+    if (!h.ship || h.kind === 'base') return null;
     const pl = s.pilot;
     if (pl.prizes.length >= MAX_PRIZES) return `На верфях уже ждут продажи ${MAX_PRIZES} ваших призов — сначала продайте их`;
-    const [a, b] = PRIZE_VALUE[h.kind];
+    const ship = h.ship, kind = h.kind;
+    const [a, b] = PRIZE_VALUE[kind];
     const value = Math.round(this.rng.range(a, b) / 10) * 10;
-    pl.prizes.push({ id: `${this.sys.def.id}-${h.ship.id}-${Math.floor(this.sys.time)}`, name: `${PRIZE_NAMES[h.kind]} «${h.ship.name.replace(/[«»]/g, '').split(' ').slice(1).join(' ') || h.ship.name}»`, kind: h.kind, value });
+    pl.prizes.push({ id: `${this.sys.def.id}-${ship.id}-${Math.floor(this.sys.time)}`, name: `${PRIZE_NAMES[kind]} «${ship.name.replace(/[«»]/g, '').split(' ').slice(1).join(' ') || ship.name}»`, kind, value });
     h.claimed = true;
     pl.kills++;
-    this.sys.captured(h.ship, s);
-    this.sys.reward(s, h.ship.world.p, h.kind === 'freighter' ? BOUNTY.npc * 3 : BOUNTY.npc, 'Корабль захвачен');
+    this.sys.captured(ship, s);
+    this.sys.reward(s, ship.world.p, kind === 'freighter' ? BOUNTY.npc * 3 : BOUNTY.npc, 'Корабль захвачен');
     s.msg(`Призовая команда поведёт корабль на верфь: продать его можно на любой станции (≈${value} кр)${h.looted ? '' : '. Не забудьте сейф в трюме'}`, 'good');
     this.tellAll(h);
     return null;
@@ -263,17 +332,19 @@ export class Boarding {
   /** The prize crew takes a claimed ship away once the last boarder is off it. */
   private prizeAway(h: Hulk) {
     this.drop(h);
-    this.sys.despawn(h.ship);
+    if (h.ship) this.sys.despawn(h.ship);
   }
 
   /** Forgets a hulk: crew entities go, anyone still aboard is put back in their ship. */
   private drop(h: Hulk) {
-    this.hulks.delete(h.ship.id);
+    this.hulks.delete(h.id);
     for (const c of h.crew) this.sys.gone.push(c.id);
     h.crew = [];
     for (const s of [...h.boarders]) {
       h.boarders.delete(s);
-      if (s.mode === MODE.BOARD) this.sys.recallPilot(s);
+      if (s.mode !== MODE.BOARD) continue;
+      if (h.base) this.sys.exitBunker(s, h.base.planet, h.base.site);
+      else this.sys.recallPilot(s);
     }
   }
 
@@ -291,6 +362,11 @@ export class Boarding {
     const t = this.sys.time;
     for (const h of [...this.hulks.values()]) {
       const ship = h.ship;
+      if (!ship) {
+        // a bunker: the garrison never leaves, it only fights
+        if (h.crew.some((c) => !c.dead) && (h.boarders.size || h.alerted)) for (const c of h.crew) if (!c.dead) this.think(h, c, dt);
+        continue;
+      }
       if (ship.dead || this.sys.ships.get(ship.id) !== ship) { this.drop(h); continue; }
       // dead in space: drifts to a stop (held still while someone is docked)
       const st = ship.state;
@@ -313,6 +389,7 @@ export class Boarding {
   /** Nobody came: the crew gets the engines going again and the ship runs. */
   private restart(h: Hulk) {
     const ship = h.ship;
+    if (!ship) return;
     this.drop(h);
     ship.disabled = false;
     ship.hull = Math.max(ship.hull, ship.combat.maxHull * 0.4);
@@ -320,13 +397,13 @@ export class Boarding {
   }
 
   private think(h: Hulk, c: CrewMember, dt: number) {
-    const t = this.sys.time, cs = c.state, p = cs.p;
+    const t = this.sys.time, cs = c.state, p = cs.p, L = h.layout;
     c.cool -= dt;
     let tgt: Session | null = null, td: number = CREW.sight;
     for (const s of h.boarders) {
       if (s.mode !== MODE.BOARD || !s.char) continue;
       const q = s.char.state.p, d = Math.hypot(q.x - p.x, q.z - p.z);
-      if (d < td && deckSight(p.x, p.z, q.x, q.z)) { td = d; tgt = s; }
+      if (d < td && deckSight(p.x, p.z, q.x, q.z, L.walls)) { td = d; tgt = s; }
     }
     const inp = emptyCharInput();
     let goal: { x: number; z: number } | null = null;
@@ -355,18 +432,19 @@ export class Boarding {
         }
         goal = c.last && Math.hypot(c.last.x - p.x, c.last.z - p.z) > 1 ? c.last : near;
         if (c.last && Math.hypot(c.last.x - p.x, c.last.z - p.z) <= 1) c.last = null;
-        // the captain holds the bridge
-        if (c.captain) goal = shipRoomAt(p.x, p.z)?.key === 'bridge' && near && shipRoomAt(near.x, near.z)?.key !== 'bridge' ? null : goal ?? null;
+        // the captain holds the bridge (the commander, the command post)
+        const keep = roomAt(L, L.helm.x, L.helm.z)?.key;
+        if (c.captain) goal = roomAt(L, p.x, p.z)?.key === keep && near && roomAt(L, near.x, near.z)?.key !== keep ? null : goal ?? null;
       } else goal = c.post;
     }
     if (goal && Math.hypot(goal.x - p.x, goal.z - p.z) > 0.7) {
-      const w = deckWaypoint(p, goal);
+      const w = deckWaypoint(p, goal, L);
       const dx = w.x - p.x, dz = w.z - p.z, l = Math.hypot(dx, dz) || 1;
       cs.f.x = dx / l; cs.f.z = dz / l;
       inp.mz = 1;
       inp.sprint = h.alerted;
     }
-    stepDeck(cs, inp, dt, SHIP_DECK);
+    stepDeck(cs, inp, dt, L.deck);
   }
 
   /** The whole crew hears the fight. */
@@ -391,11 +469,11 @@ export class Boarding {
     }
     const dir = v3(aim.x - o.x, aim.y - o.y, aim.z - o.z), l = vlen(dir) || 1;
     dir.x /= l; dir.y /= l; dir.z /= l;
-    this.toWorld(h.ship, o.x, o.y, o.z, wp);
-    this.dirToWorld(h.ship, dir, wv);
+    this.toWorld(h, o.x, o.y, o.z, wp);
+    this.dirToWorld(h, dir, wv);
     const sp = BLASTER.speed * 0.8;
     this.sys.shots.push({ shooter: c.id, px: wp.x, py: wp.y, pz: wp.z, vx: wv.x * sp, vy: wv.y * sp, vz: wv.z * sp, level: DRONE_LEVEL });
-    if (hit) this.sys.fauna.hurt(s, c.captain ? CREW.captainDmg : CREW.dmg, c.id);
+    if (hit) this.sys.fauna.hurt(s, c.captain ? (h.base ? COMMANDER.dmg : CREW.captainDmg) : CREW.dmg, c.id);
   }
 
   /** A boarder fires the hand blaster along their heading + `pitch` (hitscan, walls stop it). */
@@ -408,10 +486,10 @@ export class Boarding {
     const dir = v3(cs.f.x * Math.cos(pc), Math.sin(pc), cs.f.z * Math.cos(pc));
     const o = v3(cs.p.x, 1.45, cs.p.z);
     let reach: number = BLASTER.range;
-    const k = deckReach(o.x, o.z, o.x + dir.x * reach, o.z + dir.z * reach);
+    const k = deckReach(o.x, o.z, o.x + dir.x * reach, o.z + dir.z * reach, h.layout.walls);
     reach *= k;
     // floor and ceiling
-    const ceil = shipRoomAt(o.x, o.z)?.ceil ?? 3;
+    const ceil = roomAt(h.layout, o.x, o.z)?.ceil ?? 3;
     if (dir.y < -1e-3) reach = Math.min(reach, -o.y / dir.y);
     else if (dir.y > 1e-3) reach = Math.min(reach, (ceil - o.y) / dir.y);
     const end = v3(o.x + dir.x * reach, o.y + dir.y * reach, o.z + dir.z * reach);
@@ -423,12 +501,12 @@ export class Boarding {
         if (tt >= 0 && tt < best) { best = tt; hit = c; }
       }
     }
-    this.toWorld(h.ship, o.x, o.y, o.z, wp);
-    this.dirToWorld(h.ship, dir, wv);
+    this.toWorld(h, o.x, o.y, o.z, wp);
+    this.dirToWorld(h, dir, wv);
     this.sys.shots.push({ shooter: ch.id, px: wp.x, py: wp.y, pz: wp.z, vx: wv.x * BLASTER.speed, vy: wv.y * BLASTER.speed, vz: wv.z * BLASTER.speed, level: BLASTER_LEVEL });
     if (!hit) return;
     const hp = v3(o.x + (end.x - o.x) * best, o.y + (end.y - o.y) * best, o.z + (end.z - o.z) * best);
-    this.toWorld(h.ship, hp.x, hp.y, hp.z, wp);
+    this.toWorld(h, hp.x, hp.y, hp.z, wp);
     this.sys.events.push({ t: 'hit', target: hit.id, pos: [wp.x, wp.y, wp.z], shield: false, dmg: BLASTER.damage, by: ch.id });
     this.hurtCrew(h, hit, BLASTER.damage, s);
   }
@@ -445,7 +523,7 @@ export class Boarding {
     c.state.v = v3();
     const left = h.crew.filter((x) => !x.dead).length;
     for (const s of h.boarders) {
-      s.msg(left ? `${c.name} обезврежен. Осталось: ${left}` : 'Экипаж обезврежен! Сейф в трюме открыт, штурвал на мостике — захватить корабль', left ? 'info' : 'good');
+      s.msg(left ? `${c.name} обезврежен. Осталось: ${left}` : h.base ? 'Гарнизон обезврежен! Сейф на складе открыт, пульт в командном пункте — захватить базу' : 'Экипаж обезврежен! Сейф в трюме открыт, штурвал на мостике — захватить корабль', left ? 'info' : 'good');
     }
     this.tellAll(h);
   }
@@ -485,12 +563,12 @@ export class Boarding {
   /** Dev: straight aboard the nearest disabled ship (or a fresh pirate). */
   devBoard(s: Session, freighter = false): string {
     if (s.mode !== MODE.SHIP) return 'Сядьте в корабль';
-    let h = [...this.hulks.values()].filter((x) => !x.claimed).sort((a, b) => vdist(a.ship.world.p, s.ship.world.p) - vdist(b.ship.world.p, s.ship.world.p))[0];
-    if (!h || vdist(h.ship.world.p, s.ship.world.p) > 3000) { this.devSpawn(s, freighter); h = [...this.hulks.values()].at(-1)!; }
+    let h = [...this.hulks.values()].filter((x) => !x.claimed && x.ship).sort((a, b) => vdist(a.pose.p, s.ship.world.p) - vdist(b.pose.p, s.ship.world.p))[0];
+    if (!h || vdist(h.pose.p, s.ship.world.p) > 3000) { this.devSpawn(s, freighter); h = [...this.hulks.values()].at(-1)!; }
     s.ship.state.v = v3();
-    s.ship.state.p = { ...h.ship.world.p, x: h.ship.world.p.x + 60 };
+    s.ship.state.p = { ...h.pose.p, x: h.pose.p.x + 60 };
     this.sys.syncWorld(s.ship);
-    return this.board(s, h.ship.id) ?? 'На борту';
+    return this.board(s, h.id) ?? 'На борту';
   }
 
   /** Dev: knocks out the whole crew aboard. */
@@ -505,10 +583,10 @@ export class Boarding {
   devGo(s: Session, where: string): string {
     const h = this.of(s);
     if (!h || !s.char) return 'Вы не на борту';
-    const room = SHIP_ROOMS.find((r) => r.key === where);
-    const spot = where === 'chest' ? { x: SHIP_CHEST.x + 1.6, z: SHIP_CHEST.z, fx: -1, fz: 0 } : where === 'helm' ? { x: SHIP_HELM.x, z: SHIP_HELM.z + 1.3, fx: 0, fz: -1 }
-      : where === 'hatch' ? { x: SHIP_HATCH.x, z: SHIP_HATCH.z - 0.5, fx: 0, fz: -1 } : room ? { x: (room.x0 + room.x1) / 2, z: (room.z0 + room.z1) / 2, fx: 0, fz: -1 } : null;
-    if (!spot) return '/aboard hatch|chest|helm|hold|quarters|engine|bridge|corridor';
+    const L = h.layout, room = L.rooms.find((r) => r.key === where);
+    const spot = where === 'chest' ? L.chestSpot : where === 'helm' ? L.helmSpot
+      : where === 'hatch' ? { x: L.hatch.x, z: L.hatch.z - 0.5, fx: 0, fz: -1 } : room ? { x: (room.x0 + room.x1) / 2, z: (room.z0 + room.z1) / 2, fx: 0, fz: -1 } : null;
+    if (!spot) return `/aboard hatch|chest|helm|${L.rooms.map((r) => r.key).join('|')}`;
     const c = s.char.state;
     c.p = v3(spot.x, 0, spot.z); c.v = v3(); c.f = v3(spot.fx, 0, spot.fz);
     s.resync();

@@ -3,6 +3,7 @@ import { makeName } from '../galaxy/names.ts';
 import { hashInts, Rng } from '../math/rng.ts';
 import { v3, vcross, vnorm, type V3 } from '../math/vec.ts';
 import { heightAt } from './terrain.ts';
+import { BUNKER, GENERATOR } from '../base-assault.ts';
 
 /**
  * Hand-placed-looking surface sites, generated deterministically from the
@@ -294,6 +295,13 @@ function layout(pl: PlanetDef, kind: SiteKind, id: number, base: { dir: V3; h: n
       s.pillars.push({ ...p, r: 2.4, tall: TURRET_HEIGHT });
     }
     s.caches.push({ ...point(pl, s, -22, 18), type: 'relic' }, { ...point(pl, s, -26, 12), type: 'crystal' });
+    // the command bunker's blockhouse (solid box, too tall to climb) and the shield generator tower
+    const B = BUNKER, corners: [number, number][] = [[B.x0, B.z0], [B.x1, B.z0], [B.x1, B.z1], [B.x0, B.z1]];
+    corners.forEach(([x0, z0], k) => {
+      const [x1, z1] = corners[(k + 1) % 4], n = Math.ceil(Math.hypot(x1 - x0, z1 - z0) / 0.9);
+      for (let j = 0; j < n; j++) s.blocks.push({ ...point(pl, s, x0 + ((x1 - x0) * j) / n, z0 + ((z1 - z0) * j) / n), r: 0.6, tall: 8 });
+    });
+    s.pillars.push({ ...point(pl, s, GENERATOR.x, GENERATOR.z), r: GENERATOR.r, tall: GENERATOR.h });
     // perimeter wall (with two gates), solid along its length but climbable
     for (let k = 0; k < WALL_SEGMENTS; k++) {
       if (WALL_GAPS.includes(k)) continue;

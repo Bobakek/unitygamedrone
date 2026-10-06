@@ -41,7 +41,7 @@ import type { MarketQuote } from '../../shared/market.ts';
 import { BOARD_REACH, inCabin, PAD, RAMP, stepDeck } from '../../shared/station/deck.ts';
 import { awardTrophy } from './trophies.ts';
 import { Boarding } from './boarding.ts';
-import { DISABLE_GRACE, SHIP_DECK } from '../../shared/boarding.ts';
+import { DISABLE_GRACE } from '../../shared/boarding.ts';
 import { WeatherDesk } from './weather.ts';
 import { GalaxyEffects } from './galaxy-effects.ts';
 import type { GalaxyEvent } from '../../shared/galaxy-events.ts';
@@ -154,6 +154,10 @@ export class SystemInstance implements NpcWorld {
   }
 
   get time() { return this.ctx.time; }
+  /** Simulation ticks so far (for things done every so many ticks). */
+  get ticks() { return this.ctx.tick; }
+  /** Are the two pilots in one group? */
+  allies(a: Session, b: Session) { return this.ctx.allies(a, b); }
   now() { return this.ctx.now(); }
   galaxyEvents() { return this.ctx.galaxyEvents(); }
   convoyAlive(system: number, poi: number) { return this.ctx.convoyAlive(system, poi); }
@@ -168,8 +172,7 @@ export class SystemInstance implements NpcWorld {
 
   /** World position of a pilot on foot (on the deck: the station). */
   charWorld(c: CharEntity, out: V3 = v3()): V3 {
-    const hulk = c.aboard ? this.ships.get(c.aboard) : undefined;
-    if (hulk) return this.boarding.toWorld(hulk, c.state.p.x, c.state.p.y, c.state.p.z, out);
+    if (c.aboard && this.boarding.charWorld(c, out)) return out;
     if (c.planet < 0) return Object.assign(out, this.def.station.pos);
     const pl = this.def.planets[c.planet];
     return toWorldPoint(pl, planetRot(pl, this.time, rot), c.state.p, out);
@@ -213,7 +216,7 @@ export class SystemInstance implements NpcWorld {
   }
 
   shipInfo(s: ShipEntity): EntityInfo {
-    return { id: s.id, kind: KIND.SHIP, name: s.name, bp: s.bp, npc: !!s.npc, owner: s.session?.id, wanted: s.session && isWanted(s.session.pilot.career) ? true : undefined, mods: s.mods?.length ? [...s.mods] : undefined };
+    return { id: s.id, kind: KIND.SHIP, name: s.name, bp: s.bp, npc: !!s.npc, owner: s.session?.id, wanted: s.session && isWanted(s.session.pilot.career) ? true : undefined, base: s.base, mods: s.mods?.length ? [...s.mods] : undefined };
   }
 
   allInfos(): EntityInfo[] {
@@ -569,7 +572,9 @@ export class SystemInstance implements NpcWorld {
         s.char.pitch = m.char.pitch;
         s.char.aim = false;
       } else if (s.mode === MODE.BOARD && m.mode === MODE.BOARD && s.char) {
-        stepDeck(s.char.state, m.char, DT, SHIP_DECK);
+        const h = this.boarding.of(s);
+        if (!h) continue;
+        stepDeck(s.char.state, m.char, DT, h.layout.deck);
         s.char.pitch = m.char.pitch;
         s.char.aim = !!(m.flags & IFLAG.AIM);
         if (m.flags & IFLAG.FIRE) this.boarding.shoot(s, m.char.pitch);
@@ -780,7 +785,7 @@ export class SystemInstance implements NpcWorld {
       const d2 = vdistSq(sh.world.p, focus);
       if (!radarTick && d2 > r2) continue;
       // static towers only matter up close
-      if (sh.bp.cls === 'turret' && d2 > 8000 * 8000) continue;
+      if (sh.base !== undefined && d2 > 8000 * 8000) continue;
       let flags = 0;
       if (sh.state.landed) flags |= EFLAG.LANDED;
       if (isCruising(sh.state)) flags |= EFLAG.CRUISE;
@@ -873,7 +878,7 @@ export class SystemInstance implements NpcWorld {
   }
 
   /** Puts the session's pilot on foot at body-frame `pos` facing tangent `f`. */
-  private putOnFoot(s: Session, planet: number, pos: V3, f: V3): CharEntity {
+  putOnFoot(s: Session, planet: number, pos: V3, f: V3): CharEntity {
     const hp = s.gear().hp;
     const c: CharEntity = { id: this.ctx.nextId(), name: s.pilot.name, state: newChar(pos, f), planet, session: s, hp, maxHp: hp, hurtAt: -99, cool: 0, pitch: 0, aim: false, shotAt: -99, drown: 0 };
     s.char = c;
@@ -1172,6 +1177,8 @@ export class SystemInstance implements NpcWorld {
       }
       case 'boardShip':
         return this.boarding.board(s, Number(act.id));
+      case 'enterBase':
+        return this.outposts.enter(s);
       case 'loot':
         return s.mode === MODE.BOARD ? this.boarding.loot(s) : null;
       case 'claim':
@@ -1236,6 +1243,18 @@ export class SystemInstance implements NpcWorld {
       default:
         return null;
     }
+  }
+
+  /** Up the lift out of a base's bunker: on foot in front of its blast door. */
+  exitBunker(s: Session, planet: number, site: number) {
+    if (s.char) {
+      this.chars.delete(s.char.id);
+      this.gone.push(s.char.id);
+      s.char = null;
+    }
+    this.boarding.forget(s);
+    const at = this.outposts.exitPoint(planet, site);
+    this.putOnFoot(s, planet, at.p, at.f);
   }
 
   /** Puts a pilot on foot back into their ship. */

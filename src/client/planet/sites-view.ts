@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import gateUrl from '../assets/bunker-gate.glb?url';
+import { BUNKER, DOME_R, type BaseInfo } from '../../shared/base-assault.ts';
 import type { PlanetDef, PlanetType } from '../../shared/galaxy/system-gen.ts';
 import { Rng } from '../../shared/math/rng.ts';
 import { siteDir, TURRET_HEIGHT, WALL_HEIGHT, WRECK_ROOF, type SiteDef } from '../../shared/planet/sites.ts';
@@ -19,6 +22,17 @@ const STONE: Record<PlanetType, [string, string]> = {
 const GLYPH: Record<PlanetType, string> = { terran: '#6af0ff', ocean: '#6af0ff', alien: '#ff7ae0', desert: '#ffb84a', ice: '#8ad8ff', lava: '#ff6a3a', barren: '#b0ff7a' };
 
 const tmp = new THREE.Vector3();
+let gateTemplate: Promise<THREE.Object3D> | null = null;
+/** The bunker's blockhouse, modelled in Blender (tools/blender/build_bunker.py → assets/bunker-gate.glb). */
+function loadGate(): Promise<THREE.Object3D> {
+  gateTemplate ??= new GLTFLoader().loadAsync(gateUrl).then((g) => {
+    g.scene.traverse((o) => { if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; } });
+    return g.scene;
+  });
+  return gateTemplate;
+}
+/** Door lamps of a base's blockhouse: sealed, open for a storm, held by the local pilot, held by someone else. */
+const DOOR_COLORS = { sealed: '#ff2a12', open: '#ffb020', mine: '#30ff70', theirs: '#40c8ff' } as const;
 const box3 = (s: number) => new THREE.BoxGeometry(s, s * 0.7, s * 0.9);
 
 /**
@@ -33,6 +47,13 @@ export class SiteView {
   private center = new THREE.Vector3();
   private up = new THREE.Vector3();
   private lod = -1;
+  /** Pirate bases: the force dome over the bunker, the blockhouse's door lamps and the flag. */
+  private dome: THREE.Mesh | null = null;
+  private doorMat: THREE.MeshStandardMaterial | null = null;
+  private flag: THREE.Mesh | null = null;
+  private gate: THREE.Object3D | null = null;
+  private baseKey = '';
+  private doorColor = new THREE.Color(DOOR_COLORS.sealed);
 
   constructor(private pl: PlanetDef, readonly site: SiteDef) {
     const s = site;
@@ -178,12 +199,44 @@ export class SiteView {
       }
       this.light([loc[0], loc[1] + h + 0.6, loc[2]], new THREE.Color(2.4, 0.4, 0.3), 3, true);
     }
-    // antenna mast and banner
+    // antenna mast and its banner (recoloured when the base changes hands)
     const m = this.at(18, -20, -1);
     add(p, new THREE.CylinderGeometry(0.25, 0.45, 26, 5), steel, 'metal', [m[0], m[1] + 13, m[2]]);
-    add(p, new THREE.BoxGeometry(5, 3, 0.15), accent, false, [m[0] + 2.6, m[1] + 22, m[2]]);
+    this.flag = new THREE.Mesh(new THREE.BoxGeometry(5, 3, 0.15), new THREE.MeshStandardMaterial({ color: accent, roughness: 0.8 }));
+    this.flag.position.set(m[0] + 2.6, m[1] + 22, m[2]);
+    this.flag.castShadow = true;
+    this.group.add(this.flag);
     add(p, new THREE.BoxGeometry(1.4, 1.4, 0.2), dark, false, [m[0] + 2.6, m[1] + 22, m[2] + 0.1]);
     this.light([m[0], m[1] + 26.5, m[2]], new THREE.Color(3, 0.4, 0.3), 5, true);
+    // the command bunker's blockhouse and the force dome its generator keeps over it
+    const bx = (BUNKER.x0 + BUNKER.x1) / 2, bz = (BUNKER.z0 + BUNKER.z1) / 2;
+    const g = this.at(bx, bz);
+    let floor = g[1];
+    for (const [x, z] of [[BUNKER.x0, BUNKER.z0], [BUNKER.x1, BUNKER.z0], [BUNKER.x0, BUNKER.z1], [BUNKER.x1, BUNKER.z1]]) floor = Math.max(floor, this.at(x, z)[1]);
+    loadGate().then((t) => {
+      const o = t.clone(true);
+      o.traverse((x) => {
+        if (!(x instanceof THREE.Mesh) || (x.material as THREE.Material).name !== 'DoorGlow') return;
+        this.doorMat ??= (x.material as THREE.MeshStandardMaterial).clone();
+        this.doorMat.emissive.copy(this.doorColor);
+        this.doorMat.color.copy(this.doorColor);
+        x.material = this.doorMat;
+      });
+      o.position.set(g[0], floor - 0.2, g[2]);
+      this.gate = o;
+      this.group.add(o);
+    }).catch((e) => console.warn('bunker blockhouse model failed to load', e));
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(DOME_R, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: '#ff6a3a', transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }),
+    );
+    dome.position.set(g[0] - 1.5, floor - 0.5, g[2]);
+    dome.renderOrder = 2;
+    this.group.add(dome);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(DOME_R, 0.12, 6, 48).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ color: '#ff8a5a', toneMapped: false }));
+    ring.position.y = 0.4;
+    dome.add(ring);
+    this.dome = dome;
     // floodlights
     for (const [x, z] of [[30, 30], [-34, -26], [36, -14]]) {
       const f = this.at(x, z, -1);
@@ -336,10 +389,26 @@ export class SiteView {
   update(time: number) {
     const on = Math.sin(time * 3 + this.site.seed) > 0;
     for (const b of this.blink) b.visible = on;
+    if (this.dome?.visible) (this.dome.material as THREE.MeshBasicMaterial).opacity = 0.12 + 0.06 * Math.sin(time * 2.2 + this.site.seed);
+  }
+
+  /** A pirate base's state: dome up while its generator stands, door lamps and flag by who holds it. */
+  setBase(info: BaseInfo | undefined, mine: boolean) {
+    if (!info) return;
+    const key = `${info.state}:${info.shield}:${mine}`;
+    if (key === this.baseKey) return;
+    this.baseKey = key;
+    if (this.dome) this.dome.visible = info.shield;
+    this.doorColor.set(info.state === 'held' ? (mine ? DOOR_COLORS.mine : DOOR_COLORS.theirs) : info.state === 'open' ? DOOR_COLORS.open : DOOR_COLORS.sealed);
+    if (this.doorMat) { this.doorMat.emissive.copy(this.doorColor); this.doorMat.color.copy(this.doorColor); }
+    if (this.flag) (this.flag.material as THREE.MeshStandardMaterial).color.set(info.state === 'held' ? '#2a8ad8' : '#e8485a');
   }
 
   dispose() {
     this.group.removeFromParent();
+    // the blockhouse shares its geometry with every other copy of the model
+    this.gate?.removeFromParent();
+    this.doorMat?.dispose();
     this.group.traverse((o) => { if (o instanceof THREE.Mesh) o.geometry.dispose(); if (o instanceof THREE.Sprite) o.material.dispose(); });
   }
 }

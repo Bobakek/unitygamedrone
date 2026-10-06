@@ -11,6 +11,7 @@ import type { Trophy } from '../station/trophies.ts';
 import type { HullKey } from '../ships/hulls.ts';
 import type { Prize } from '../boarding.ts';
 import type { Arms, ModuleKey } from '../modules.ts';
+import type { BaseInfo } from '../base-assault.ts';
 import { Reader, Writer } from './buffer.ts';
 
 export const MSG = {
@@ -90,7 +91,11 @@ export interface GroupMsg { members: GroupMember[]; invite?: { from: string } }
 /** The station contract board (sent while docked); `next` = ms until it is refreshed. */
 export interface BoardMsg { system: number; offers: ContractDef[]; next: number }
 /** `look` (pilots on foot): outfit code, see outfit.ts lookCode; `wanted`: a player ship wanted by the Federation; `mods`: weapon modules on a ship, slot by slot. */
-export interface EntityInfo { id: number; kind: number; name: string; bp?: Blueprint; npc?: boolean; owner?: number; species?: number; look?: string; wanted?: boolean; mods?: ModuleKey[] }
+export interface EntityInfo {
+  id: number; kind: number; name: string; bp?: Blueprint; npc?: boolean; owner?: number; species?: number; look?: string; wanted?: boolean; mods?: ModuleKey[];
+  /** A tower or shield generator of a pirate base (baseKey): on the side of whoever holds it. */
+  base?: number;
+}
 export interface Harvested { planet: number; node: number; left: number }
 export interface Welcome {
   playerId: number; shipId: number; token: string; pilot: PilotInfo; system: number;
@@ -139,9 +144,12 @@ export type GameEvent =
   | { t: 'warp'; id: number; pos: [number, number, number]; team: number }
   /**
    * The local pilot went aboard ship `id` (0: back in their own ship); `crew` still standing,
-   * whether the hold was emptied and the ship claimed.
+   * whether the hold was emptied and the ship claimed. `base`: it is the bunker of the pirate
+   * base on [planet, site] instead (see base-assault.ts).
    */
-  | { t: 'aboard'; id: number; crew: number; looted: boolean; claimed: boolean }
+  | { t: 'aboard'; id: number; crew: number; looted: boolean; claimed: boolean; base?: [number, number] }
+  /** The pirate bases of this system (sent on arrival and whenever one changes). */
+  | { t: 'bases'; list: BaseInfo[] }
   /** Galaxy events going on now (sent on login and whenever the list changes); `fresh` = ids that just began. */
   | { t: 'galaxy'; list: GalaxyEventInfo[]; fresh?: number[] };
 
@@ -175,6 +183,8 @@ export type Action =
   | { a: 'arena' } | { a: 'arenaLeave' }
   /** Boarding: dock with the disabled ship `id`; aboard, empty the hold, claim the ship at the helm; sell a prize (docked). */
   | { a: 'boardShip'; id: number } | { a: 'loot' } | { a: 'claim' } | { a: 'sellPrize'; id: string }
+  /** On foot at a pirate base's blast door: down into the bunker. */
+  | { a: 'enterBase' }
   /** Jump drive: charge for a jump to `system`, coming out at its station (-1) or planet `target`. */
   | { a: 'jumpDrive'; system: number; target: number } | { a: 'jumpCancel' };
 

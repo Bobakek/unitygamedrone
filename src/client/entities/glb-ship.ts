@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import haulerUrl from '../assets/hauler.glb?url';
 import minerUrl from '../assets/miner.glb?url';
+import generatorUrl from '../assets/generator.glb?url';
 import type { Blueprint } from '../../shared/ships/blueprint.ts';
 
 /**
@@ -9,7 +10,8 @@ import type { Blueprint } from '../../shared/ships/blueprint.ts';
  * its own Hull / Paint / Accent / EngineGlow materials tinted with the pilot's blueprint colours;
  * empties named Thruster_<n> (extras: r) mark where the engine flames go.
  */
-const URLS: Record<string, string> = { hauler: haulerUrl, miner: minerUrl };
+/** The pirate base's shield generator pylon comes from tools/blender/build_bunker.py. */
+const URLS: Record<string, string> = { hauler: haulerUrl, miner: minerUrl, generator: generatorUrl };
 export const isGlbShip = (cls: string) => cls in URLS;
 
 const templates = new Map<string, Promise<THREE.Object3D>>();

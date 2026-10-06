@@ -69,4 +69,7 @@ export const FREIGHTER_FLIGHT: ShipStats = { ...BASE_STATS, maxSpeed: 75, boostS
 export const TURRET_FLIGHT: ShipStats = { ...BASE_STATS, maxSpeed: 0, boostSpeed: 0, accel: 0, turn: 0, roll: 0, cruiseSpeed: 0, radius: 3.2 };
 export const TURRET_COMBAT: CombatStats = { maxHull: 170, maxShield: 60, shieldRegen: 5, laserDamage: 6, cargoCap: 0 };
 export const BASE_BOUNTY = 450;
+/** Shield generator pylon of a pirate outpost: static, never fires, tough. */
+export const GENERATOR_FLIGHT: ShipStats = { ...TURRET_FLIGHT, radius: 5 };
+export const GENERATOR_COMBAT: CombatStats = { maxHull: 420, maxShield: 180, shieldRegen: 8, laserDamage: 0, cargoCap: 0 };
 export const FREIGHTER_COMBAT: CombatStats = { maxHull: 950, maxShield: 320, shieldRegen: 8, laserDamage: 0, cargoCap: 0 };

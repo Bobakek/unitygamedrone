@@ -2,7 +2,7 @@ import { hueToHex } from '../color.ts';
 import { hashString, Rng } from '../math/rng.ts';
 import type { HullKey } from './hulls.ts';
 
-export type ShipClass = HullKey | 'pirate' | 'freighter' | 'turret';
+export type ShipClass = HullKey | 'pirate' | 'freighter' | 'turret' | 'generator';
 
 export interface Blueprint {
   cls: ShipClass;
@@ -45,12 +45,20 @@ export function freighterBlueprint(seed: number): Blueprint {
   };
 }
 
-/** Flak turret ball on pirate outposts. */
-export function turretBlueprint(seed: number): Blueprint {
+/** Flak turret ball on pirate outposts (`held`: the base was captured, the towers fly the captors' colours). */
+export function turretBlueprint(seed: number, held = false): Blueprint {
   const rng = new Rng(seed);
+  if (held) return { cls: 'turret', seed, hull: '#4a5a66', hull2: '#24303a', accent: '#3ad0ff', glass: '#6af0ff', engine: '#26323a', glow: '#5ae8ff' };
   return {
     cls: 'turret', seed,
     hull: rng.pick(['#5a4a5e', '#4e4650']), hull2: '#2a2430', accent: '#e8485a',
     glass: '#ff6a4a', engine: '#2d2733', glow: '#ff5a3a',
   };
+}
+
+/** Shield generator pylon of a pirate base (Blender model, see tools/blender/build_bunker.py). */
+export function generatorBlueprint(seed: number, held = false): Blueprint {
+  return held
+    ? { cls: 'generator', seed, hull: '#55606a', hull2: '#2a3640', accent: '#3ad0ff', glass: '#6af0ff', engine: '#26323a', glow: '#5ae8ff' }
+    : { cls: 'generator', seed, hull: '#5a4a5e', hull2: '#2a2430', accent: '#e8485a', glass: '#ff9a4a', engine: '#2d2733', glow: '#ff6a3a' };
 }

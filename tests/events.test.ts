@@ -128,7 +128,9 @@ describe('world events', () => {
     const pl = sys.def.planets.find((p) => planetSites(p).some((x) => x.kind === 'base'))!;
     const base = planetSites(pl).find((x) => x.kind === 'base')!;
     const towers = sys.outposts.towersOf(base);
-    expect(towers.length).toBe(3);
+    // three flak towers and the shield generator
+    expect(towers.length).toBe(4);
+    expect(towers.filter((t) => t.bp.cls === 'generator').length).toBe(1);
     // hover 350 m above the base in the planet's frame
     const st = me.s.ship.state;
     const r = pl.radius + base.h + 350;

@@ -50,6 +50,8 @@ export interface ShipEntity {
   jamUntil?: number;
   /** Mines in the magazine when they don't come from the pilot's stock (arena seats). */
   mineAmmo?: number;
+  /** A tower or the shield generator of this pirate base (baseKey, see outposts.ts). */
+  base?: number;
 }
 
 export interface CharEntity {
@@ -58,7 +60,7 @@ export interface CharEntity {
   /** Body-frame state of planet `planet` (deck coordinates on a station deck or aboard a ship). */
   state: CharState;
   planet: number;
-  /** Aboard this disabled ship (its deck coordinates, see boarding.ts). */
+  /** Aboard this disabled ship or base bunker (its deck coordinates, see boarding.ts). */
   aboard?: number;
   session: Session;
   /** Suit integrity (of `maxHp`, set by the outfit), time of the last injury and blaster cooldown. */

@@ -99,18 +99,50 @@ export function deckReach(ax: number, az: number, bx: number, bz: number, walls 
   return best;
 }
 
+/**
+ * A walkable interior that can be stormed: the boarded ship's deck, or the command bunker of a
+ * pirate base (see base-assault.ts). Every room but the hub has one doorway into the hub; the
+ * entrance (`hatch`) is where boarders come in and go back out, `chest` the strongbox and
+ * `helm` the console that takes the ship or the base.
+ */
+export interface BoardLayout {
+  key: 'ship' | 'base';
+  rooms: (Room & { key: string })[];
+  hub: string;
+  doors: Record<string, { in: { x: number; z: number }; out: { x: number; z: number } }>;
+  walls: [number, number, number, number][];
+  deck: DeckLayout;
+  hatch: { x: number; z: number };
+  chest: { x: number; z: number };
+  helm: { x: number; z: number };
+  /** Where to stand to use the chest and the helm (facing them). */
+  chestSpot: { x: number; z: number; fx: number; fz: number };
+  helmSpot: { x: number; z: number; fx: number; fz: number };
+  /** Deck floor below the anchor's centre. */
+  floorY: number;
+}
+
+export const SHIP_LAYOUT: BoardLayout = {
+  key: 'ship', rooms: SHIP_ROOMS, hub: 'corridor', doors: SHIP_DOORS, walls: SHIP_WALLS, deck: SHIP_DECK,
+  hatch: SHIP_HATCH, chest: SHIP_CHEST, helm: SHIP_HELM,
+  chestSpot: { x: SHIP_CHEST.x + 1.6, z: SHIP_CHEST.z, fx: -1, fz: 0 }, helmSpot: { x: SHIP_HELM.x, z: SHIP_HELM.z + 1.3, fx: 0, fz: -1 },
+  floorY: FLOOR_Y,
+};
+
+export const roomAt = (L: BoardLayout, x: number, z: number) => L.rooms.find((r) => x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1) ?? null;
+
 /** The next point to walk to on the way from `from` to `to` through the doorways. */
-export function deckWaypoint(from: { x: number; z: number }, to: { x: number; z: number }): { x: number; z: number } {
-  if (deckSight(from.x, from.z, to.x, to.z)) return to;
-  const rf = shipRoomAt(from.x, from.z)?.key ?? 'corridor', rt = shipRoomAt(to.x, to.z)?.key ?? 'corridor';
+export function deckWaypoint(from: { x: number; z: number }, to: { x: number; z: number }, L: BoardLayout = SHIP_LAYOUT): { x: number; z: number } {
+  if (deckSight(from.x, from.z, to.x, to.z, L.walls)) return to;
+  const rf = roomAt(L, from.x, from.z)?.key ?? L.hub, rt = roomAt(L, to.x, to.z)?.key ?? L.hub;
   const near = (a: { x: number; z: number }, b: { x: number; z: number }) => Math.hypot(a.x - b.x, a.z - b.z) < 0.9;
-  if (rf !== 'corridor' && rf !== rt) {
-    const d = SHIP_DOORS[rf];
-    return near(from, d.in) || deckSight(from.x, from.z, d.out.x, d.out.z) ? d.out : d.in;
+  if (rf !== L.hub && rf !== rt) {
+    const d = L.doors[rf];
+    return near(from, d.in) || deckSight(from.x, from.z, d.out.x, d.out.z, L.walls) ? d.out : d.in;
   }
-  if (rt !== 'corridor') {
-    const d = SHIP_DOORS[rt];
-    return near(from, d.out) || deckSight(from.x, from.z, d.in.x, d.in.z) ? d.in : d.out;
+  if (rt !== L.hub) {
+    const d = L.doors[rt];
+    return near(from, d.out) || deckSight(from.x, from.z, d.in.x, d.in.z, L.walls) ? d.in : d.out;
   }
   return to;
 }
