@@ -3,7 +3,7 @@ import { encodeJson, MSG, MODE, type InputMsg, type Mode, type PilotInfo } from 
 import { combatStats } from '../../shared/economy.ts';
 import { gearStats, type GearStats } from '../../shared/outfit.ts';
 import type { PilotRecord } from '../storage.ts';
-import type { CharEntity, ShipEntity } from './entities.ts';
+import type { CharEntity, RoverEntity, ShipEntity } from './entities.ts';
 import type { SystemInstance } from './system.ts';
 
 export interface Transport {
@@ -20,7 +20,7 @@ export function wsTransport(ws: WebSocket): Transport {
   };
 }
 
-/** A connected player: owns one ship and, while on foot, one character. */
+/** A connected player: owns one ship, while on foot one character, and on a planet maybe a rover. */
 export class Session {
   mode: Mode = MODE.SHIP;
   inputs: InputMsg[] = [];
@@ -29,6 +29,8 @@ export class Session {
   budget = 0;
   teleport = 0;
   char: CharEntity | null = null;
+  /** The rover this pilot unloaded (parked or being driven: mode ROVER). */
+  rover: RoverEntity | null = null;
   chatTimes: number[] = [];
   lastSave = 0;
   closed = false;

@@ -187,6 +187,15 @@ export class Sfx {
     this.engine.osc.frequency.setTargetAtTime(42 + lvl * 30 + (cruise ? 40 : 0), t, 0.2);
   }
 
+  /** Electric drive whine of the rover: pitch follows the speed, loudness the throttle. */
+  roverMotor(speed: number, throttle: number) {
+    if (!this.engine || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.engine.gain.gain.setTargetAtTime(0.015 + throttle * 0.04 + Math.min(0.03, speed * 0.0015), t, 0.1);
+    this.engine.filter.frequency.setTargetAtTime(500 + speed * 90, t, 0.2);
+    this.engine.osc.frequency.setTargetAtTime(55 + speed * 7, t, 0.2);
+  }
+
   silenceEngine() {
     if (this.engine && this.ctx) this.engine.gain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.1);
   }
