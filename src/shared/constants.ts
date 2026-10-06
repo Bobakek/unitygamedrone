@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 12;
+export const PROTOCOL_VERSION = 15;
 export const TICK_RATE = 30;
 export const DT = 1 / TICK_RATE;
 /** Remote entities are rendered this far in the past (seconds). */

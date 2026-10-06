@@ -8,7 +8,7 @@
 import type { CharInput, CharState } from '../sim/character.ts';
 
 export const DECK_Y = -12;
-export type TerminalKind = 'trade' | 'upgrades' | 'contracts' | 'wardrobe' | 'trophies';
+export type TerminalKind = 'trade' | 'upgrades' | 'contracts' | 'wardrobe' | 'trophies' | 'refinery';
 export interface Terminal { kind: TerminalKind; x: number; z: number; name: string }
 export interface Room { name: string; x0: number; z0: number; x1: number; z1: number; ceil: number }
 
@@ -35,7 +35,13 @@ export const TERMINALS: Terminal[] = [
   { kind: 'contracts', x: 19, z: -24, name: 'Контракты' },
   { kind: 'wardrobe', x: 19, z: -2, name: 'Гардероб' },
   { kind: 'trophies', x: -20.6, z: -42.2, name: 'Коллекция' },
+  { kind: 'refinery', x: 19, z: -33.5, name: 'Плавильня' },
 ];
+/**
+ * The smelter against the promenade's back wall right of the airlock (its control
+ * terminal stands in front of it, see TERMINALS); matches tools/blender/build_refinery.py.
+ */
+export const REFINERY = { x0: 9, x1: 25, z0: -40, z1: -36, furnace: { x: 13, z: -37.6 }, press: { x: 21.5, z: -38 } };
 export const TERMINAL_REACH = 2.6;
 export const BOARD_REACH = 13;
 
@@ -58,6 +64,8 @@ export const DECK_POSTS: { x: number; z: number; r: number }[] = [
   // cabin: the bed (two posts along it), the desk, the display table with medals
   { x: CABIN.bed.x, z: CABIN.bed.z - 1, r: 1 }, { x: CABIN.bed.x, z: CABIN.bed.z + 1, r: 1 },
   { x: CABIN.desk.x, z: CABIN.desk.z, r: 0.9 }, { x: CABIN.table.x, z: CABIN.table.z, r: 0.85 },
+  // the smelter: furnace, crucible stand and press along the back wall
+  ...[10.5, 13, 15.5, 18, 20.5, 23].map((x) => ({ x, z: -38.2, r: 1.9 })),
 ];
 
 const WALK = 4.4, RUN = 7.5, GRAVITY = 9.8, JUMP = 4.2, R = 0.35;

@@ -9,6 +9,8 @@ import type { Prize } from '../shared/boarding.ts';
 export interface PilotRecord {
   id: number; name: string; token: string; credits: number; cargo: Cargo; upgrades: Upgrades;
   missiles: number; kills: number; deaths: number; system: number;
+  /** Jump drive fuel cells. */
+  fuel: number;
   /** Bought suit parts and what the pilot wears. */
   items: string[]; outfit: Outfit;
   /** Experience, reputation and contracts. */

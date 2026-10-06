@@ -8,6 +8,7 @@ import type { CharEntity, RoverEntity, ShipEntity } from './entities.ts';
 import type { SystemInstance } from './system.ts';
 import type { Group } from './groups.ts';
 import { awardMilestones } from './trophies.ts';
+import { tankOf } from '../../shared/jump.ts';
 
 export interface Transport {
   send(data: Uint8Array): void;
@@ -43,6 +44,8 @@ export class Session {
   group: Group | null = null;
   /** A pending invitation to a group. */
   invite: { from: Session; until: number } | null = null;
+  /** The jump drive charging: started at `at`, jumps at `until` (server time). */
+  charge: { system: number; target: number; at: number; until: number } | null = null;
 
   constructor(
     public id: number,
@@ -64,10 +67,10 @@ export class Session {
     const p = this.pilot;
     return {
       name: p.name, credits: Math.floor(p.credits), cargo: { ...p.cargo }, cargoCap: combatStats(p.upgrades, p.ship).cargoCap,
-      upgrades: { ...p.upgrades }, missiles: p.missiles, kills: p.kills, deaths: p.deaths,
+      upgrades: { ...p.upgrades }, missiles: p.missiles, kills: p.kills, deaths: p.deaths, fuel: p.fuel, fuelTank: tankOf(p.ship),
       items: [...p.items], outfit: { ...p.outfit }, career: structuredClone(p.career), trophies: p.trophies.map((t) => ({ ...t })),
       roverBed: { ...p.roverBed }, roverBedCap: ROVER_BED,
-      ship: p.ship, ships: [...p.ships], prizes: p.prizes.map((x) => ({ ...x })),
+      ship: p.ship, ships: [...p.ships], prizes: p.prizes.map((x) => ({ ...x })), clock: this.system.now(),
     };
   }
 

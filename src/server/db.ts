@@ -9,6 +9,7 @@ import { validTrophies } from '../shared/station/trophies.ts';
 import type { PilotRecord, PilotStorage } from './storage.ts';
 import { hangarOf } from '../shared/ships/hulls.ts';
 import { validPrizes } from '../shared/boarding.ts';
+import { START_FUEL } from '../shared/jump.ts';
 
 export type { PilotRecord } from './storage.ts';
 
@@ -16,7 +17,7 @@ interface Row {
   id: number; name: string; token: string; credits: number; cargo: string; upgrades: string;
   missiles: number; kills: number; deaths: number; system: number;
   items: string | null; outfit: string | null; career: string | null; trophies: string | null;
-  ship: string | null; ships: string | null; rover_bed: string | null; prizes: string | null;
+  ship: string | null; ships: string | null; rover_bed: string | null; fuel: number | null; prizes: string | null;
 }
 
 /** Pilot persistence on the built-in node:sqlite driver (no native build step). */
@@ -47,6 +48,7 @@ export class PilotStore implements PilotStorage {
     if (!cols.has('trophies')) this.db.exec(`ALTER TABLE pilots ADD COLUMN trophies TEXT NOT NULL DEFAULT '[]'`);
     if (!cols.has('ship')) this.db.exec(`ALTER TABLE pilots ADD COLUMN ship TEXT NOT NULL DEFAULT 'fighter'`);
     if (!cols.has('ships')) this.db.exec(`ALTER TABLE pilots ADD COLUMN ships TEXT NOT NULL DEFAULT '["fighter"]'`);
+    if (!cols.has('fuel')) this.db.exec(`ALTER TABLE pilots ADD COLUMN fuel INTEGER NOT NULL DEFAULT ${START_FUEL}`);
     if (!cols.has('rover_bed')) this.db.exec(`ALTER TABLE pilots ADD COLUMN rover_bed TEXT NOT NULL DEFAULT '{}'`);
     if (!cols.has('prizes')) this.db.exec(`ALTER TABLE pilots ADD COLUMN prizes TEXT NOT NULL DEFAULT '[]'`);
   }
@@ -55,7 +57,7 @@ export class PilotStore implements PilotStorage {
     return {
       id: r.id, name: r.name, token: r.token, credits: r.credits,
       cargo: { ...emptyCargo(), ...JSON.parse(r.cargo) }, upgrades: { ...defaultUpgrades(), ...JSON.parse(r.upgrades) },
-      missiles: r.missiles, kills: r.kills, deaths: r.deaths, system: r.system,
+      missiles: r.missiles, kills: r.kills, deaths: r.deaths, system: r.system, fuel: Math.max(0, r.fuel ?? START_FUEL),
       ...parseGear(r.items, r.outfit), career: parseCareer(r.career), trophies: parseTrophies(r.trophies), ...parseHangar(r.ship, r.ships), roverBed: parseCargo(r.rover_bed), prizes: parsePrizes(r.prizes),
     };
   }
@@ -76,8 +78,8 @@ export class PilotStore implements PilotStorage {
 
   save(p: PilotRecord): void {
     this.db
-      .prepare('UPDATE pilots SET credits = ?, cargo = ?, upgrades = ?, missiles = ?, kills = ?, deaths = ?, system = ?, items = ?, outfit = ?, career = ?, trophies = ?, ship = ?, ships = ?, rover_bed = ?, prizes = ?, last_seen = ? WHERE id = ?')
-      .run(Math.floor(p.credits), JSON.stringify(p.cargo), JSON.stringify(p.upgrades), p.missiles, p.kills, p.deaths, p.system, JSON.stringify(p.items), JSON.stringify(p.outfit), JSON.stringify(p.career), JSON.stringify(p.trophies), p.ship, JSON.stringify(p.ships), JSON.stringify(p.roverBed), JSON.stringify(p.prizes), Date.now(), p.id);
+      .prepare('UPDATE pilots SET credits = ?, cargo = ?, upgrades = ?, missiles = ?, kills = ?, deaths = ?, system = ?, items = ?, outfit = ?, career = ?, trophies = ?, ship = ?, ships = ?, rover_bed = ?, fuel = ?, prizes = ?, last_seen = ? WHERE id = ?')
+      .run(Math.floor(p.credits), JSON.stringify(p.cargo), JSON.stringify(p.upgrades), p.missiles, p.kills, p.deaths, p.system, JSON.stringify(p.items), JSON.stringify(p.outfit), JSON.stringify(p.career), JSON.stringify(p.trophies), p.ship, JSON.stringify(p.ships), JSON.stringify(p.roverBed), Math.max(0, Math.floor(p.fuel)), JSON.stringify(p.prizes), Date.now(), p.id);
   }
 
   close(): void {

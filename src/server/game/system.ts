@@ -30,9 +30,10 @@ import { WorldEvents } from './world-events.ts';
 import { Outposts } from './outposts.ts';
 import { Fauna } from './fauna.ts';
 import { item, lookCode, owns, repNeedText, repOk, SLOT_NAMES } from '../../shared/outfit.ts';
-import { isPirateFriend, isWanted, WANTED_BOUNTY } from '../../shared/contracts.ts';
+import { holdRoom, holdUsed, isPirateFriend, isWanted, WANTED_BOUNTY } from '../../shared/contracts.ts';
 import { ContractDesk } from './contracts.ts';
 import { StationMarket } from './market.ts';
+import { inputsText, MAX_BATCHES, recipeOf, refine } from '../../shared/refinery.ts';
 import { AsteroidMining } from './mining.ts';
 import { HULLS, isHull, type HullKey } from '../../shared/ships/hulls.ts';
 import { GROUP_BONUS, SHARE_RANGE } from './groups.ts';
@@ -42,6 +43,9 @@ import { awardTrophy } from './trophies.ts';
 import { Boarding } from './boarding.ts';
 import { SHIP_DECK } from '../../shared/boarding.ts';
 import { WeatherDesk } from './weather.ts';
+import { GalaxyEffects } from './galaxy-effects.ts';
+import type { GalaxyEvent } from '../../shared/galaxy-events.ts';
+import { fuelPrice, tankOf } from '../../shared/jump.ts';
 import type { Weather } from '../../shared/weather.ts';
 import type { Session } from './session.ts';
 
@@ -60,6 +64,8 @@ export interface GameContext {
   crew(s: Session, at: V3, range: number): Session[];
   /** Are the two pilots in one group? */
   allies(a: Session, b: Session): boolean;
+  /** Galaxy events going on now (raids, storms, shortages). */
+  galaxyEvents(): GalaxyEvent[];
 }
 
 const tmp = v3(), tmp2 = v3(), aim = v3(), rot = quat();
@@ -97,6 +103,7 @@ export class SystemInstance implements NpcWorld {
   readonly mining: AsteroidMining;
   readonly weather: WeatherDesk;
   readonly boarding: Boarding;
+  readonly galaxy: GalaxyEffects;
 
   constructor(private ctx: GameContext, id: number) {
     this.def = getSystem(id);
@@ -111,6 +118,7 @@ export class SystemInstance implements NpcWorld {
     this.mining = new AsteroidMining(this);
     this.weather = new WeatherDesk(this);
     this.boarding = new Boarding(this);
+    this.galaxy = new GalaxyEffects(this);
   }
 
   /** Inside a derelict's hull (shelter from the weather). */
@@ -142,6 +150,7 @@ export class SystemInstance implements NpcWorld {
 
   get time() { return this.ctx.time; }
   now() { return this.ctx.now(); }
+  galaxyEvents() { return this.ctx.galaxyEvents(); }
   convoyAlive(system: number, poi: number) { return this.ctx.convoyAlive(system, poi); }
   get stationPos() { return this.def.station.pos; }
   ship(id: number) { return this.ships.get(id); }
@@ -167,14 +176,14 @@ export class SystemInstance implements NpcWorld {
   }
 
   // ------------------------------------------------------------------ entities
-  spawnPirate(near?: V3): ShipEntity {
+  spawnPirate(near?: V3, name?: string): ShipEntity {
     const field = this.def.fields[this.rng.int(0, this.def.fields.length - 1)];
     const r = field.radius;
     const pos = near ? { ...near } : v3(field.center.x + this.rng.range(-r, r), field.center.y + this.rng.range(-r, r) * 0.3, field.center.z + this.rng.range(-r, r));
     const id = this.ctx.nextId();
     const q = qlook(quat(), vnorm(v3(), v3(this.rng.range(-1, 1), 0, this.rng.range(-1, 1))), v3(0, 1, 0));
     const ship: ShipEntity = {
-      id, name: `Пират ${makeName(this.rng)}`, bp: pirateBlueprint(this.rng.int(0, 1e9)),
+      id, name: name ?? `Пират ${makeName(this.rng)}`, bp: pirateBlueprint(this.rng.int(0, 1e9)),
       state: newShip(pos, q), world: newPose(), flight: PIRATE_FLIGHT, combat: PIRATE_COMBAT,
       hull: PIRATE_COMBAT.maxHull, shield: PIRATE_COMBAT.maxShield, energy: 100, lastHit: -99, fireCooldown: 0, gun: 0,
       throttle: 0, boosting: false, dead: false, respawnAt: 0, docked: false, god: false, session: null,
@@ -239,6 +248,7 @@ export class SystemInstance implements NpcWorld {
     this.sessions.delete(s);
     this.mining.forget(s);
     this.boarding.forget(s);
+    this.contracts.forget(s);
     this.removeRover(s);
     if (s.char) {
       this.chars.delete(s.char.id);
@@ -338,6 +348,7 @@ export class SystemInstance implements NpcWorld {
     if (target.session) {
       const s = target.session;
       s.pilot.deaths++;
+      this.contracts.onShipLost(s);
       const lost = cargoCount(s.pilot.cargo);
       s.pilot.cargo = emptyCargo();
       target.respawnAt = this.time + this.ctx.respawnDelay;
@@ -470,8 +481,10 @@ export class SystemInstance implements NpcWorld {
       // a fresh board (new epoch, a convoy came or went) goes to everyone docked
       if (this.contracts.board().changed) for (const s of this.sessions) if (s.mode === MODE.DOCKED) this.contracts.sendBoard(s);
       for (const s of this.sessions) this.contracts.expire(s);
+      this.contracts.stepFreight();
       // prices drift each epoch and recover from trade: docked pilots see them move
       if (this.market.changed()) this.broadcastMarket();
+      this.galaxy.step(this.galaxyEvents());
     }
 
     for (const ship of this.ships.values()) {
@@ -598,7 +611,7 @@ export class SystemInstance implements NpcWorld {
     if (!s.rover) return;
     this.removeRover(s);
     const bed = s.pilot.roverBed, hold = s.pilot.cargo;
-    let room = combatStats(s.pilot.upgrades, s.pilot.ship).cargoCap - cargoCount(hold);
+    let room = holdRoom(s.pilot);
     const moved: Partial<Record<CargoKey, number>> = {};
     for (const k of CARGO_KEYS) {
       const n = Math.min(room, bed[k]);
@@ -976,6 +989,17 @@ export class SystemInstance implements NpcWorld {
         if (!err) this.marketTrade();
         return err;
       }
+      case 'refine': {
+        if (!atStation(s)) return 'Нужно пристыковаться';
+        const r = recipeOf(String(act.recipe));
+        if (!r) return null;
+        const { n, fee } = refine(r, p.cargo, p.credits, act.n === undefined ? MAX_BATCHES : Number(act.n));
+        if (!n) return p.credits < r.fee ? 'Недостаточно кредитов' : `Нужно: ${inputsText(r)}`;
+        p.credits -= fee;
+        s.sendPilot();
+        s.msg(`Плавильня: ${CARGO_NAMES[r.key].toLowerCase()} ×${n} — −${fee} кр`, 'good');
+        return null;
+      }
       case 'repair': {
         if (!atStation(s)) return 'Нужно пристыковаться';
         const missing = ship.combat.maxHull - ship.hull;
@@ -993,6 +1017,17 @@ export class SystemInstance implements NpcWorld {
         if (n <= 0) return p.missiles >= MAX_MISSILES ? 'Ракетный отсек полон' : 'Недостаточно кредитов';
         p.missiles += n;
         p.credits -= n * MISSILE_COST;
+        s.sendPilot();
+        return null;
+      }
+      case 'buyFuel': {
+        if (!atStation(s)) return 'Нужно пристыковаться';
+        const price = fuelPrice(this.def.id), room = tankOf(p.ship) - p.fuel;
+        const want = act.n === undefined ? room : Math.max(0, Math.floor(Number(act.n)) || 0);
+        const n = Math.min(room, want, Math.floor(p.credits / price));
+        if (n <= 0) return room <= 0 ? 'Топливный бак полон' : 'Недостаточно кредитов';
+        p.fuel += n;
+        p.credits -= n * price;
         s.sendPilot();
         return null;
       }
@@ -1066,7 +1101,7 @@ export class SystemInstance implements NpcWorld {
         if ((this.harvested.get(key) ?? 0) > this.time) return 'Ресурс уже собран';
         const np = vscale(v3(), node.dir, pl.radius + node.h);
         if (vdist(np, s.char.state.p) > HARVEST_RANGE + 1.5) return 'Слишком далеко';
-        if (cargoCount(p.cargo) >= combatStats(p.upgrades, p.ship).cargoCap) return 'Трюм полон';
+        if (holdRoom(p) <= 0) return 'Трюм полон';
         p.cargo[node.type]++;
         this.harvested.set(key, this.time + NODE_RESPAWN);
         this.events.push({ t: 'harvest', planet: pl.index, node: node.id, left: NODE_RESPAWN, by: s.id });
@@ -1145,7 +1180,7 @@ export class SystemInstance implements NpcWorld {
   setShip(s: Session, key: HullKey): string | null {
     const p = s.pilot;
     const cap = combatStats(p.upgrades, key).cargoCap;
-    if (cargoCount(p.cargo) > cap) return `Груз не поместится: в трюме ${cargoCount(p.cargo)}, а у этого корабля ${cap}`;
+    if (holdRoom(p, key) < 0) return `Груз не поместится: в трюме ${holdUsed(p)}, а у этого корабля ${cap}`;
     // the ship left in the hangar is serviced there, the one taken out keeps the damage share
     const wear = s.ship.hull / s.ship.combat.maxHull;
     p.ship = key;
