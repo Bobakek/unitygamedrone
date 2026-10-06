@@ -7,6 +7,7 @@ import { CARGO_KEYS, CARGO_NAMES, PRICES, type CargoKey } from './economy.ts';
 import type { Poi } from './events.ts';
 import { FAUNA, FAUNA_SEA, SPECIES } from './fauna.ts';
 import { getSystem, type PlanetDef } from './galaxy/system-gen.ts';
+import { jumpsFrom } from './galaxy/galaxy.ts';
 import { SYSTEM_COUNT } from './constants.ts';
 import { hashInts, Rng } from './math/rng.ts';
 import { planetSites } from './planet/sites.ts';
@@ -161,14 +162,17 @@ function makers(sysId: number): Record<Exclude<ContractKind, 'intercept'>, Maker
       };
     },
     deliver: (rng, tier, id) => {
-      const target = (sysId + rng.int(1, SYSTEM_COUNT - 1)) % SYSTEM_COUNT;
-      const dest = getSystem(target);
+      // farther for higher tiers: up to 1, 2 or 3 jumps away, paid by the jump
+      const hops = jumpsFrom(sysId);
+      const near = hops.map((h, i) => (h > 0 && h <= tier ? i : -1)).filter((i) => i >= 0);
+      const target = near[rng.int(0, near.length - 1)];
+      const dest = getSystem(target), jumps = hops[target];
       const cargo = pickCargo(rng, tier), need = cargoNeed(cargo, tier);
       return {
         id, kind: 'deliver', faction: 'guild', tier, system: target, cargo, need,
         title: `Доставка в ${dest.name}`,
-        desc: `Отвезите ${CARGO_NAMES[cargo].toLowerCase()} ×${need} на станцию ${dest.station.name} (через врата). Сдаются при стыковке.`,
-        reward: reward(need * PRICES[cargo] * 2.2 + 100, tier),
+        desc: `Отвезите ${CARGO_NAMES[cargo].toLowerCase()} ×${need} на станцию ${dest.station.name} (${jumps === 1 ? 'соседняя система' : `${jumps} прыжка`}, маршрут — на карте M). Сдаются при стыковке.`,
+        reward: reward((need * PRICES[cargo] * 2.2 + 100) * (1 + 0.5 * (jumps - 1)), tier),
       };
     },
     survey: (rng, tier, id) => {

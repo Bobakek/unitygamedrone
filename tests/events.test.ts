@@ -827,3 +827,32 @@ describe('station deck', () => {
     expect(e.frame).toBe(DECK_FRAME);
   });
 });
+
+describe('galaxy', () => {
+  it('jumps follow the lanes and empty systems fall asleep', () => {
+    const game = new Game({ store: new PilotStore(':memory:'), dev: true });
+    const me = pilot(game, 'Rover');
+    const home = me.s.system;
+    expect(game.systems.length).toBe(1);
+    const next = home.def.gates[0].target;
+    // a jump through a gate lands at the gate back in the next system
+    home.devTeleport(me.s, 'gate');
+    game['jump'](me.s);
+    expect(me.s.system.def.id).toBe(next);
+    const back = me.s.system.def.gates.find((g) => g.target === home.def.id)!;
+    expect(vdist(me.s.ship.world.p, back.pos)).toBeLessThan(1000);
+    expect(game.systems.length).toBe(2);
+    // the home system is empty now: it keeps running for a while, then sleeps
+    expect(game.asleep(home)).toBe(false);
+    run(game, 125);
+    expect(game.asleep(home)).toBe(true);
+    expect(game.asleep(me.s.system)).toBe(false);
+    const npc = [...home.ships.values()].find((x) => x.npc && !x.dead)!;
+    const was = { ...npc.state.p };
+    run(game, 5);
+    expect(npc.state.p).toEqual(was);
+    // and wakes up when a pilot comes back
+    game.transfer(me.s, home.def.id);
+    expect(game.asleep(home)).toBe(false);
+  });
+});

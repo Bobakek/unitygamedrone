@@ -272,3 +272,27 @@ button.ghost:hover { color: var(--ink); border-color: var(--cyan); }
 .log-title { color: #6af0ff; font-size: 17px !important; }
 .log-body p { color: #b8f4ff; font-size: 13px; line-height: 1.5; margin: 8px 0; }
 .log-close { margin-top: 12px; width: 100%; }
+
+.gx-card { width: min(1100px, 96vw); max-height: 94vh; overflow: auto; background: rgba(8, 14, 30, 0.94); border: 1px solid var(--line); border-radius: 16px; padding: 20px 24px; box-shadow: 0 20px 80px rgba(0, 0, 0, 0.6); }
+.gx-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.gx-legend { font-size: 12px; color: var(--dim); }
+.gx-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--c); margin: 0 4px 0 10px; vertical-align: -1px; }
+.gx-body { display: flex; gap: 16px; align-items: stretch; }
+.gx-map { flex: 1; min-width: 0; height: min(64vh, 620px); background: radial-gradient(ellipse at center, rgba(90, 120, 200, 0.16), rgba(0, 0, 0, 0) 70%); border-radius: 12px; }
+.gx-side { width: 260px; display: flex; flex-direction: column; justify-content: space-between; gap: 10px; font-size: 13px; }
+.gx-side p { margin: 4px 0; }
+.gx-side small { color: var(--dim); font-weight: 400; }
+.gx-buttons { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.gx-route { color: var(--cyan); }
+.gx-goal { color: #5aa0ff; }
+.gx-hint { font-size: 12px; color: var(--dim); margin: 10px 0 0; }
+.gx-lane { stroke: rgba(160, 190, 255, 0.28); stroke-width: 0.3; }
+.gx-lane.hot { stroke: var(--cyan); stroke-width: 0.6; stroke-dasharray: 1.2 0.6; }
+.gx-star { cursor: pointer; }
+.gx-hit { fill: transparent; }
+.gx-star:hover .gx-hit { fill: rgba(143, 248, 255, 0.08); }
+.gx-sel { fill: none; stroke: #fff; stroke-width: 0.25; stroke-dasharray: 0.8 0.5; }
+.gx-here { fill: none; stroke: var(--cyan); stroke-width: 0.35; }
+.gx-name { font-size: 2.1px; fill: rgba(220, 232, 255, 0.82); text-anchor: middle; pointer-events: none; }
+.gx-name.here { fill: var(--cyan); font-weight: 600; }
+@media (max-width: 760px) { .gx-body { flex-direction: column; } .gx-side { width: auto; } }

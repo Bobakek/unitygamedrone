@@ -28,6 +28,8 @@ export interface Connection {
   onClose(): void;
 }
 
+/** Seconds an empty system keeps running (lets pirates and events settle) before it sleeps. */
+const SLEEP_AFTER = 120;
 const NAME_RE = /^[\p{L}\p{N}_\- ]+$/u;
 const MOTD = 'Добро пожаловать в Nova Frontier! Нажмите H — управление.';
 
@@ -36,7 +38,10 @@ export class Game implements GameContext {
   tick = 0;
   respawnDelay: number;
   readonly dev: boolean;
-  readonly systems: SystemInstance[];
+  /** Star systems, created when a pilot first comes there. */
+  private instances = new Map<number, SystemInstance>();
+  /** Server time each system last had a pilot in it (empty ones fall asleep). */
+  private busyAt = new Map<number, number>();
   readonly sessions = new Map<number, Session>();
   private ids = 1;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -50,7 +55,28 @@ export class Game implements GameContext {
     this.dev = !!opts.dev;
     this.respawnDelay = opts.respawnDelay ?? 5;
     this.log = opts.log ?? (() => {});
-    this.systems = Array.from({ length: SYSTEM_COUNT }, (_, i) => new SystemInstance(this, i));
+    this.system(0);
+  }
+
+  /** The instance of a system (created on first use). */
+  system(id: number): SystemInstance {
+    let sys = this.instances.get(id);
+    if (!sys) {
+      sys = new SystemInstance(this, id);
+      this.instances.set(id, sys);
+      this.busyAt.set(id, this.time);
+    }
+    return sys;
+  }
+
+  /** Systems that have been visited since the server started. */
+  get systems(): SystemInstance[] {
+    return [...this.instances.values()];
+  }
+
+  /** A system with nobody in it for a while is not simulated (it wakes when a pilot arrives). */
+  asleep(sys: SystemInstance): boolean {
+    return !sys.sessions.size && this.time - (this.busyAt.get(sys.def.id) ?? 0) > SLEEP_AFTER;
   }
 
   nextId() {
@@ -58,7 +84,7 @@ export class Game implements GameContext {
   }
 
   convoyAlive(system: number, poi: number) {
-    const p = this.systems[system]?.world.pois.get(poi);
+    const p = this.instances.get(system)?.world.pois.get(poi);
     return !!p && p.kind === 'convoy' && !!p.ship;
   }
 
@@ -108,7 +134,7 @@ export class Game implements GameContext {
         this.disconnect(old);
       }
     }
-    const sys = this.systems[Math.max(0, Math.min(SYSTEM_COUNT - 1, pilot.system | 0))];
+    const sys = this.system(Math.max(0, Math.min(SYSTEM_COUNT - 1, pilot.system | 0)));
     const sp = sys.spawnPoint();
     const ship = sys.createPlayerShip(pilot, sp.p, sp.q);
     const s = new Session(this.nextId(), t, pilot, sys, ship);
@@ -327,7 +353,7 @@ export class Game implements GameContext {
     if (target < 0 || target >= SYSTEM_COUNT || target === s.system.def.id) return;
     const from = s.system.def.id;
     s.system.removeSession(s);
-    const to = this.systems[target];
+    const to = this.system(target);
     const gate = to.def.gates.find((g) => g.target === from) ?? to.def.gates[0];
     const away = vnorm(v3(), vsub(v3(), to.def.station.pos, gate.pos));
     const p = v3(gate.pos.x + away.x * 600, gate.pos.y + away.y * 600, gate.pos.z + away.z * 600);
@@ -342,8 +368,11 @@ export class Game implements GameContext {
   step() {
     this.tick++;
     this.time = this.tick / TICK_RATE;
-    for (const sys of this.systems) sys.step();
-    for (const sys of this.systems) this.flush(sys);
+    for (const sys of this.instances.values()) {
+      if (sys.sessions.size) this.busyAt.set(sys.def.id, this.time);
+      if (!this.asleep(sys)) sys.step();
+    }
+    for (const sys of this.instances.values()) this.flush(sys);
     for (const s of this.sessions.values()) {
       if (this.time - s.lastSave > 30) { s.lastSave = this.time; this.store.save(s.pilot); }
     }

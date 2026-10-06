@@ -54,6 +54,8 @@ import { BLASTER, moodOf, SAMPLE_RANGE, SPECIES } from '../shared/fauna.ts';
 import { planetSites, siteDir, sitePlane, sitesNear, wreckAt, wreckZone, type SiteDef } from '../shared/planet/sites.ts';
 import { wreckLog } from '../shared/planet/wreck-log.ts';
 import { POI_LABEL, SALVAGE_MAX_SPEED, SALVAGE_RANGE, type Poi } from '../shared/events.ts';
+import { getGalaxy, route, SECURITY_NAMES } from '../shared/galaxy/galaxy.ts';
+import { GalaxyMap } from './ui/galaxy-map.ts';
 
 interface Remote {
   info: EntityInfo | null;
@@ -97,6 +99,9 @@ export class Game {
   private hud = new Hud();
   private wardrobe = new Wardrobe();
   private contracts = new ContractsUi();
+  private galaxyMap = new GalaxyMap();
+  /** Destination system picked on the galaxy map (its next gate is a navigation point). */
+  private routeTo: number | null = null;
   private radar = new Radar(document.getElementById('radar') as HTMLCanvasElement);
   private sfx = new Sfx();
   private conn: NetClient;
@@ -232,6 +237,7 @@ export class Game {
     this.wardrobe.onAction = (a) => { this.conn.action(a); this.sfx.beep(); };
     this.hud.onContracts = () => { if (this.pilot) this.contracts.show(this.pilot); };
     this.contracts.onAction = (a) => { this.conn.action(a); this.sfx.beep(); };
+    this.galaxyMap.onRoute = (to) => this.setRoute(to);
     this.hud.onTyping = (t) => { this.input.typing = t; };
 
     const handlers: NetHandlers = {
@@ -303,6 +309,8 @@ export class Game {
     try {
       localStorage.setItem('nova.pilot', JSON.stringify({ name: w.pilot.name, token: w.token }));
     } catch { /* storage unavailable */ }
+    const arrived = this.routeTo === w.system;
+    if (arrived) this.routeTo = null;
     if (!this.sys || this.sys.id !== w.system) this.buildSystem(w.system);
     for (const id of [...this.remotes.keys()]) this.removeRemote(id);
     this.infos.clear();
@@ -322,7 +330,8 @@ export class Game {
     if (first) {
       this.hud.toast(w.motd);
       this.hud.chat(null, w.motd);
-    } else this.hud.toast(`Прыжок завершён: система ${this.sys!.name}`, 'good');
+    } else this.hud.toast(`Прыжок завершён: ${this.sys!.name} · ${SECURITY_NAMES[this.sys!.security]}${arrived ? ' · вы на месте' : ''}`, 'good');
+    this.syncMap();
   }
 
   private buildSystem(id: number) {
@@ -386,16 +395,44 @@ export class Game {
     this.navIndex = i >= 0 ? i : Math.min(this.navIndex, this.navItems.length - 1);
   }
 
-  /** Navigation points for the targets of active contracts (another system: its gate). */
+  /** The gate of this system that is the first jump towards `to`, and how many jumps it takes. */
+  private gateTowards(to: number): { gate: SystemDef['gates'][number]; jumps: number } | null {
+    const sys = this.sys;
+    if (!sys) return null;
+    const path = route(sys.id, to);
+    const gate = path.length ? sys.gates.find((x) => x.target === path[0]) : undefined;
+    return gate ? { gate, jumps: path.length } : null;
+  }
+
+  private setRoute(to: number | null) {
+    this.routeTo = to;
+    this.rebuildNav();
+    if (to !== null) {
+      const i = this.navItems.findIndex((n) => n.name.startsWith('▶'));
+      if (i >= 0) this.navIndex = i;
+      this.hud.toast(`Маршрут до ${getGalaxy().stars[to].name} проложен — следующие врата в навигации`);
+    }
+    this.syncMap();
+  }
+
+  private syncMap() {
+    if (this.sys) this.galaxyMap.update(this.sys.id, this.routeTo, (this.pilot?.career.active ?? []).map((c) => c.system));
+  }
+
+  /** Navigation points for the map route and the targets of active contracts (another system: the next gate there). */
   private goalNav(): NavItem[] {
     const sys = this.sys;
     if (!sys || !this.pilot) return [];
     const out: NavItem[] = [];
+    if (this.routeTo !== null && this.routeTo !== sys.id) {
+      const next = this.gateTowards(this.routeTo);
+      if (next) out.push({ name: `▶ ${getGalaxy().stars[this.routeTo].name} (${next.jumps}): ${next.gate.name}`, pos: next.gate.pos, kind: 'goal', radius: 0 });
+    }
     for (const c of this.pilot.career.active) {
       const name = `◆ ${KIND_NAMES[c.kind]}: `;
       if (c.system !== sys.id) {
-        const g = sys.gates.find((x) => x.target === c.system);
-        if (g) out.push({ name: `${name}${g.name}`, pos: g.pos, kind: 'goal', radius: 0 });
+        const next = this.gateTowards(c.system);
+        if (next) out.push({ name: `${name}${next.gate.name}${next.jumps > 1 ? ` (${next.jumps})` : ''}`, pos: next.gate.pos, kind: 'goal', radius: 0 });
         continue;
       }
       const pl = c.planet !== undefined ? sys.planets[c.planet] : undefined;
@@ -441,6 +478,7 @@ export class Game {
     if (this.wardrobe.open) this.wardrobe.setPilot(p);
     this.contracts.setPilot(p);
     this.hud.setPilot(p, this.sys?.name ?? '');
+    this.syncMap();
     // a freshly taken contract becomes the navigation target
     const had = new Set(this.goalIds), first = !this.goalsKnown;
     this.goalsKnown = true;
@@ -855,7 +893,8 @@ export class Game {
     const i = this.input;
     if (i.hit('KeyH')) this.hud.toggleHelp();
     if (i.hit('KeyO')) this.toggleSettings();
-    if (i.hit('Escape')) { this.hud.toggleHelp(false); this.toggleSettings(false); this.wardrobe.close(); this.contracts.close(); this.closeLog(); if (mode === MODE.DECK) this.hud.showStation(false); }
+    if (i.hit('KeyM')) { this.galaxyMap.toggle(); if (this.galaxyMap.open) i.releaseLock(); }
+    if (i.hit('Escape')) { this.hud.toggleHelp(false); this.toggleSettings(false); this.wardrobe.close(); this.contracts.close(); this.galaxyMap.close(); this.closeLog(); if (mode === MODE.DECK) this.hud.showStation(false); }
     if (i.hit('Enter')) { this.hud.focusChat(); i.releaseLock(); }
     if (i.hit('KeyZ')) i.releaseLock();
     if (i.hit('KeyV') && mode === MODE.FOOT) {

@@ -1,7 +1,8 @@
-import { GALAXY_SEED, SYSTEM_COUNT } from '../constants.ts';
+import { GALAXY_SEED } from '../constants.ts';
 import { hashInts, Rng } from '../math/rng.ts';
 import { v3, vdist, vnorm, vscale, vadd, type V3 } from '../math/vec.ts';
 import { makeName, ROMAN } from './names.ts';
+import { getGalaxy, SECURITY_PIRATES, type Security } from './galaxy.ts';
 
 export type PlanetType = 'terran' | 'ocean' | 'alien' | 'desert' | 'ice' | 'lava' | 'barren';
 
@@ -52,6 +53,7 @@ export interface SystemDef {
   fields: AsteroidField[];
   spawn: V3;
   pirates: number;
+  security: Security;
 }
 
 const ATMOS: Record<PlanetType, AtmosphereDef | null> = {
@@ -77,7 +79,10 @@ function pickType(rng: Rng, orbit: number, habitableTaken: boolean): PlanetType 
 export function generateSystem(id: number, galaxySeed = GALAXY_SEED): SystemDef {
   const seed = hashInts(galaxySeed, id, 0x51);
   const rng = new Rng(seed);
-  const name = makeName(rng);
+  const galaxy = getGalaxy(galaxySeed);
+  const node = galaxy.stars[id];
+  makeName(rng); // keeps the stream (and so every planet) as it was before names were made unique
+  const name = node.name;
   const star: StarDef = { color: rng.pick(STAR_COLORS), radius: rng.range(7000, 11000), pos: v3() };
 
   const count = rng.int(4, 6);
@@ -105,7 +110,7 @@ export function generateSystem(id: number, galaxySeed = GALAXY_SEED): SystemDef 
       gravity: 9.8 * rng.range(0.55, 1.15),
       atmo: ATMOS[type],
       flora: FLORA[type],
-      resources: type === 'barren' || type === 'lava' ? 0.55 : 0.4,
+      resources: (type === 'barren' || type === 'lava' ? 0.55 : 0.4) + (node.security === 'frontier' ? 0.15 : 0),
       spinAxis: v3(Math.sin(tilt) * Math.cos(az), Math.cos(tilt), Math.sin(tilt) * Math.sin(az)),
       spinRate: (Math.PI * 2) / sr.range(720, 1200),
       spinPhase: sr.range(0, Math.PI * 2),
@@ -123,16 +128,18 @@ export function generateSystem(id: number, galaxySeed = GALAXY_SEED): SystemDef 
 
   const clearOf = (p: V3, margin: number) => planets.every((pl) => vdist(p, pl.center) > pl.radius * 3 + margin) && vdist(p, star.pos) > star.radius * 4;
 
+  // A gate per jump lane, placed roughly in the direction of that star on the map.
   const gates: GateDef[] = [];
-  let gi = 0;
-  for (let k = 1; k < SYSTEM_COUNT; k++) {
-    const target = (id + k) % SYSTEM_COUNT;
+  const grng = new Rng(hashInts(seed, 0x6a7e));
+  for (const target of galaxy.links[id]) {
+    const to = galaxy.stars[target];
+    const dir = Math.atan2(to.y - node.y, to.x - node.x);
     for (let tries = 0; tries < 200; tries++) {
-      const a = rng.range(0, Math.PI * 2);
-      const d = rng.range(26000, 42000);
-      const p = v3(stationPos.x + Math.cos(a) * d, stationPos.y + rng.range(-3000, 3000), stationPos.z + Math.sin(a) * d);
-      if (clearOf(p, 2000) && gates.every((g) => vdist(g.pos, p) > 15000)) {
-        gates.push({ index: gi++, pos: p, target, name: `Gate → ${makeName(new Rng(hashInts(galaxySeed, target, 0x51)))}` });
+      const a = dir + grng.range(-0.5, 0.5) * (1 + tries / 40);
+      const d = grng.range(26000, 42000);
+      const p = v3(stationPos.x + Math.cos(a) * d, stationPos.y + grng.range(-3000, 3000), stationPos.z + Math.sin(a) * d);
+      if (clearOf(p, 2000) && gates.every((g) => vdist(g.pos, p) > 12000)) {
+        gates.push({ index: gates.length, pos: p, target, name: `Gate → ${to.name}` });
         break;
       }
     }
@@ -157,7 +164,7 @@ export function generateSystem(id: number, galaxySeed = GALAXY_SEED): SystemDef 
     }
   }
 
-  return { id, seed, name, star, planets, station, gates, fields, spawn, pirates: 7 };
+  return { id, seed, name, star, planets, station, gates, fields, spawn, pirates: SECURITY_PIRATES[node.security], security: node.security };
 }
 
 const systemCache = new Map<number, SystemDef>();

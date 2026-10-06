@@ -7,7 +7,7 @@ import {
   liquidOf, FLOAT_DEPTH, HEAD_UNDER, AIR_TIME, vscale,
   defaultOutfit, gearStats, DEFAULT_GEAR, lookCode, parseLook, validOutfit, type Outfit,
   generateBoard, objectiveText, FAUNA, FAUNA_SEA, rankOf, RANKS, repLevel, validCareer, newCareer, item, repOk,
-  weatherAt, forecast, STORM_OF, WINDOW, vsub,
+  weatherAt, forecast, STORM_OF, WINDOW, vsub, getGalaxy, generateGalaxy, jumpsFrom, route, SYSTEM_COUNT,
 } from './helpers.ts';
 import { planetSites, siteDir, wreckAt, wreckZone } from '../src/shared/planet/sites.ts';
 import { DECK_POSTS, DECK_WALLS, RAMP, roomAt, stepDeck, TERMINAL_REACH, TERMINALS } from '../src/shared/station/deck.ts';
@@ -34,12 +34,36 @@ describe('noise & generation', () => {
     for (const id of [0, 1, 2]) {
       const s = generateSystem(id);
       expect(s.planets.length).toBeGreaterThanOrEqual(4);
-      expect(s.gates.length).toBe(2);
+      expect(s.gates.length).toBe(getGalaxy().links[id].length);
       expect(s.fields.length).toBeGreaterThanOrEqual(1);
       for (const p of s.planets) {
         expect(vdist(s.station.pos, p.center)).toBeGreaterThan(p.radius * 1.5);
       }
     }
+  });
+
+  it('the galaxy is one connected map of lanes with a gate per lane', () => {
+    const g = getGalaxy();
+    expect(JSON.stringify(generateGalaxy())).toBe(JSON.stringify(g));
+    expect(g.stars.length).toBe(SYSTEM_COUNT);
+    expect(new Set(g.stars.map((s) => s.name)).size).toBe(SYSTEM_COUNT);
+    expect(g.stars[0].security).toBe('core');
+    expect(jumpsFrom(0).every((h) => h >= 0)).toBe(true);
+    for (const s of g.stars) {
+      const links = g.links[s.id];
+      expect(links.length).toBeGreaterThan(0);
+      expect(links.length).toBeLessThanOrEqual(4);
+      const sys = getSystem(s.id);
+      expect(sys.name).toBe(s.name);
+      // every lane has its gate on both ends, so a jump always lands at a gate back
+      expect(sys.gates.map((x) => x.target).sort()).toEqual([...links].sort());
+      for (const n of links) expect(g.links[n]).toContain(s.id);
+    }
+    const r = route(0, 23);
+    expect(r[r.length - 1]).toBe(23);
+    expect(r.length).toBe(jumpsFrom(0)[23]);
+    for (let i = 0; i < r.length; i++) expect(g.links[i ? r[i - 1] : 0]).toContain(r[i]);
+    expect(route(5, 5)).toEqual([]);
   });
 
   it('cube faces agree on shared edges', () => {
@@ -612,7 +636,11 @@ describe('contracts', () => {
           expect(o.need).toBeGreaterThan(0);
           expect(objectiveText(o)).not.toContain('undefined');
           const sys = getSystem(o.system);
-          if (o.kind === 'deliver') expect(o.system).not.toBe(sysId);
+          if (o.kind === 'deliver') {
+            const hops = jumpsFrom(sysId)[o.system];
+            expect(hops).toBeGreaterThan(0);
+            expect(hops).toBeLessThanOrEqual(o.tier);
+          }
           else expect(o.system).toBe(sysId);
           if (o.planet !== undefined) {
             const pl = sys.planets[o.planet];

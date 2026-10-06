@@ -1,11 +1,11 @@
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 export const TICK_RATE = 30;
 export const DT = 1 / TICK_RATE;
 /** Remote entities are rendered this far in the past (seconds). */
 export const INTERP_DELAY = 0.1;
 
 export const GALAXY_SEED = 0x5eed1e55;
-export const SYSTEM_COUNT = 3;
+export const SYSTEM_COUNT = 24;
 
 export const SAFE_ZONE_RADIUS = 3000;
 export const DOCK_RANGE = 500;
