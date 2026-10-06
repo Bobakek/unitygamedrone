@@ -10,19 +10,20 @@ import {
   FWD, qlook, qrot, quat, v3, vcross, vdist, vdistSq, vdot, vlen, vnorm, vscale, vsub, type Quat, type V3,
 } from '../../shared/math/vec.ts';
 import {
-  aimByte, CFLAG, DECK_FRAME, DECK_PLANET, EFLAG, IFLAG, KIND, MODE, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
+  aimByte, CFLAG, DECK_FRAME, DECK_PLANET, EFLAG, IFLAG, KIND, MODE, ROVER_SPEED_MAX, steerByte, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
 } from '../../shared/net/protocol.ts';
 import { nodesNear, resourceNode } from '../../shared/planet/resources.ts';
 import { planetSites, SITE_NODE_BASE, siteDir, sitesNear, wreckAt, wreckZone } from '../../shared/planet/sites.ts';
 import { footHeight, heightAt, liquidOf, surfaceHeight } from '../../shared/planet/terrain.ts';
-import { charQuat, climbProgress, HEAD_UNDER, newChar, stepChar } from '../../shared/sim/character.ts';
+import { charQuat, climbProgress, copyChar, emptyCharInput, HEAD_UNDER, newChar, stepChar } from '../../shared/sim/character.ts';
+import { newRover, rightRover, ROVER, roverGround, roverOverturned, stepRover } from '../../shared/sim/rover.ts';
 import type { SimEnv } from '../../shared/sim/env.ts';
 import { newPose, planetRot, toBodyDir, toWorldPoint, worldPose } from '../../shared/sim/frames.ts';
 import { emptyInput, isCruising, newShip, stepShip, type StepOut } from '../../shared/sim/ship.ts';
 import { ENERGY_REGEN, GUN_OFFSETS, LASER, leadPoint, MISSILE, segmentSphere, SHIELD_DELAY } from '../../shared/sim/weapons.ts';
 import { pirateBlueprint, playerBlueprint } from '../../shared/ships/blueprint.ts';
 import type { PilotRecord } from '../storage.ts';
-import type { CharEntity, Laser, Missile, ShipEntity } from './entities.ts';
+import type { CharEntity, Laser, Missile, RoverEntity, ShipEntity } from './entities.ts';
 import { NpcBrain, npcThink, type NpcWorld } from './npc.ts';
 import { WorldEvents } from './world-events.ts';
 import { Outposts } from './outposts.ts';
@@ -63,12 +64,14 @@ const DECK_UP = v3(0, 1, 0);
 const atStation = (s: Session) => s.mode === MODE.DOCKED || s.mode === MODE.DECK;
 /** Radiation per second in a wreck's reactor room. */
 const REACTOR_DOSE = 2.5;
+const idleRover = emptyCharInput();
 
 export class SystemInstance implements NpcWorld {
   readonly def: SystemDef;
   readonly env: SimEnv;
   ships = new Map<number, ShipEntity>();
   chars = new Map<number, CharEntity>();
+  rovers = new Map<number, RoverEntity>();
   missiles = new Map<number, Missile>();
   lasers: Laser[] = [];
   sessions = new Set<Session>();
@@ -190,6 +193,7 @@ export class SystemInstance implements NpcWorld {
     const out: EntityInfo[] = [];
     for (const s of this.ships.values()) out.push(this.shipInfo(s));
     for (const c of this.chars.values()) out.push({ id: c.id, kind: KIND.CHAR, name: c.name, owner: c.session.id, look: lookCode(c.session.pilot.outfit) });
+    for (const r of this.rovers.values()) out.push(this.roverInfo(r));
     for (const m of this.missiles.values()) out.push({ id: m.id, kind: KIND.MISSILE, name: '', owner: m.owner });
     for (const l of this.world.loot.values()) out.push({ id: l.id, kind: KIND.LOOT, name: 'Контейнер' });
     for (const c of this.fauna.creatures.values()) out.push(this.fauna.info(c));
@@ -220,6 +224,7 @@ export class SystemInstance implements NpcWorld {
 
   removeSession(s: Session) {
     this.sessions.delete(s);
+    this.removeRover(s);
     if (s.char) {
       this.chars.delete(s.char.id);
       this.gone.push(s.char.id);
@@ -282,7 +287,7 @@ export class SystemInstance implements NpcWorld {
 
   damage(target: ShipEntity, dmg: number, attacker: number, pos?: V3) {
     if (target.dead || target.docked || target.god) return;
-    if (target.session && target.session.mode === MODE.FOOT) return;
+    if (target.session && (target.session.mode === MODE.FOOT || target.session.mode === MODE.ROVER)) return;
     if (this.inSafeZone(target.world.p)) return;
     // no friendly fire inside a group
     const by = attacker ? this.ships.get(attacker)?.session : undefined;
@@ -411,6 +416,7 @@ export class SystemInstance implements NpcWorld {
     // Ships parked in a planet frame move with its rotation even without input.
     for (const ship of this.ships.values()) this.syncWorld(ship);
     for (const s of this.sessions) this.processInputs(s);
+    this.stepRovers();
 
     this.env.time = t;
     for (const ship of this.ships.values()) {
@@ -488,7 +494,56 @@ export class SystemInstance implements NpcWorld {
         s.char.pitch = m.char.pitch;
         s.char.aim = !!(m.flags & IFLAG.AIM);
         if (m.flags & IFLAG.FIRE && !s.char.state.climbMode) this.fauna.shoot(s, m.char.pitch);
+      } else if (s.mode === MODE.ROVER && m.mode === MODE.ROVER && s.rover && s.char) {
+        stepRover(s.rover.state, m.char, this.def.planets[s.rover.planet], DT);
+        this.seatDriver(s);
       }
+    }
+  }
+
+  // ------------------------------------------------------------------ rovers
+  roverInfo(r: RoverEntity): EntityInfo {
+    return { id: r.id, kind: KIND.ROVER, name: `Ровер ${r.owner.pilot.name}`, owner: r.owner.id };
+  }
+
+  /** Parked rovers keep settling and rolling; a rover whose ship left the planet goes back into the hold. */
+  private stepRovers() {
+    for (const r of this.rovers.values()) {
+      const s = r.owner;
+      const away = s.ship.dead || (s.ship.state.landed !== r.planet + 1 && s.mode !== MODE.ROVER && s.mode !== MODE.FOOT);
+      if (away) {
+        this.removeRover(s);
+        s.msg('Ровер погружен в трюм');
+        continue;
+      }
+      if (s.mode !== MODE.ROVER) stepRover(r.state, idleRover, this.def.planets[r.planet], DT);
+    }
+  }
+
+  /** The driver rides in the seat: their pilot follows the rover (fauna, weather, interest use it). */
+  private seatDriver(s: Session) {
+    const r = s.rover!.state, c = s.char!.state;
+    qrot(tmp, r.q, ROVER.seat);
+    c.p.x = r.p.x + tmp.x; c.p.y = r.p.y + tmp.y; c.p.z = r.p.z + tmp.z;
+    c.v.x = r.v.x; c.v.y = r.v.y; c.v.z = r.v.z;
+    const up = vnorm(tmp2, c.p);
+    qrot(tmp, r.q, FWD);
+    const fu = vdot(tmp, up);
+    tmp.x -= up.x * fu; tmp.y -= up.y * fu; tmp.z -= up.z * fu;
+    if (vlen(tmp) > 1e-3) vnorm(c.f, tmp);
+    c.ground = 1; c.swim = 0; c.climbMode = 0; c.climb = 0; c.scramble = 0;
+  }
+
+  removeRover(s: Session) {
+    const r = s.rover;
+    if (!r) return;
+    this.rovers.delete(r.id);
+    this.gone.push(r.id);
+    s.rover = null;
+    if (s.mode === MODE.ROVER) {
+      // stepping out where the rover was
+      s.mode = s.char ? MODE.FOOT : MODE.SHIP;
+      s.resync();
     }
   }
 
@@ -580,6 +635,8 @@ export class SystemInstance implements NpcWorld {
     const docked = s.mode === MODE.DOCKED || s.mode === MODE.DECK;
     for (const c of this.chars.values()) {
       if (c.session === s || vdistSq(this.charWorld(c, cw), focus) > r2) continue;
+      // a driver sits in the rover's model
+      if (c.session.mode === MODE.ROVER) continue;
       // pilots on the station deck are seen only from inside the station
       const deck = c.planet < 0;
       if (deck !== docked) continue;
@@ -592,6 +649,18 @@ export class SystemInstance implements NpcWorld {
         id: c.id, kind: KIND.CHAR, flags, frame: deck ? DECK_FRAME : c.planet + 1, px: cs.p.x, py: cs.p.y, pz: cs.p.z,
         qx: q.x, qy: q.y, qz: q.z, qw: q.w, vx: cs.v.x, vy: cs.v.y, vz: cs.v.z, hull: c.hp / c.maxHp, shield: aimByte(c.pitch),
         throttle: cs.climbMode === 2 ? 0.5 + prog * 0.5 : prog * 0.5,
+      });
+    }
+    for (const r of this.rovers.values()) {
+      const driven = r.owner.mode === MODE.ROVER;
+      if (driven && r.owner === s) continue;
+      const pl = this.def.planets[r.planet];
+      if (vdistSq(toWorldPoint(pl, planetRot(pl, this.time, rot), r.state.p, cw), focus) > r2) continue;
+      const st = r.state;
+      entities.push({
+        id: r.id, kind: KIND.ROVER, flags: driven ? EFLAG.BOOST : 0, frame: r.planet + 1, px: st.p.x, py: st.p.y, pz: st.p.z,
+        qx: st.q.x, qy: st.q.y, qz: st.q.z, qw: st.q.w, vx: st.v.x, vy: st.v.y, vz: st.v.z,
+        hull: 1, shield: steerByte(st.steer), throttle: Math.min(1, vlen(st.v) / ROVER_SPEED_MAX),
       });
     }
     for (const m of this.missiles.values()) {
@@ -612,6 +681,7 @@ export class SystemInstance implements NpcWorld {
         hull: Math.max(0, ship.hull), maxHull: ship.combat.maxHull, shield: ship.shield, maxShield: ship.combat.maxShield,
         energy: ship.energy, missiles: s.pilot.missiles,
         charId: s.char?.id ?? 0, char: s.char?.state ?? null, charPlanet: s.char ? (s.char.planet < 0 ? DECK_PLANET : s.char.planet) : -1, suit: s.char ? (s.char.hp / s.char.maxHp) * 100 : 100,
+        roverId: s.mode === MODE.ROVER && s.rover ? s.rover.id : 0, rover: s.mode === MODE.ROVER && s.rover ? s.rover.state : null,
       },
     };
   }
@@ -680,6 +750,65 @@ export class SystemInstance implements NpcWorld {
         const near = ship.state.frame === s.char.planet + 1 && vdist(s.char.state.p, ship.state.p) <= EXIT_RANGE + 6;
         if (!near) return 'Подойдите ближе к кораблю';
         this.recallPilot(s);
+        return null;
+      }
+      case 'rover': {
+        // unload the rover next to the landed ship, or load it back in
+        if (s.mode !== MODE.FOOT || !s.char || s.char.planet < 0) return null;
+        const pl = this.def.planets[s.char.planet];
+        if (s.rover) {
+          if (vdist(s.rover.state.p, s.char.state.p) > ROVER.reach + 3) return 'Подойдите к роверу';
+          if (vdist(s.rover.state.p, ship.state.p) > ROVER.load) return 'Подгоните ровер к кораблю';
+          this.removeRover(s);
+          s.msg('Ровер погружен в трюм');
+          return null;
+        }
+        if (ship.state.landed !== pl.index + 1) return 'Ровер выгружается из приземлившегося корабля';
+        if (vdist(s.char.state.p, ship.state.p) > ROVER.load) return 'Подойдите к кораблю';
+        const st = ship.state;
+        const right = qrot(v3(), st.q, v3(1, 0, 0)), fwd = qrot(v3(), st.q, FWD);
+        const d = vnorm(v3(), v3(st.p.x + right.x * 9, st.p.y + right.y * 9, st.p.z + right.z * 9));
+        const g = pl.radius + roverGround(pl, d.x, d.y, d.z) + 1.2;
+        const fu = vdot(fwd, d);
+        const f = vnorm(v3(), v3(fwd.x - d.x * fu, fwd.y - d.y * fu, fwd.z - d.z * fu));
+        const r: RoverEntity = { id: this.ctx.nextId(), owner: s, state: newRover(vscale(v3(), d, g), qlook(quat(), f, d)), planet: pl.index };
+        s.rover = r;
+        this.rovers.set(r.id, r);
+        this.infos.push(this.roverInfo(r));
+        s.msg('Ровер выгружен: G рядом с ним — за руль, R у корабля — погрузить обратно', 'good');
+        return null;
+      }
+      case 'drive': {
+        if (s.mode !== MODE.FOOT || !s.char || !s.rover || s.rover.planet !== s.char.planet) return null;
+        if (vdist(s.rover.state.p, s.char.state.p) > ROVER.reach) return 'Подойдите к роверу';
+        if (roverOverturned(s.rover.state)) return 'Ровер перевернулся: R — поставить на колёса';
+        s.mode = MODE.ROVER;
+        this.seatDriver(s);
+        s.resync();
+        return null;
+      }
+      case 'leave': {
+        if (s.mode !== MODE.ROVER || !s.rover || !s.char) return null;
+        // out on the driver's (left) side, onto the ground
+        const pl = this.def.planets[s.rover.planet];
+        const r = s.rover.state;
+        const left = qrot(v3(), r.q, v3(-2.2, 0, -0.3));
+        const d = vnorm(v3(), v3(r.p.x + left.x, r.p.y + left.y, r.p.z + left.z));
+        const pos = vscale(v3(), d, pl.radius + footHeight(pl, d.x, d.y, d.z) + 0.05);
+        const f = qrot(v3(), r.q, FWD);
+        const fu = vdot(f, d);
+        copyChar(s.char.state, newChar(pos, vnorm(v3(), v3(f.x - d.x * fu, f.y - d.y * fu, f.z - d.z * fu))));
+        s.mode = MODE.FOOT;
+        s.resync();
+        return null;
+      }
+      case 'flip': {
+        const r = s.rover;
+        if (!r || (s.mode !== MODE.ROVER && !(s.mode === MODE.FOOT && s.char && vdist(r.state.p, s.char.state.p) <= ROVER.reach + 3))) return null;
+        if (!roverOverturned(r.state)) return 'Ровер стоит на колёсах';
+        if (vlen(r.state.v) > 3) return 'Дождитесь, пока ровер остановится';
+        rightRover(r.state, this.def.planets[r.planet]);
+        if (s.mode === MODE.ROVER) { this.seatDriver(s); s.resync(); }
         return null;
       }
       case 'dock': {
@@ -842,6 +971,23 @@ export class SystemInstance implements NpcWorld {
   }
 
   // ------------------------------------------------------------------ dev helpers
+  /** Dev: from a landed ship (or on foot by it) straight to the wheel of the rover. */
+  devRover(s: Session): string | null {
+    if (s.mode === MODE.ROVER) return null;
+    if (s.mode === MODE.SHIP) {
+      const e = this.handleAction(s, { a: 'exit' });
+      if (e) return e;
+    }
+    if (!s.char || s.mode !== MODE.FOOT) return 'Сначала приземлитесь';
+    if (!s.rover) {
+      s.char.state.p = { ...s.ship.state.p };
+      const e = this.handleAction(s, { a: 'rover' });
+      if (e) return e;
+    }
+    s.char.state.p = { ...s.rover!.state.p };
+    return this.handleAction(s, { a: 'drive' });
+  }
+
   /** Dev teleports; planet targets accept `when` = day (default, station side) | dusk | night. */
   devTeleport(s: Session, target: string, when?: string): string {
     const ship = s.ship;
@@ -881,11 +1027,16 @@ export class SystemInstance implements NpcWorld {
       if (!pl) return 'Нет такой планеты';
       const land = target.startsWith('land');
       // Planet targets are built in the body frame, on the side currently facing the station
-      // (or at local dusk / midnight).
+      // (or at local noon / dusk / midnight).
       const R = planetRot(pl, this.time, rot);
       const toSun = toBodyDir(R, vnorm(v3(), vsub(v3(), this.def.star.pos, pl.center)), v3());
       let aim = toBodyDir(R, vnorm(v3(), vsub(v3(), this.def.station.pos, pl.center)), v3());
       if (when === 'night') aim = vscale(v3(), toSun, -1);
+      else if (when === 'day') {
+        // mid-morning: the whole afternoon still ahead
+        const eve = vnorm(v3(), vcross(v3(), pl.spinAxis, toSun));
+        aim = vnorm(v3(), v3(toSun.x - eve.x * 0.7, toSun.y - eve.y * 0.7, toSun.z - eve.z * 0.7));
+      }
       else if (when === 'dusk') {
         // on the evening terminator: the ground there is turning away from the sun
         const eve = vnorm(v3(), vcross(v3(), pl.spinAxis, toSun));

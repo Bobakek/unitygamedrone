@@ -20,6 +20,10 @@ export class Controller {
   lookScale = 1;
   /** Third-person camera distance on foot (mouse wheel). */
   footDist = 3.2;
+  /** Rover chase camera: distance (wheel) and orbit offset from the heading (mouse), easing back behind. */
+  roverDist = 9;
+  roverYaw = 0;
+  private roverLook = 0;
   private yawAcc = 0;
 
   constructor(private input: Input) {}
@@ -46,6 +50,15 @@ export class Controller {
         this.yawAcc += shape(i.vx) * 2.2 * dt;
         this.footPitch = Math.max(-1.2, Math.min(1.0, this.footPitch - shape(i.vy) * 1.5 * dt));
       }
+    } else if (mode === MODE.ROVER) {
+      const m = i.consumeMouse();
+      if (i.wheel) this.roverDist = Math.max(5, Math.min(22, this.roverDist + i.wheel * 1));
+      const dx = i.locked ? m.dx * 0.0026 * i.sensitivity : 0, dy = i.locked ? m.dy * 0.0022 * i.sensitivity : 0;
+      this.roverYaw = Math.atan2(Math.sin(this.roverYaw + dx), Math.cos(this.roverYaw + dx));
+      this.footPitch = Math.max(-1.0, Math.min(0.5, this.footPitch - dy));
+      // a second after the mouse stops, the camera swings back behind the rover
+      this.roverLook = dx || dy ? 1 : Math.max(0, this.roverLook - dt);
+      if (!this.roverLook) this.roverYaw *= Math.exp(-dt * 2.5);
     } else {
       i.consumeMouse();
     }
@@ -58,7 +71,7 @@ export class Controller {
     const ship = emptyInput();
     const char = emptyCharInput();
     let flags = 0;
-    const m = mode === MODE.FOOT || mode === MODE.DECK ? mode : MODE.SHIP;
+    const m = mode === MODE.FOOT || mode === MODE.DECK || mode === MODE.ROVER ? mode : MODE.SHIP;
     if (m === MODE.SHIP) {
       ship.yaw = shape(i.vx);
       ship.pitch = -shape(i.vy);
@@ -69,6 +82,12 @@ export class Controller {
       if (k('ShiftLeft') || k('ShiftRight')) flags |= IFLAG.BOOST;
       if (this.cruiseOn) flags |= IFLAG.CRUISE;
       if (i.mouse(0) && !i.typing) flags |= IFLAG.FIRE;
+    } else if (m === MODE.ROVER) {
+      // W/S drive and brake, A/D steer, Space handbrake, Shift boost
+      char.mx = k('KeyD') - k('KeyA');
+      char.mz = k('KeyW') - k('KeyS');
+      if (k('Space')) flags |= IFLAG.JUMP;
+      if (k('ShiftLeft') || k('ShiftRight')) flags |= IFLAG.SPRINT;
     } else {
       char.mx = k('KeyD') - k('KeyA');
       char.mz = k('KeyW') - k('KeyS');

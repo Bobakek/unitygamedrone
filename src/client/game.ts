@@ -4,7 +4,7 @@ import { defaultUpgrades, flightStats } from '../shared/economy.ts';
 import { getSystem, type PlanetDef, type SystemDef } from '../shared/galaxy/system-gen.ts';
 import { FWD, qlook, qrot, quat, v3, vcross, vdist, vlen, vnorm, vsub, type Quat, type V3 } from '../shared/math/vec.ts';
 import {
-  aimPitch, BLASTER_LEVEL, DRONE_LEVEL, DECK_FRAME, CFLAG, EFLAG, IFLAG, KIND, MODE, type EntityInfo, type EntityState, type GameEvent, type GroupMsg, type PilotInfo, type SelfState, type Shot, type Snapshot, type Welcome,
+  aimPitch, BLASTER_LEVEL, DRONE_LEVEL, DECK_FRAME, CFLAG, EFLAG, IFLAG, KIND, MODE, ROVER_SPEED_MAX, steerAngle, type EntityInfo, type EntityState, type GameEvent, type GroupMsg, type PilotInfo, type SelfState, type Shot, type Snapshot, type Welcome,
 } from '../shared/net/protocol.ts';
 import { heightAt, liquidOf, surfaceHeight, waterColors } from '../shared/planet/terrain.ts';
 import { resourceNode } from '../shared/planet/resources.ts';
@@ -50,6 +50,8 @@ import { BOARD_REACH, DECK_WALLS, nearTerminal, PAD, type TerminalKind } from '.
 import { forecast, HAZARD_GEAR, HAZARD_NAMES, LAVA_HEAT, STORM_OF, WEATHER, weatherAt, type Weather, type WeatherKind, type WeatherOverride } from '../shared/weather.ts';
 import { CreatureView } from './entities/creature.ts';
 import { DroneView } from './entities/drone.ts';
+import { RoverView } from './entities/rover-view.ts';
+import { ROVER, roverOverturned, roverWheelLengths } from '../shared/sim/rover.ts';
 import { BLASTER, moodOf, SAMPLE_RANGE, SPECIES } from '../shared/fauna.ts';
 import { planetSites, siteDir, sitePlane, sitesNear, wreckAt, wreckZone, type SiteDef } from '../shared/planet/sites.ts';
 import { wreckLog } from '../shared/planet/wreck-log.ts';
@@ -60,7 +62,7 @@ import { GalaxyMap } from './ui/galaxy-map.ts';
 interface Remote {
   info: EntityInfo | null;
   buf: InterpBuffer;
-  view: ShipView | AstronautView | MissileView | LootView | CreatureView | DroneView | null;
+  view: ShipView | AstronautView | MissileView | LootView | CreatureView | DroneView | RoverView | null;
   /** World pose at the current render time. */
   p: V3;
   q: Quat;
@@ -75,6 +77,8 @@ interface Remote {
   harvestPos: V3 | null;
   /** Previous heading (creatures: turn-rate estimate). */
   prevF?: V3;
+  /** Rovers: wheel drop estimated from the ground under them. */
+  susp?: number[];
 }
 
 /** `site`: a point on a planet (body frame) the marker follows as the planet turns. */
@@ -158,6 +162,14 @@ export class Game {
   private remotes = new Map<number, Remote>();
   private myShip: ShipView | null = null;
   private myAstro: AstronautView | null = null;
+  /** The rover the local pilot is driving (parked rovers, own included, are remotes). */
+  private myRover: RoverView | null = null;
+  private roverPosB = v3();
+  private roverQB = quat();
+  private roverPos = v3();
+  private roverQ = quat();
+  private dustT = 0;
+  private wheelPts: THREE.Vector3[] = [];
   private welcome: Welcome | null = null;
   private pilot: PilotInfo | null = null;
   private goalIds: string[] = [];
@@ -565,6 +577,14 @@ export class Game {
     this.hud.showStation(mode === MODE.DOCKED, this.sys?.station.name);
     this.hud.setDead(mode === MODE.DEAD);
     this.hud.setFlightVisible(mode === MODE.SHIP);
+    if (mode === MODE.ROVER && !this.myRover) {
+      this.myRover = new RoverView(true);
+      this.world.add(this.myRover.group);
+      this.ctrl.roverYaw = 0;
+      this.ctrl.footPitch = -0.22;
+      this.hud.toast('За рулём: W/S — газ и тормоз, A/D — руль, Space — ручник, Shift — ускорение, G — выйти');
+    }
+    if (mode !== MODE.ROVER && this.myRover) { this.myRover.dispose(); this.myRover = null; }
     if (mode === MODE.DOCKED) {
       this.input.releaseLock();
       if (this.pilot && this.self) this.hud.renderStation(this.pilot, { hull: this.self.hull, max: this.self.maxHull });
@@ -621,6 +641,7 @@ export class Game {
     }
     else if (r.info.kind === KIND.MISSILE) r.view = new MissileView();
     else if (r.info.kind === KIND.LOOT) r.view = new LootView();
+    else if (r.info.kind === KIND.ROVER) r.view = new RoverView();
     else if (r.info.kind === KIND.CREATURE && r.info.species !== undefined) r.view = SPECIES[r.info.species]?.drone ? new DroneView() : new CreatureView(SPECIES[r.info.species]);
     if (r.view) this.world.add(r.view.group);
   }
@@ -795,7 +816,7 @@ export class Game {
   private fixedTick() {
     if (!this.pred.ready || !this.conn.open) return;
     const mode = this.pred.mode;
-    if (mode !== MODE.SHIP && mode !== MODE.FOOT && mode !== MODE.DECK) return;
+    if (mode !== MODE.SHIP && mode !== MODE.FOOT && mode !== MODE.DECK && mode !== MODE.ROVER) return;
     const m = this.ctrl.build(mode, this.timeline.serverNow);
     this.conn.input(m);
     this.pred.step(m);
@@ -932,6 +953,36 @@ export class Game {
     if (inside && vlen(this.charPosB) < inside.roof) this.rig.clampRadius(pl.center, 0, inside.roof - 0.45);
   }
 
+  /** The local pilot's own parked rover within `reach` metres of them on foot. */
+  private nearMyRover(reach: number): { id: number; overturned: boolean } | null {
+    const me = this.welcome?.playerId;
+    for (const [id, r] of this.remotes) {
+      if (r.info?.kind !== KIND.ROVER || r.info.owner !== me || !r.state || r.state.frame !== this.pred.charPlanet + 1) continue;
+      if (vdist(r.bp, this.charPosB) > reach) continue;
+      const up = vnorm(v3(), r.bp), ru = qrot(v3(), r.bq, v3(0, 1, 0));
+      return { id, overturned: up.x * ru.x + up.y * ru.y + up.z * ru.z < 0.35 };
+    }
+    return null;
+  }
+
+  /** Dust kicked up behind the wheels of a rover moving over dry ground. */
+  private roverDust(dt: number, view: RoverView, pl: PlanetDef, speed: number, ground: number) {
+    if (speed < 3 || !ground || (this.dustT -= dt) > 0) return;
+    this.dustT = 0.09;
+    const color = new THREE.Color(DUST[pl.type] ?? '#9a948e');
+    view.wheelBottoms(this.wheelPts);
+    for (let i = 2; i < 4; i++) {
+      const w = this.wheelPts[i];
+      if (!w) continue;
+      const p = v3(w.x + this.origin.x, w.y + this.origin.y, w.z + this.origin.z);
+      const up = vnorm(v3(), vsub(v3(), p, pl.center));
+      const b = toBodyDir(this.rots[pl.index], up, v3());
+      if (pl.sea && heightAt(pl, b.x, b.y, b.z) < 0) continue;
+      p.x -= up.x * 0.4; p.y -= up.y * 0.4; p.z -= up.z * 0.4;
+      this.effects.dust(p, up, color, 2, Math.min(1.6, speed / 10));
+    }
+  }
+
   /** Carcass within reach of the pilot. */
   private nearCarcass(): { id: number; name: string; drone: boolean } | null {
     for (const [id, r] of this.remotes) {
@@ -966,8 +1017,16 @@ export class Game {
     }
     if (i.hit('KeyG')) {
       if (mode === MODE.SHIP && this.pred.ship.landed) this.conn.action({ a: 'exit' });
+      else if (mode === MODE.FOOT && this.nearMyRover(ROVER.reach)) this.conn.action({ a: 'drive' });
       else if (mode === MODE.FOOT || mode === MODE.DECK) this.conn.action({ a: 'board' });
       else if (mode === MODE.DOCKED) this.conn.action({ a: 'disembark' });
+      else if (mode === MODE.ROVER) this.conn.action({ a: 'leave' });
+    }
+    if (i.hit('KeyR')) {
+      // unload / load the rover by the ship, or put an overturned one back on its wheels
+      const mine = mode === MODE.FOOT ? this.nearMyRover(ROVER.reach + 3) : null;
+      if (mode === MODE.ROVER || (mine && mine.overturned)) this.conn.action({ a: 'flip' });
+      else if (mode === MODE.FOOT) this.conn.action({ a: 'rover' });
     }
     if (i.hit('KeyF') && mode === MODE.DECK && this.pred.char) {
       const t = nearTerminal(this.pred.char.p);
@@ -1104,6 +1163,14 @@ export class Game {
     const onDeck = mode === MODE.DECK && this.pred.charPose(alpha, this.charPosB, this.charFwdB);
     const onFoot = mode === MODE.FOOT && this.pred.charPose(alpha, this.charPosB, this.charFwdB);
     const charPl = onFoot ? sys.planets[this.pred.charPlanet] : null;
+    const driving = mode === MODE.ROVER && this.pred.charPlanet >= 0 && this.pred.roverPose(alpha, this.roverPosB, this.roverQB);
+    const roverPl = driving ? sys.planets[this.pred.charPlanet] : null;
+    if (roverPl) {
+      const R = this.rots[roverPl.index];
+      toWorldPoint(roverPl, R, this.roverPosB, this.roverPos);
+      toWorldQuat(R, this.roverQB, this.roverQ);
+      Object.assign(this.charPos, this.roverPos);
+    }
     const it = this.interior!;
     if (charPl) {
       const R = this.rots[charPl.index];
@@ -1117,7 +1184,7 @@ export class Game {
     const speed = vlen(ship.v);
 
     // nearest planet to the player
-    const focus = onFoot || onDeck ? this.charPos : this.shipPos;
+    const focus = onFoot || onDeck || roverPl ? this.charPos : this.shipPos;
     this.nearPlanet = null;
     this.nearAlt = 1e12;
     for (const p of sys.planets) {
@@ -1152,6 +1219,28 @@ export class Game {
       if (swim === 1) this.rig.clampRadius(charPl.center, charPl.radius + 0.3, Infinity);
       else if (swim === 2) this.rig.clampRadius(charPl.center, 0, charPl.radius - 0.3);
       this.wallClamp(charPl, piv);
+    } else if (roverPl) {
+      // chase camera behind the rover; the mouse looks around, then it swings back
+      const up = vnorm(v3(), vsub(v3(), this.roverPos, roverPl.center));
+      const fix = this.groundFix(roverPl.index, this.roverPosB);
+      const piv = v3(this.roverPos.x + up.x * fix, this.roverPos.y + up.y * fix, this.roverPos.z + up.z * fix);
+      const f = qrot(v3(), this.roverQ, FWD);
+      const fu = f.x * up.x + f.y * up.y + f.z * up.z;
+      let fx = f.x - up.x * fu, fy = f.y - up.y * fu, fz = f.z - up.z * fu;
+      const fl = Math.hypot(fx, fy, fz) || 1;
+      fx /= fl; fy /= fl; fz /= fl;
+      // rotate the heading about up by the camera's orbit offset (positive = look right)
+      const rx = fy * up.z - fz * up.y, ry = fz * up.x - fx * up.z, rz = fx * up.y - fy * up.x;
+      const c = Math.cos(this.ctrl.roverYaw), sn = Math.sin(this.ctrl.roverYaw);
+      const look = v3(fx * c + rx * sn, fy * c + ry * sn, fz * c + rz * sn);
+      const R = this.rots[roverPl.index], cd = v3();
+      const clear = (x: number, y: number, z: number) => {
+        cd.x = x - roverPl.center.x; cd.y = y - roverPl.center.y; cd.z = z - roverPl.center.z;
+        const l = vlen(cd);
+        toBodyDir(R, vnorm(cd, cd), cd);
+        return l - roverPl.radius - surfaceHeight(roverPl, cd.x, cd.y, cd.z) - fix;
+      };
+      this.rig.foot(dt, piv, up, look, this.ctrl.footPitch, this.ctrl.roverDist, 0, 1.6, clear);
     } else if (onDeck) {
       const wantAim = this.input.mouse(2);
       this.aimK += ((wantAim ? 1 : 0) - this.aimK) * (1 - Math.exp(-dt * 9));
@@ -1171,7 +1260,7 @@ export class Game {
     if (np && this.nearAlt < np.maxHeight * 3 + 400) {
       const d = toBodyDir(this.rots[np.index], vnorm(v3(), vsub(v3(), this.rig.pos, np.center)), v3());
       const diving = onFoot && np === charPl && (this.pred.char?.swim ?? 0) > 0;
-      this.rig.clampAbove(np.center, np.radius + (diving ? heightAt : surfaceHeight)(np, d.x, d.y, d.z), onFoot ? (diving ? 0.4 : 0.6) : 1.5);
+      this.rig.clampAbove(np.center, np.radius + (diving ? heightAt : surfaceHeight)(np, d.x, d.y, d.z), onFoot ? (diving ? 0.4 : 0.6) : roverPl ? 0.8 : 1.5);
     }
     this.origin.x = this.rig.pos.x; this.origin.y = this.rig.pos.y; this.origin.z = this.rig.pos.z;
     const cam = this.r.camera;
@@ -1241,7 +1330,7 @@ export class Game {
 
     // own ship / astronaut
     const ms = this.myShip!;
-    ms.group.visible = mode === MODE.SHIP || mode === MODE.FOOT || inside;
+    ms.group.visible = mode === MODE.SHIP || mode === MODE.FOOT || mode === MODE.ROVER || inside;
     if (inside) {
       // parked on its pad in the hangar, nose towards the bay
       this.place(ms.group, it.toWorld(sys.station.pos, v3(PAD.x, 2.4, PAD.z), v3()));
@@ -1254,7 +1343,7 @@ export class Game {
     ms.throttle = Math.abs(this.ctrl.throttle);
     ms.boost = this.input.down('ShiftLeft');
     ms.cruise = isCruising(ship);
-    ms.landed = !!ship.landed || mode === MODE.FOOT || inside;
+    ms.landed = !!ship.landed || mode === MODE.FOOT || mode === MODE.ROVER || inside;
     ms.update(dt, this.time);
     if (this.myAstro && onDeck) {
       // walking on the deck: the same animation inputs, with the deck's up
@@ -1305,12 +1394,24 @@ export class Game {
         this.sfx.bubbles();
       }
     }
+    if (this.myRover && roverPl && this.pred.rover) {
+      const rv = this.pred.rover;
+      this.place(this.myRover.group, this.roverPos);
+      this.myRover.group.quaternion.set(this.roverQ.x, this.roverQ.y, this.roverQ.z, this.roverQ.w);
+      this.liftToGround(this.myRover.group, roverPl.index + 1, this.roverPosB, this.roverPos);
+      const fwd = qrot(v3(), rv.q, FWD);
+      const vf = fwd.x * rv.v.x + fwd.y * rv.v.y + fwd.z * rv.v.z;
+      const dark = this.dayNow < 0.35 || this.wx.dark || this.indoorK > 0.5;
+      this.myRover.update(dt, { susp: rv.susp, steer: rv.steer, fwd: vf, driven: true, lights: dark });
+      this.roverDust(dt, this.myRover, roverPl, Math.abs(vf), rv.ground);
+    }
     if (mode === MODE.SHIP) this.sfx.engineLevel(this.ctrl.throttle, this.input.down('ShiftLeft'), isCruising(ship));
+    else if (roverPl && this.pred.rover) this.sfx.roverMotor(vlen(this.pred.rover.v), Math.abs(this.input.down('KeyW') ? 1 : this.input.down('KeyS') ? 0.6 : 0));
     else this.sfx.silenceEngine();
 
     // remote entities
     const rt = this.timeline.renderTime;
-    for (const r of this.remotes.values()) {
+    for (const [id, r] of this.remotes) {
       this.ensureView(r);
       const st = r.buf.sample(rt, r.bp, r.bq);
       r.state = st;
@@ -1341,7 +1442,8 @@ export class Game {
       if (!r.visible || !st) continue;
       this.place(r.view.group, r.p);
       r.view.group.quaternion.set(r.q.x, r.q.y, r.q.z, r.q.w);
-      const grounded = r.view instanceof AstronautView || r.view instanceof CreatureView || r.view instanceof DroneView || (r.view instanceof ShipView && !!(st.flags & EFLAG.LANDED));
+      if (r.view instanceof RoverView && mode === MODE.ROVER && id === this.pred.roverId) { r.view.group.visible = false; continue; }
+      const grounded = r.view instanceof AstronautView || r.view instanceof CreatureView || r.view instanceof DroneView || r.view instanceof RoverView || (r.view instanceof ShipView && !!(st.flags & EFLAG.LANDED));
       if (grounded) this.liftToGround(r.view.group, st.frame, r.bp, r.p);
       if (r.view instanceof ShipView) {
         r.view.throttle = st.throttle;
@@ -1374,6 +1476,14 @@ export class Game {
           climb: climbing ? { mode: cm, t: cm === 2 ? (st.throttle - 0.5) * 2 : st.throttle * 2 } : null, scramble: !!(st.flags & CFLAG.SCRAMBLE),
           swim, swimPitch: Math.atan2(mv.vUp, Math.hypot(mv.fwd, mv.side) + 1e-3),
         });
+      } else if (r.view instanceof RoverView) {
+        const rpl = st.frame ? sys.planets[st.frame - 1] : null;
+        const susp = rpl ? roverWheelLengths(rpl, r.bp, r.bq, r.susp ??= [0, 0, 0, 0]) : [ROVER.modelLen, ROVER.modelLen, ROVER.modelLen, ROVER.modelLen];
+        const f = qrot(v3(), r.bq, FWD);
+        const vf = f.x * st.vx + f.y * st.vy + f.z * st.vz;
+        const driven = !!(st.flags & EFLAG.BOOST);
+        r.view.update(dt, { susp, steer: steerAngle(st.shield), fwd: vf, driven, lights: driven && (this.dayNow < 0.35 || this.wx.dark) });
+        if (rpl && vdist(r.p, this.origin) < 120) this.roverDust(dt, r.view, rpl, Math.abs(vf), st.throttle * ROVER_SPEED_MAX > 0.5 ? 4 : 0);
       } else if (r.view instanceof LootView) {
         r.view.update(dt);
       } else if (r.view instanceof DroneView) {
@@ -1407,7 +1517,7 @@ export class Game {
     this.effects.update(dt, this.origin);
     this.updateWeather(dt, onFoot);
 
-    this.updateEnvironment(toSun, onFoot ? this.charPos : this.shipPos);
+    this.updateEnvironment(toSun, onFoot || roverPl ? this.charPos : this.shipPos);
     this.updateHud(self, mode, speed);
     this.r.render();
   }
@@ -1725,7 +1835,7 @@ export class Game {
     const sys = this.sys!, W = window.innerWidth, H = window.innerHeight;
     const ship = this.pred.ship;
     // distances from the pilot on foot, from the hangar's camera while docked
-    const me = mode === MODE.FOOT || mode === MODE.DECK ? this.charPos : mode === MODE.DOCKED ? this.rig.pos : this.shipPos;
+    const me = mode === MODE.FOOT || mode === MODE.DECK || mode === MODE.ROVER ? this.charPos : mode === MODE.DOCKED ? this.rig.pos : this.shipPos;
     const invCam = this.r.camera.quaternion.clone().invert();
 
     if (mode === MODE.SHIP) {
@@ -1866,7 +1976,20 @@ export class Game {
       if (this.nearLog()) prompt = '<kbd>F</kbd> бортовой журнал';
       else if (carcass) prompt = carcass.drone ? '<kbd>F</kbd> разобрать дрона' : `<kbd>F</kbd> взять биообразцы: ${carcass.name}`;
       else if (n) prompt = `<kbd>F</kbd> собрать: ${RESOURCE_NAMES[n.type]}`;
-      else if (ship.frame === this.pred.charPlanet + 1 && vdist(this.charPosB, ship.p) < EXIT_RANGE + 6) prompt = '<kbd>G</kbd> сесть в корабль';
+      else {
+        const mine = this.nearMyRover(ROVER.reach + 3);
+        const parked = [...this.remotes.values()].some((r) => r.info?.kind === KIND.ROVER && r.info.owner === this.welcome?.playerId);
+        const byShip = ship.landed === this.pred.charPlanet + 1 && vdist(this.charPosB, ship.p) < ROVER.load;
+        if (mine?.overturned) prompt = '<kbd>R</kbd> поставить ровер на колёса';
+        else if (mine && vdist(this.charPosB, this.remotes.get(mine.id)!.bp) <= ROVER.reach) prompt = `<kbd>G</kbd> сесть за руль${byShip ? ' · <kbd>R</kbd> погрузить ровер в корабль' : ''}`;
+        else if (ship.frame === this.pred.charPlanet + 1 && vdist(this.charPosB, ship.p) < EXIT_RANGE + 6) prompt = `<kbd>G</kbd> сесть в корабль${parked ? '' : ' · <kbd>R</kbd> выгрузить ровер'}`;
+        else if (byShip && !parked) prompt = '<kbd>R</kbd> выгрузить ровер';
+      }
+    } else if (mode === MODE.ROVER && this.pred.rover) {
+      const rv = this.pred.rover;
+      const kmh = Math.round(vlen(rv.v) * 3.6);
+      prompt = roverOverturned(rv) ? 'Ровер перевернулся — <kbd>R</kbd> поставить на колёса · <kbd>G</kbd> выйти'
+        : `${kmh} км/ч · <kbd>Space</kbd> ручник · <kbd>Shift</kbd> ускорение · <kbd>G</kbd> выйти`;
     } else if (mode === MODE.DECK && this.pred.char) {
       const c = this.pred.char.p;
       const t = nearTerminal(c);

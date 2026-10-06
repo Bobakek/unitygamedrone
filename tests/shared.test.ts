@@ -8,6 +8,7 @@ import {
   defaultOutfit, gearStats, DEFAULT_GEAR, lookCode, parseLook, validOutfit, type Outfit,
   generateBoard, objectiveText, FAUNA, FAUNA_SEA, rankOf, RANKS, repLevel, validCareer, newCareer, item, repOk,
   weatherAt, forecast, STORM_OF, WINDOW, vsub, getGalaxy, generateGalaxy, jumpsFrom, route, SYSTEM_COUNT,
+  newRover, IFLAG,
 } from './helpers.ts';
 import { planetSites, siteDir, wreckAt, wreckZone } from '../src/shared/planet/sites.ts';
 import { DECK_POSTS, DECK_WALLS, RAMP, roomAt, stepDeck, TERMINAL_REACH, TERMINALS } from '../src/shared/station/deck.ts';
@@ -568,7 +569,7 @@ describe('protocol', () => {
     char.swim = 2; char.air = 0.4321;
     const snap = {
       tick: 99, time: 12.5, ack: 77,
-      self: { shipId: 5, mode: MODE.FOOT, teleport: 3, ship, hull: 90, maxHull: 100, shield: 12.5, maxShield: 80, energy: 55, missiles: 4, charId: 9, char, charPlanet: 1, suit: 88 },
+      self: { shipId: 5, mode: MODE.FOOT, teleport: 3, ship, hull: 90, maxHull: 100, shield: 12.5, maxShield: 80, energy: 55, missiles: 4, charId: 9, char, charPlanet: 1, suit: 88, roverId: 0, rover: null },
       entities: [{ id: 7, kind: 1, flags: 3, frame: 3, px: 1000.5, py: 2, pz: 3, qx: 0, qy: 0.7071, qz: 0, qw: 0.7071, vx: 10, vy: 0, vz: -5, hull: 0.5, shield: 1, throttle: 0.25 }],
     };
     const d = decodeSnapshot(encodeSnapshot(snap));
@@ -578,6 +579,18 @@ describe('protocol', () => {
     expect(d.entities[0].px).toBeCloseTo(1000.5, 3);
     expect(d.entities[0].frame).toBe(3);
     expect(d.entities[0].qy).toBeCloseTo(0.7071, 3);
+    // a driven rover comes back bit for bit (prediction replays from it)
+    const rover = newRover(v3(4000.123456789, 1.5, -2.25), qlook(quat(), v3(0, 0, -1), v3(0, 1, 0)));
+    rover.v = v3(3.3, -0.1, 7.77); rover.w = v3(0.1, -0.2, 0.3); rover.steer = -0.4321; rover.susp = [0.3, 0.31, 0.4, 0.45]; rover.ground = 3;
+    const driving = decodeSnapshot(encodeSnapshot({ ...snap, self: { ...snap.self, mode: MODE.ROVER, roverId: 11, rover } }));
+    expect(driving.self.rover).toEqual(rover);
+    expect(driving.self.roverId).toBe(11);
+    expect(driving.self.char).toEqual(char);
+    const inp = { seq: 1, mode: MODE.ROVER, flags: IFLAG.JUMP | IFLAG.SPRINT, t: 1, ship: emptyInput(), char: { ...emptyCharInput(), mx: -1, mz: 0.5 } };
+    const di = decodeInput(encodeInput(inp));
+    expect(di.char.mx).toBeCloseTo(-1, 2);
+    expect(di.char.mz).toBeCloseTo(0.5, 2);
+    expect(di.char.jump && di.char.sprint).toBe(true);
     const shots = [{ shooter: 3, px: 1, py: 2, pz: 3, vx: 4, vy: 5, vz: 6, level: 2 }];
     expect(decodeShots(encodeShots(shots))).toEqual(shots);
   });
