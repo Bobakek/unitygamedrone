@@ -71,11 +71,9 @@ export class Outposts {
     const standing = this.towers.some((o) => o.site === t.site && o.ship);
     if (standing) return;
     const s = killer?.session;
-    if (s) {
-      s.pilot.credits += BASE_BOUNTY;
-      s.sendPilot();
-    }
-    this.sys.events.push({ t: 'announce', text: 'Пиратская база подавлена', sub: `${t.site.name}${s ? ` — ${s.pilot.name} получает ${BASE_BOUNTY} кр` : ''}`, kind: 'good' });
+    const share = s ? this.sys.reward(s, target.world.p, BASE_BOUNTY, 'База подавлена') : 0;
+    const who = s ? (s.group ? `группа ${s.pilot.name}` : s.pilot.name) : '';
+    this.sys.events.push({ t: 'announce', text: 'Пиратская база подавлена', sub: `${t.site.name}${s ? ` — ${who} получает ${share === BASE_BOUNTY ? BASE_BOUNTY : `по ${share}`} кр` : ''}`, kind: 'good' });
   }
 
   /** Sites whose towers are all down (for HUD / tests). */

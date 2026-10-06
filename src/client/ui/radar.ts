@@ -1,4 +1,4 @@
-export interface Blip { x: number; y: number; z: number; kind: 'npc' | 'player' | 'missile' | 'station' | 'gate' | 'node' | 'poi' | 'loot' | 'fauna' | 'goal'; sel?: boolean }
+export interface Blip { x: number; y: number; z: number; kind: 'npc' | 'player' | 'missile' | 'station' | 'gate' | 'node' | 'poi' | 'loot' | 'fauna' | 'goal' | 'ally'; sel?: boolean }
 
 /** Top-down radar. Blip coordinates are camera-relative (x right, y up, z backwards), metres. */
 export class Radar {
@@ -18,7 +18,7 @@ export class Radar {
     c.beginPath(); c.moveTo(-R, 0); c.lineTo(R, 0); c.moveTo(0, -R); c.lineTo(0, R); c.stroke();
     c.fillStyle = 'rgba(143,248,255,0.9)';
     c.beginPath(); c.moveTo(0, -6); c.lineTo(4, 4); c.lineTo(-4, 4); c.closePath(); c.fill();
-    const colors: Record<Blip['kind'], string> = { npc: '#ff5a6a', player: '#8ff8ff', missile: '#ffd050', station: '#6dff9c', gate: '#c9a0ff', node: '#ffb060', poi: '#ffe066', loot: '#8ff8ff', fauna: '#9dff7a', goal: '#5aa0ff' };
+    const colors: Record<Blip['kind'], string> = { npc: '#ff5a6a', player: '#8ff8ff', missile: '#ffd050', station: '#6dff9c', gate: '#c9a0ff', node: '#ffb060', poi: '#ffe066', loot: '#8ff8ff', fauna: '#9dff7a', goal: '#5aa0ff', ally: '#9dff7a' };
     for (const b of blips) {
       const d = Math.hypot(b.x, b.z);
       const k = Math.min(1, Math.sqrt(d / this.range)) * R / (d || 1);
@@ -26,7 +26,7 @@ export class Radar {
       const edge = d > this.range;
       c.fillStyle = colors[b.kind];
       c.globalAlpha = edge ? 0.5 : 1;
-      const sz = b.kind === 'station' || b.kind === 'gate' || b.kind === 'poi' || b.kind === 'goal' ? 4 : b.kind === 'loot' ? 2 : 3;
+      const sz = b.kind === 'station' || b.kind === 'gate' || b.kind === 'poi' || b.kind === 'goal' || b.kind === 'ally' ? 4 : b.kind === 'loot' ? 2 : 3;
       if (b.kind === 'goal') {
         // contract targets: a diamond
         c.beginPath(); c.moveTo(px, py - 5); c.lineTo(px + 5, py); c.lineTo(px, py + 5); c.lineTo(px - 5, py); c.closePath(); c.fill();

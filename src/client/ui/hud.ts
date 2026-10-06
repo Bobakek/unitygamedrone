@@ -1,13 +1,17 @@
 import {
-  CARGO_KEYS, CARGO_NAMES, cargoCount, cargoValue, UPGRADE_COST, MAX_LEVEL, PRICES, REPAIR_COST_PER_HP, MISSILE_COST, UPGRADE_KEYS, type UpgradeKey,
+  CARGO_KEYS, CARGO_NAMES, cargoCount, combatStats, UPGRADE_COST, MAX_LEVEL, REPAIR_COST_PER_HP, MISSILE_COST, UPGRADE_KEYS, type CargoKey, type UpgradeKey,
 } from '../../shared/economy.ts';
 import type { Action, PilotInfo } from '../../shared/net/protocol.ts';
+import type { MarketMsg } from '../../shared/market.ts';
+import { getSystem } from '../../shared/galaxy/system-gen.ts';
 import { FACTION_COLORS, objectiveText, RANKS, rankOf } from '../../shared/contracts.ts';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
 
-export interface LabelData { id: number; x: number; y: number; text: string; sub: string; npc: boolean; hull: number; site?: boolean; goal?: boolean; bubble?: string }
+export interface LabelData { id: number; x: number; y: number; text: string; sub: string; npc: boolean; hull: number; site?: boolean; goal?: boolean; bubble?: string; ally?: boolean }
 export interface TargetBox { x: number; y: number; size: number; name: string; info: string; shield: number; hull: number; lock: 0 | 1 | 2 }
+/** A row of the group panel. */
+export interface GroupRow { name: string; leader: boolean; where: string; hull: number }
 export interface FlightData { speed: number; throttle: number; boost: number; energy: number; shield: number; hull: number; mode: string }
 
 const UPGRADE_NAMES: Record<UpgradeKey, string> = { weapons: 'Лазеры', shields: 'Щиты', hull: 'Броня', engine: 'Двигатель', cargo: 'Трюм' };
@@ -30,11 +34,15 @@ export class Hud {
   private chatInput = $<HTMLInputElement>('#chat-input');
   private chatLog = $('#chat-log');
   private lastPilot: PilotInfo | null = null;
+  private market: MarketMsg | null = null;
+  private marketAt = 0;
+  private groupEl = $('#group-panel');
   onChat: (text: string) => void = () => {};
   onAction: (a: Action) => void = () => {};
   onWardrobe: () => void = () => {};
   onContracts: () => void = () => {};
   onTyping: (typing: boolean) => void = () => {};
+  onGroup: (what: 'yes' | 'no' | 'leave') => void = () => {};
 
   constructor() {
     this.chatInput.addEventListener('keydown', (e) => {
@@ -46,6 +54,10 @@ export class Hud {
         this.chatInput.blur();
       } else if (e.key === 'Escape') this.chatInput.blur();
     });
+    this.groupEl.addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest('button');
+      if (b?.dataset.g) this.onGroup(b.dataset.g as 'yes' | 'no' | 'leave');
+    });
     this.chatInput.addEventListener('focus', () => this.onTyping(true));
     this.chatInput.addEventListener('blur', () => this.onTyping(false));
     this.station.addEventListener('click', (e) => {
@@ -56,6 +68,10 @@ export class Hud {
       else if (act === 'wardrobe') this.onWardrobe();
       else if (act === 'contracts') this.onContracts();
       else if (act === 'upgrade') this.onAction({ a: 'upgrade', key: b.dataset.key! });
+      else if (act === 'trade') {
+        const key = b.dataset.key as CargoKey, n = b.dataset.n === 'all' ? undefined : Number(b.dataset.n);
+        this.onAction(b.dataset.op === 'buy' ? { a: 'buy', key, n: n ?? 999 } : { a: 'sell', key, n });
+      }
       else if (act) this.onAction({ a: act } as Action);
     });
   }
@@ -218,6 +234,7 @@ export class Hud {
       el.classList.toggle('npc', l.npc);
       el.classList.toggle('site', !!l.site);
       el.classList.toggle('goal', !!l.goal);
+      el.classList.toggle('ally', !!l.ally);
       el.style.left = `${l.x}px`;
       el.style.top = `${l.y}px`;
       (el.querySelector('.lb-t') as HTMLElement).textContent = l.text;
@@ -267,10 +284,54 @@ export class Hud {
     }
   }
 
+  /** Pilots in the group (empty hides the panel) and a pending invitation. */
+  group(rows: GroupRow[], invite: string | null) {
+    this.groupEl.classList.toggle('hidden', !rows.length && !invite);
+    $('.gp-title', this.groupEl).style.display = rows.length ? '' : 'none';
+    $('.gp-leave', this.groupEl).classList.toggle('hidden', !rows.length);
+    $('.gp-list', this.groupEl).innerHTML = rows.map((r) => `<div class="gp-m"><b>${r.leader ? '★ ' : ''}${esc(r.name)}</b><span>${esc(r.where)}</span><i><u style="width:${Math.round(r.hull * 100)}%"></u></i></div>`).join('');
+    const inv = $('.gp-invite', this.groupEl);
+    inv.classList.toggle('hidden', !invite);
+    if (invite) $('span', inv).textContent = `${invite} зовёт вас в группу`;
+  }
+
+  setMarket(m: MarketMsg) {
+    this.market = m;
+    this.marketAt = performance.now();
+    if (!this.station.classList.contains('hidden') && this.lastPilot) this.renderMarket(this.lastPilot);
+  }
+
+  /** Prices here and through the gates, with buy and sell buttons. */
+  private renderMarket(p: PilotInfo) {
+    const m = this.market;
+    const box = $('.mk-table');
+    if (!m) { box.innerHTML = '<p class="mk-hint">Загрузка цен…</p>'; return; }
+    const room = combatStats(p.upgrades).cargoCap - cargoCount(p.cargo);
+    const left = Math.max(0, m.next - (performance.now() - this.marketAt));
+    $('.mk-next').textContent = `· цены сменятся через ${Math.max(1, Math.ceil(left / 60000))} мин`;
+    const others = m.others;
+    const head = `<tr><th>Товар</th><th>Трюм</th><th title="Сколько станция платит за единицу">Платят</th><th title="Почём станция продаёт (только то, чем богата система)">Продают</th><th></th>${others.map((o) => `<th title="Сколько платят в системе ${esc(getSystem(o.system).name)} (⇄ — там же продают)">${esc(getSystem(o.system).name)}</th>`).join('')}</tr>`;
+    const rows = CARGO_KEYS.map((k) => {
+      const q = m.here.goods[k];
+      const all = [q.sell, ...others.map((o) => o.goods[k].sell)];
+      const hi = Math.max(...all), lo = Math.min(...all);
+      const cls = (v: number) => `num${all.length > 1 && v === hi ? ' best' : all.length > 1 && v === lo ? ' low' : ''}`;
+      const have = p.cargo[k];
+      const btn = (op: string, n: string, text: string, off: boolean) => `<button data-act="trade" data-op="${op}" data-key="${k}" data-n="${n}" ${off ? 'disabled' : ''}>${text}</button>`;
+      const acts = [
+        btn('sell', '1', '−1', !have), btn('sell', 'all', 'всё', !have),
+        q.buy ? btn('buy', '1', '+1', !room || p.credits < q.buy) + btn('buy', '5', '+5', !room || p.credits < q.buy) : '',
+      ].join('');
+      return `<tr><td>${CARGO_NAMES[k]}</td><td class="num">${have}</td><td class="${cls(q.sell)}">${q.sell}</td><td class="num${q.buy ? '' : ' na'}">${q.buy ?? '—'}</td><td>${acts}</td>${others.map((o) => `<td class="${cls(o.goods[k].sell)}">${o.goods[k].sell}${o.goods[k].buy ? '<small title="Продаёт"> ⇄</small>' : ''}</td>`).join('')}</tr>`;
+    }).join('');
+    box.innerHTML = `<table>${head}${rows}</table>`;
+  }
+
   renderStation(p: PilotInfo, hull?: { hull: number; max: number }) {
     const c = p.cargo;
-    const value = cargoValue(c);
-    $('.st-cargo').innerHTML = CARGO_KEYS.map((k) => `${CARGO_NAMES[k]}: ${c[k]} × ${PRICES[k]}`).join('<br>') + `<br><b>Итого: ${value} кр</b> · Баланс: ${p.credits} кр` +
+    const q = this.market?.here.goods;
+    const value = q ? CARGO_KEYS.reduce((n, k) => n + c[k] * q[k].sell, 0) : 0;
+    $('.st-cargo').innerHTML = `Груз: ${cargoCount(c)}/${combatStats(p.upgrades).cargoCap}${q ? ` · по местным ценам ≈ <b>${value} кр</b>` : ''}<br>Баланс: <b>${p.credits} кр</b>` +
       (hull ? `<br>Корпус: ${Math.round(hull.hull)}/${hull.max} (ремонт ${Math.ceil((hull.max - hull.hull) * REPAIR_COST_PER_HP)} кр)` : '') +
       `<br>Ракеты: ${p.missiles} (${MISSILE_COST} кр/шт)`;
     $('.st-upgrades').innerHTML = UPGRADE_KEYS.map((k) => {
@@ -279,6 +340,7 @@ export class Hud {
       const cost = max ? 0 : UPGRADE_COST[lvl + 1];
       return `<div class="upg"><span>${UPGRADE_NAMES[k]} — ур. ${lvl}</span><button data-act="upgrade" data-key="${k}" ${max || p.credits < cost ? 'disabled' : ''}>${max ? 'макс.' : `${cost} кр`}</button></div>`;
     }).join('');
+    this.renderMarket(p);
   }
 
   setDead(dead: boolean) {

@@ -10,9 +10,12 @@ import type { PilotStorage } from '../storage.ts';
 import { SPECIES } from '../../shared/fauna.ts';
 import { item } from '../../shared/outfit.ts';
 import { WEATHER, type WeatherKind } from '../../shared/weather.ts';
-import { CONTRACT_KINDS, FACTIONS, newCareer, rankOf, RANKS, type ContractKind, type Faction } from '../../shared/contracts.ts';
+import { boardEpoch, CONTRACT_KINDS, FACTIONS, newCareer, rankOf, RANKS, type ContractKind, type Faction } from '../../shared/contracts.ts';
 import { Session, type Transport } from './session.ts';
 import { SystemInstance, type GameContext } from './system.ts';
+import { Groups } from './groups.ts';
+import { marketQuote, type MarketQuote } from '../../shared/market.ts';
+import type { V3 } from '../../shared/math/vec.ts';
 
 export interface GameOptions {
   store: PilotStorage;
@@ -48,6 +51,7 @@ export class Game implements GameContext {
   private store: PilotStorage;
   private log: (m: string) => void;
   readonly now: () => number;
+  readonly groups = new Groups(this);
 
   constructor(opts: GameOptions) {
     this.store = opts.store;
@@ -86,6 +90,32 @@ export class Game implements GameContext {
   convoyAlive(system: number, poi: number) {
     const p = this.instances.get(system)?.world.pois.get(poi);
     return !!p && p.kind === 'convoy' && !!p.ship;
+  }
+
+  quotes(systems: number[]): MarketQuote[] {
+    // a system without a running instance has seen no trade: its plain prices
+    return systems.filter((i) => i >= 0 && i < SYSTEM_COUNT)
+      .map((i) => this.systems.find((x) => x.def.id === i)?.market.quote() ?? marketQuote(i, boardEpoch(this.now())));
+  }
+
+  crew(s: Session, at: V3, range: number): Session[] {
+    return this.groups.crew(s, at, range);
+  }
+
+  allies(a: Session, b: Session): boolean {
+    return this.groups.allies(a, b);
+  }
+
+  private byName(name: string): Session | undefined {
+    const n = name.trim().toLowerCase();
+    for (const o of this.sessions.values()) if (o.pilot.name.toLowerCase() === n) return o;
+    return undefined;
+  }
+
+  /** The pilot whose ship or pilot entity this is (in the inviter's system). */
+  private byEntity(s: Session, id: number): Session | undefined {
+    for (const o of s.system.sessions) if (o.ship.id === id || o.char?.id === id) return o;
+    return undefined;
   }
 
   // ------------------------------------------------------------------ connections
@@ -164,6 +194,7 @@ export class Game implements GameContext {
     s.closed = true;
     s.system.removeSession(s);
     this.sessions.delete(s.id);
+    this.groups.drop(s);
     this.store.save(s.pilot);
     this.log(`- ${s.pilot.name} (${this.sessions.size} online)`);
   }
@@ -184,7 +215,7 @@ export class Game implements GameContext {
       case MSG.ACTION: {
         const act = decodeJson<Action>(data);
         if (act.a === 'jump') { this.jump(s); break; }
-        const err = s.system.handleAction(s, act);
+        const err = act.a.startsWith('group') ? this.groupAction(s, act) : s.system.handleAction(s, act);
         if (err) s.msg(err, 'warn');
         break;
       }
@@ -195,6 +226,16 @@ export class Game implements GameContext {
         s.sendJson(MSG.PONG, { c: decodeJson<{ c: number }>(data).c, t: this.time });
         break;
     }
+  }
+
+  private groupAction(s: Session, act: Action): string | null {
+    switch (act.a) {
+      case 'groupInvite': return this.groups.invite(s, act.entity ? this.byEntity(s, Number(act.entity)) : this.byName(String(act.name ?? '')));
+      case 'groupAnswer': return this.groups.answer(s, !!act.yes);
+      case 'groupLeave': return this.groups.leave(s);
+      case 'groupKick': return this.groups.kick(s, String(act.name ?? ''));
+    }
+    return null;
   }
 
   private chat(s: Session, raw: string) {
@@ -212,9 +253,17 @@ export class Game implements GameContext {
   private command(s: Session, text: string) {
     const [cmd, ...args] = text.slice(1).split(/\s+/);
     const sys = s.system;
+    const say = (err: string | null) => { if (err) s.msg(err, 'warn'); };
     switch (cmd) {
+      case 'invite': say(this.groups.invite(s, this.byName(args.join(' ')))); return;
+      case 'accept': say(this.groups.answer(s, true)); return;
+      case 'decline': say(this.groups.answer(s, false)); return;
+      case 'leave': say(this.groups.leave(s)); return;
+      case 'kick': say(this.groups.kick(s, args.join(' '))); return;
+      case 'group': s.msg(this.groups.list(s)); return;
+      case 'g': case 'p': { const t = args.join(' ').trim(); if (t) this.groups.say(s, t); return; }
       case 'help':
-        s.msg('Команды: /who, /help' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|gate|open> [dusk|night], /land <n> [dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|window|ramp>, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /cargo <вид> <n>' : ''));
+        s.msg('Команды: /who, /help, группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|gate|open> [dusk|night], /land <n> [dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|window|ramp>, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /cargo <вид> <n>' : ''));
         return;
       case 'who':
         s.msg(`Онлайн (${this.sessions.size}): ${[...this.sessions.values()].map((o) => o.pilot.name).join(', ')}`);
@@ -373,6 +422,7 @@ export class Game implements GameContext {
       if (!this.asleep(sys)) sys.step();
     }
     for (const sys of this.instances.values()) this.flush(sys);
+    if (this.tick % TICK_RATE === 0) this.groups.step();
     for (const s of this.sessions.values()) {
       if (this.time - s.lastSave > 30) { s.lastSave = this.time; this.store.save(s.pilot); }
     }
