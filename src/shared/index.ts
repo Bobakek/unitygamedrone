@@ -23,3 +23,4 @@ export * from './ships/blueprint.ts';
 export * from './net/protocol.ts';
 export * from './market.ts';
 export * from './sim/rover.ts';
+export * from './planet/deposits.ts';

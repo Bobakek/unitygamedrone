@@ -1,7 +1,7 @@
 import { DOCK_RANGE, DT, EXIT_RANGE, GATE_RANGE, HARVEST_RANGE, INTEREST_RADIUS, NODE_RESPAWN, SAFE_ZONE_RADIUS, SHIP_LAND_HEIGHT } from '../../shared/constants.ts';
 import {
-  BOUNTY, CARGO_KEYS, combatStats, emptyCargo, flightStats, MAX_LEVEL, MAX_MISSILES, MISSILE_COST, PIRATE_COMBAT, PIRATE_FLIGHT,
-  REPAIR_COST_PER_HP, UPGRADE_COST, UPGRADE_KEYS, cargoCount, type UpgradeKey,
+  BOUNTY, CARGO_KEYS, CARGO_NAMES, combatStats, emptyCargo, flightStats, MAX_LEVEL, MAX_MISSILES, MISSILE_COST, PIRATE_COMBAT, PIRATE_FLIGHT,
+  REPAIR_COST_PER_HP, UPGRADE_COST, UPGRADE_KEYS, cargoCount, type CargoKey, type UpgradeKey,
 } from '../../shared/economy.ts';
 import { getSystem, type SystemDef } from '../../shared/galaxy/system-gen.ts';
 import { makeName } from '../../shared/galaxy/names.ts';
@@ -10,13 +10,14 @@ import {
   FWD, qlook, qrot, quat, v3, vcross, vdist, vdistSq, vdot, vlen, vnorm, vscale, vsub, type Quat, type V3,
 } from '../../shared/math/vec.ts';
 import {
-  aimByte, CFLAG, DECK_FRAME, DECK_PLANET, EFLAG, IFLAG, KIND, MODE, ROVER_SPEED_MAX, steerByte, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
+  aimByte, CFLAG, DECK_FRAME, DECK_PLANET, EFLAG, IFLAG, KIND, MODE, MSG, ROVER_SPEED_MAX, steerByte, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
 } from '../../shared/net/protocol.ts';
 import { nodesNear, resourceNode } from '../../shared/planet/resources.ts';
 import { planetSites, SITE_NODE_BASE, siteDir, sitesNear, wreckAt, wreckZone } from '../../shared/planet/sites.ts';
 import { footHeight, heightAt, liquidOf, surfaceHeight } from '../../shared/planet/terrain.ts';
 import { charQuat, climbProgress, copyChar, emptyCharInput, HEAD_UNDER, newChar, stepChar } from '../../shared/sim/character.ts';
-import { newRover, rightRover, ROVER, roverGround, roverOverturned, stepRover } from '../../shared/sim/rover.ts';
+import { copyRover, newRover, rightRover, ROVER, roverGround, roverOverturned, stepRover } from '../../shared/sim/rover.ts';
+import { deposit, DEPOSIT_NAMES, DEPOSIT_RESPAWN, depositPos, depositsNear, DRILL_RANGE, DRILL_SPEED, DRILL_TIME, ROVER_BED, yieldText } from '../../shared/planet/deposits.ts';
 import type { SimEnv } from '../../shared/sim/env.ts';
 import { newPose, planetRot, toBodyDir, toWorldPoint, worldPose } from '../../shared/sim/frames.ts';
 import { emptyInput, isCruising, newShip, stepShip, type StepOut } from '../../shared/sim/ship.ts';
@@ -512,12 +513,68 @@ export class SystemInstance implements NpcWorld {
       const s = r.owner;
       const away = s.ship.dead || (s.ship.state.landed !== r.planet + 1 && s.mode !== MODE.ROVER && s.mode !== MODE.FOOT);
       if (away) {
-        this.removeRover(s);
-        s.msg('Ровер погружен в трюм');
+        this.stowRover(s);
         continue;
       }
       if (s.mode !== MODE.ROVER) stepRover(r.state, idleRover, this.def.planets[r.planet], DT);
+      if (s.drill) this.stepDrill(s, r);
     }
+  }
+
+  /** The drill keeps turning while the rover stands by the deposit; then the haul goes into the bed. */
+  private stepDrill(s: Session, r: RoverEntity) {
+    const d = s.drill!;
+    const pl = this.def.planets[r.planet];
+    const dp = deposit(pl, d.id);
+    const why = !dp || d.planet !== r.planet ? 'Залежь потеряна'
+      : s.mode !== MODE.ROVER ? 'Бурение остановлено: водитель вышел'
+        : vlen(r.state.v) > DRILL_SPEED ? 'Бурение прервано: ровер сдвинулся'
+          : roverOverturned(r.state) ? 'Бурение прервано: ровер перевернулся' : null;
+    if (why || !dp) {
+      this.stopDrill(s, why ?? 'Бурение прервано');
+      return;
+    }
+    if (this.time < d.until) return;
+    s.drill = null;
+    const bed = s.pilot.roverBed;
+    let room = ROVER_BED - cargoCount(bed);
+    const got: Partial<Record<CargoKey, number>> = {};
+    for (const k of Object.keys(dp.yield) as CargoKey[]) {
+      const n = Math.min(room, dp.yield[k] ?? 0);
+      if (n <= 0) continue;
+      bed[k] += n; got[k] = n; room -= n;
+    }
+    this.harvested.set(`${pl.index}:${dp.id}`, this.time + DEPOSIT_RESPAWN);
+    this.events.push({ t: 'harvest', planet: pl.index, node: dp.id, left: DEPOSIT_RESPAWN, by: s.id });
+    s.sendJson(MSG.EVENTS, { ev: [{ t: 'drill', id: dp.id, left: 0 }] });
+    s.msg(`${DEPOSIT_NAMES[dp.kind]}: ${yieldText(got, CARGO_NAMES)} — в кузове ${cargoCount(bed)}/${ROVER_BED}`, 'good');
+    s.sendPilot();
+  }
+
+  private stopDrill(s: Session, why: string) {
+    if (!s.drill) return;
+    s.sendJson(MSG.EVENTS, { ev: [{ t: 'drill', id: s.drill.id, left: -1 }] });
+    s.drill = null;
+    s.msg(why, 'warn');
+  }
+
+  /** The rover goes back into the hold, and what is in its bed into the hold with it (as far as it fits). */
+  private stowRover(s: Session) {
+    if (!s.rover) return;
+    this.removeRover(s);
+    const bed = s.pilot.roverBed, hold = s.pilot.cargo;
+    let room = combatStats(s.pilot.upgrades).cargoCap - cargoCount(hold);
+    const moved: Partial<Record<CargoKey, number>> = {};
+    for (const k of CARGO_KEYS) {
+      const n = Math.min(room, bed[k]);
+      if (n <= 0) continue;
+      bed[k] -= n; hold[k] += n; moved[k] = n; room -= n;
+    }
+    const left = cargoCount(bed);
+    const txt = yieldText(moved, CARGO_NAMES);
+    if (txt) s.msg(`Ровер погружен в трюм, из кузова в трюм: ${txt}` + (left ? `. Не поместилось ${left} — осталось в кузове` : ''), left ? 'warn' : 'good');
+    else s.msg('Ровер погружен в трюм');
+    s.sendPilot();
   }
 
   /** The driver rides in the seat: their pilot follows the rover (fauna, weather, interest use it). */
@@ -540,6 +597,7 @@ export class SystemInstance implements NpcWorld {
     this.rovers.delete(r.id);
     this.gone.push(r.id);
     s.rover = null;
+    s.drill = null;
     if (s.mode === MODE.ROVER) {
       // stepping out where the rover was
       s.mode = s.char ? MODE.FOOT : MODE.SHIP;
@@ -658,7 +716,7 @@ export class SystemInstance implements NpcWorld {
       if (vdistSq(toWorldPoint(pl, planetRot(pl, this.time, rot), r.state.p, cw), focus) > r2) continue;
       const st = r.state;
       entities.push({
-        id: r.id, kind: KIND.ROVER, flags: driven ? EFLAG.BOOST : 0, frame: r.planet + 1, px: st.p.x, py: st.p.y, pz: st.p.z,
+        id: r.id, kind: KIND.ROVER, flags: (driven ? EFLAG.BOOST : 0) | (r.owner.drill ? EFLAG.CRUISE : 0), frame: r.planet + 1, px: st.p.x, py: st.p.y, pz: st.p.z,
         qx: st.q.x, qy: st.q.y, qz: st.q.z, qw: st.q.w, vx: st.v.x, vy: st.v.y, vz: st.v.z,
         hull: 1, shield: steerByte(st.steer), throttle: Math.min(1, vlen(st.v) / ROVER_SPEED_MAX),
       });
@@ -759,8 +817,7 @@ export class SystemInstance implements NpcWorld {
         if (s.rover) {
           if (vdist(s.rover.state.p, s.char.state.p) > ROVER.reach + 3) return 'Подойдите к роверу';
           if (vdist(s.rover.state.p, ship.state.p) > ROVER.load) return 'Подгоните ровер к кораблю';
-          this.removeRover(s);
-          s.msg('Ровер погружен в трюм');
+          this.stowRover(s);
           return null;
         }
         if (ship.state.landed !== pl.index + 1) return 'Ровер выгружается из приземлившегося корабля';
@@ -809,6 +866,22 @@ export class SystemInstance implements NpcWorld {
         if (vlen(r.state.v) > 3) return 'Дождитесь, пока ровер остановится';
         rightRover(r.state, this.def.planets[r.planet]);
         if (s.mode === MODE.ROVER) { this.seatDriver(s); s.resync(); }
+        return null;
+      }
+      case 'drill': {
+        const r = s.rover;
+        if (s.mode !== MODE.ROVER || !r) return 'Бурить можно только с ровера';
+        if (s.drill) return null;
+        const pl = this.def.planets[r.planet];
+        const dp = deposit(pl, act.id);
+        if (!dp) return null;
+        if ((this.harvested.get(`${pl.index}:${dp.id}`) ?? 0) > this.time) return 'Залежь уже выработана';
+        if (vdist(depositPos(pl, dp, tmp), r.state.p) > DRILL_RANGE + 1) return 'Подъезжайте ближе к залежи';
+        if (vlen(r.state.v) > DRILL_SPEED) return 'Остановите ровер';
+        if (roverOverturned(r.state)) return 'Ровер перевернулся: R — поставить на колёса';
+        if (cargoCount(s.pilot.roverBed) >= ROVER_BED) return 'Кузов полон: отвезите груз к кораблю (R у корабля)';
+        s.drill = { planet: pl.index, id: dp.id, until: this.time + DRILL_TIME };
+        s.sendJson(MSG.EVENTS, { ev: [{ t: 'drill', id: dp.id, left: DRILL_TIME }] });
         return null;
       }
       case 'dock': {
@@ -986,6 +1059,30 @@ export class SystemInstance implements NpcWorld {
     }
     s.char.state.p = { ...s.rover!.state.p };
     return this.handleAction(s, { a: 'drive' });
+  }
+
+  /** Dev: puts the rover (driving it) a few metres short of the nearest deposit that is not drilled out. */
+  devDeposit(s: Session): string | null {
+    const e = this.devRover(s);
+    if (e) return e;
+    const r = s.rover!;
+    const pl = this.def.planets[r.planet];
+    const here = vnorm(v3(), r.state.p);
+    const dp = depositsNear(pl, here, 6000)
+      .filter((x) => (this.harvested.get(`${pl.index}:${x.id}`) ?? 0) <= this.time)
+      .sort((a, b) => vdot(b.dir, here) - vdot(a.dir, here))[0];
+    if (!dp) return 'Рядом нет залежей';
+    // approach along a tangent, nose to the deposit
+    const t = vnorm(v3(), vcross(v3(), dp.dir, Math.abs(dp.dir.y) < 0.9 ? v3(0, 1, 0) : v3(1, 0, 0)));
+    const d = vnorm(v3(), v3(dp.dir.x + t.x * (12 / pl.radius), dp.dir.y + t.y * (12 / pl.radius), dp.dir.z + t.z * (12 / pl.radius)));
+    const f = vnorm(v3(), vsub(v3(), dp.dir, d));
+    const fu = vdot(f, d);
+    const fwd = vnorm(v3(), v3(f.x - d.x * fu, f.y - d.y * fu, f.z - d.z * fu));
+    const g = pl.radius + roverGround(pl, d.x, d.y, d.z) + 1.2;
+    copyRover(r.state, newRover(vscale(v3(), d, g), qlook(quat(), fwd, d)));
+    this.seatDriver(s);
+    s.resync();
+    return `${DEPOSIT_NAMES[dp.kind]} впереди: подъезжайте и жмите F`;
   }
 
   /** Dev teleports; planet targets accept `when` = day (default, station side) | dusk | night. */

@@ -4,6 +4,7 @@ import { scatter, type Scattered } from './resources.ts';
 import { heightAt } from './terrain.ts';
 import { sphereToCube } from './cubesphere.ts';
 import { inSite, sitesNear } from './sites.ts';
+import { DEPOSIT_SOLID, depositsNear, nearDeposit } from './deposits.ts';
 
 /**
  * Placement rules for decorative props. Kind order must match the geometry
@@ -109,7 +110,7 @@ function placeOne(p: PlanetDef, rule: TierRule, total: number, pt: Scattered): P
     // land props stay out of the sea (and off frozen or molten sea sheets)
     if (p.sea && pt.h < 0.2) return null;
   }
-  if (inSite(p, pt.dir)) return null;
+  if (inSite(p, pt.dir) || nearDeposit(p, pt.dir, 3)) return null;
   if (k.slopeMax < 1 && slopeAt(p, pt.dir, pt.h) > k.slopeMax) return null;
   const scale = k.scale[0] + (k.scale[1] - k.scale[0]) * pt.r[2];
   return { kind: ki, scale, r: p.radius + pt.h - k.sink * scale };
@@ -180,6 +181,11 @@ export function collidersNear(p: PlanetDef, d: V3, radiusM = 4): Collider[] {
       const r = p.radius + c.h - 1;
       out.push({ x: c.dir.x * r, y: c.dir.y * r, z: c.dir.z * r, r: c.r, top: c.tall + 1 });
     }
+  }
+  // rover deposits (they stay put once drilled out)
+  for (const dp of depositsNear(p, d, radiusM + cell * 2)) {
+    const sol = DEPOSIT_SOLID[dp.kind], r = p.radius + dp.h - 0.5;
+    out.push({ x: dp.dir.x * r, y: dp.dir.y * r, z: dp.dir.z * r, r: sol.r, top: sol.top + 0.5 });
   }
   if (colliderCache.size > 4096) colliderCache.clear();
   colliderCache.set(key, out);

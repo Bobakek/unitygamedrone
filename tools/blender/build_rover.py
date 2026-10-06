@@ -11,6 +11,9 @@ and keeps the moving parts as separate named nodes so the game can animate them:
     Dish                           high-gain antenna (turns slowly)
     Driver                         seated pilot (shown while someone drives)
     Beacon                         amber beacon lens on the roll cage
+    DrillRig                       core drill mast behind the tail (static)
+    Drill                          drill carriage (slides down the mast along -Y while drilling)
+      DrillBit                     auger (spins about Y)
     Corner_<FL|FR|RL|RR>           per wheel, origin at the wheel centre at rest:
       ArmUpper_*, ArmLower_*       wishbones, origin at the inner hinge (rotate about Z)
       Shock_*                      coil-over, origin at the top mount, axis along -Y (aim + scale)
@@ -564,6 +567,54 @@ def build_driver(root):
     parent_to(ob, root)
 
 
+def build_drill(root):
+    """A core drill on a vertical mast behind the tail: the carriage slides down, the auger spins."""
+    y = -2.3
+    rig = Part('DrillRig')
+    for sx in (-1, 1):
+        rig.cyl((sx * 0.11, y, -0.42), (sx * 0.11, y, 0.98), 0.024, M['alu'], 10)
+    rig.box((0, y, 1.0), (0.36, 0.14, 0.08), M['frame'])
+    rig.box((0, y - 0.075, 1.0), (0.3, 0.012, 0.05), M['accent'])
+    rig.cyl((0, y, 1.04), (0, y, 1.14), 0.05, M['frame'], 14)          # hoist motor
+    rig.cyl((0, y + 0.06, 1.09), (0, y + 0.06, 1.12), 0.035, M['tail'], 10)
+    for z in (-0.12, 0.5):                                             # brackets to the frame
+        rig.box((0, (y - 2.02) / 2, z), (0.32, abs(y + 2.02) + 0.06, 0.05), M['frame'])
+    for sx in (-1, 1):
+        rig.cyl((sx * 0.11, y, 0.48), (sx * 0.45, -1.95, 0.14), 0.018, M['frame'], 8)
+    rig.torus((0, y, -0.44), (0, 0, 1), 0.1, 0.02, M['frame'], 16, 6)  # bit guide
+    rig.box((0, y, -0.44), (0.34, 0.05, 0.03), M['frame'])
+    rig.sweep([Vector(v) for v in [(0.3, -1.9, 0.2), (0.25, -2.1, 0.6), (0.12, y + 0.05, 1.0)]], 0.014, M['dark'])
+    ob = rig.build()
+    parent_to(ob, root)
+    # carriage: rides the rails with the motor that turns the auger
+    c = Vector((0, y, 0.62))
+    car = Part('Drill')
+    car.box(c, (0.3, 0.16, 0.16), M['accent'])
+    for sx in (-1, 1):
+        car.box(c + Vector((sx * 0.11, 0, 0)), (0.07, 0.09, 0.22), M['dark'])
+    car.cyl(c + Vector((0, 0, 0.08)), c + Vector((0, 0, 0.24)), 0.07, M['frame'], 16)
+    car.cyl(c + Vector((0, 0, 0.24)), c + Vector((0, 0, 0.27)), 0.05, M['alu'], 12)
+    for i in range(5):  # cooling fins
+        car.cyl(c + Vector((0, 0, 0.11 + i * 0.03)), c + Vector((0, 0, 0.12 + i * 0.03)), 0.085, M['alu'], 16)
+    drill = car.build(c)
+    parent_to(drill, root)
+    # auger: shaft, helical flight and a carbide tip
+    top = c + Vector((0, 0, -0.08))
+    bit = Part('DrillBit')
+    bit.cyl(top, top + Vector((0, 0, -0.88)), 0.032, M['alu'], 10)
+    flight = []
+    turns = 9
+    for i in range(turns * 12 + 1):
+        t = i / (turns * 12)
+        a = t * turns * 2 * math.pi
+        flight.append(top + Vector((math.cos(a) * 0.06, math.sin(a) * 0.06, -0.1 - t * 0.72)))
+    bit.sweep(flight, 0.013, M['chrome'], 5)
+    bit.cyl(top + Vector((0, 0, -0.88)), top + Vector((0, 0, -1.02)), 0.055, M['frame'], 12, r2=0.006)
+    bit.cyl(top + Vector((0, 0, -0.02)), top + Vector((0, 0, -0.06)), 0.05, M['dark'], 12)
+    b = bit.build(top)
+    parent_to(b, drill)
+
+
 def build():
     reset()
     make_materials()
@@ -575,6 +626,7 @@ def build():
     build_dish(root)
     build_beacon(root)
     build_driver(root)
+    build_drill(root)
     return root
 
 

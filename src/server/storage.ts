@@ -10,6 +10,8 @@ export interface PilotRecord {
   items: string[]; outfit: Outfit;
   /** Experience, reputation and contracts. */
   career: Career;
+  /** Haul in the rover's bed (drilled deposits), waiting to be loaded into the hold. */
+  roverBed: Cargo;
 }
 
 export interface PilotStorage {

@@ -52,6 +52,8 @@ export interface PilotInfo {
   items: string[]; outfit: Outfit;
   /** Experience, reputation and contracts. */
   career: Career;
+  /** What rides in the rover's bed (loaded into the ship's hold with the rover) and how much fits. */
+  roverBed: Cargo; roverBedCap: number;
 }
 /** A member of the pilot's group; `pos` (world) only for members in the same system. */
 export interface GroupMember {
@@ -90,7 +92,9 @@ export type GameEvent =
   /** Lightning struck at a body-frame point of a planet. */
   | { t: 'strike'; planet: number; pos: [number, number, number] }
   /** The server forced a planet's weather until `until` (dev). */
-  | { t: 'weather'; planet: number; kind: WeatherKind; k: number; until: number };
+  | { t: 'weather'; planet: number; kind: WeatherKind; k: number; until: number }
+  /** The local pilot's rover drill on deposit `id`: `left` seconds to go, 0 = done, -1 = stopped. */
+  | { t: 'drill'; id: number; left: number };
 
 export type Action =
   | { a: 'exit' } | { a: 'board' } | { a: 'dock' } | { a: 'undock' } | { a: 'jump' }
@@ -106,7 +110,9 @@ export type Action =
   | { a: 'groupInvite'; name?: string; entity?: number } | { a: 'groupAnswer'; yes: boolean }
   | { a: 'groupLeave' } | { a: 'groupKick'; name: string }
   /** Rover: unload it from / load it into the landed ship, take the wheel, step out, put it back on its wheels. */
-  | { a: 'rover' } | { a: 'drive' } | { a: 'leave' } | { a: 'flip' };
+  | { a: 'rover' } | { a: 'drive' } | { a: 'leave' } | { a: 'flip' }
+  /** Rover: drill out the deposit `id` (the haul goes into the rover's bed). */
+  | { a: 'drill'; id: number };
 
 export function encodeJson(type: number, payload: unknown): Uint8Array {
   const body = new TextEncoder().encode(JSON.stringify(payload));

@@ -6,7 +6,7 @@ import { Game } from '../src/server/game/game.ts';
 import { wsTransport } from '../src/server/game/session.ts';
 import {
   decodeJson, decodeSnapshot, emptyCharInput, emptyInput, encodeInput, encodeJson, IFLAG, MODE, MSG, PROTOCOL_VERSION,
-  FWD, KIND, nodesNear, qlook, qrot, quat, v3, vnorm, vdist, type Snapshot, type Welcome,
+  FWD, KIND, nodesNear, qlook, qrot, quat, v3, vnorm, vdist, vcross, vscale, cargoCount, depositsNear, depositPos, roverGround, copyRover, newRover, type Snapshot, type Welcome,
 } from '../src/shared/index.ts';
 
 class Bot {
@@ -229,6 +229,69 @@ describe('game server', () => {
     a.close();
     b.close();
     await waitFor(() => game.sessions.size === 0);
+  });
+
+  it('drills a deposit only from a stopped rover, fills the bed and unloads it into the hold with the rover', async () => {
+    const a = new Bot(url, 'Prospector');
+    await a.connect();
+    const s = sessionOf(a);
+    a.ws.send(encodeJson(MSG.CHAT, { text: '/land 0 day' }));
+    await waitFor(() => s.ship.state.landed === 1);
+    a.action({ a: 'exit' });
+    await waitFor(() => s.mode === MODE.FOOT && !!s.char);
+    const pl = s.system.def.planets[0];
+    const dp = depositsNear(pl, vnorm(v3(), s.char!.state.p), 8000)[0];
+    expect(dp).toBeTruthy();
+    // on foot the drill is out of reach
+    a.action({ a: 'drill', id: dp.id });
+    await waitFor(() => a.events.some((e) => e.t === 'msg' && /ровера/.test(e.text)));
+    a.ws.send(encodeJson(MSG.CHAT, { text: '/deposit' }));
+    await waitFor(() => s.mode === MODE.ROVER && a.snap?.self.mode === MODE.ROVER);
+    const rover = s.rover!;
+    const target = depositsNear(pl, vnorm(v3(), rover.state.p), 100).sort((x, y) => vdist(depositPos(pl, x), rover.state.p) - vdist(depositPos(pl, y), rover.state.p))[0];
+    expect(vdist(depositPos(pl, target), rover.state.p)).toBeLessThan(16);
+    // too far: drive up to it first (place the rover beside it)
+    a.action({ a: 'drill', id: target.id });
+    await waitFor(() => a.events.some((e) => e.t === 'msg' && /ближе/.test(e.text)));
+    const up = vnorm(v3(), depositPos(pl, target));
+    const side = vnorm(v3(), vcross(v3(), up, v3(0, 1, 0)));
+    const at = v3(depositPos(pl, target).x + side.x * 5, depositPos(pl, target).y + side.y * 5, depositPos(pl, target).z + side.z * 5);
+    const g = pl.radius + roverGround(pl, ...(Object.values(vnorm(v3(), at)) as [number, number, number])) + 0.9;
+    copyRover(rover.state, newRover(vscale(v3(), vnorm(v3(), at), g), qlook(quat(), side, vnorm(v3(), at))));
+    await new Promise((r) => setTimeout(r, 400));
+    // moving the rover stops the drill
+    a.action({ a: 'drill', id: target.id });
+    await waitFor(() => a.events.some((e) => e.t === 'drill' && e.left > 0));
+    rover.state.v = vscale(v3(), side, 4);
+    await waitFor(() => a.events.some((e) => e.t === 'drill' && e.left === -1));
+    expect(s.drill).toBeNull();
+    rover.state.v = v3();
+    await new Promise((r) => setTimeout(r, 300));
+    // standing still it drills through and the haul lands in the bed
+    a.events.length = 0;
+    a.action({ a: 'drill', id: target.id });
+    await waitFor(() => !!s.drill);
+    s.drill!.until = s.system.time + 0.2;
+    await waitFor(() => a.events.some((e) => e.t === 'drill' && e.left === 0), 3000);
+    const want = Object.values(target.yield).reduce((n, x) => n + (x ?? 0), 0);
+    expect(cargoCount(s.pilot.roverBed)).toBe(want);
+    expect(a.events.some((e) => e.t === 'harvest' && e.node === target.id)).toBe(true);
+    // drilled out: no second haul
+    a.action({ a: 'drill', id: target.id });
+    await waitFor(() => a.events.some((e) => e.t === 'msg' && /выработана/.test(e.text)));
+    // back at the ship the haul goes into the hold with the rover
+    const hold0 = cargoCount(s.pilot.cargo);
+    a.action({ a: 'leave' });
+    await waitFor(() => s.mode === MODE.FOOT);
+    rover.state.p = { ...s.ship.state.p };
+    s.char!.state.p = { ...s.ship.state.p };
+    a.action({ a: 'rover' });
+    await waitFor(() => !s.rover);
+    expect(cargoCount(s.pilot.cargo)).toBe(Math.min(hold0 + want, 12));
+    expect(cargoCount(s.pilot.roverBed)).toBe(Math.max(0, hold0 + want - 12));
+    a.close();
+    await waitFor(() => game.sessions.size === 0);
+    expect(cargoCount(store.find('Prospector')!.roverBed) + cargoCount(store.find('Prospector')!.cargo)).toBe(hold0 + want);
   });
 
   it('pirates hunt players outside the safe zone', async () => {

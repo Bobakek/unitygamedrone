@@ -94,6 +94,10 @@ export class Hud {
     $('.pp-credits').textContent = `${p.credits.toLocaleString('ru-RU')} кр`;
     $('.pp-cargo').textContent = `${cargoCount(p.cargo)}/${p.cargoCap}`;
     $('.pp-cargo').title = CARGO_KEYS.map((k) => `${CARGO_NAMES[k]} ${p.cargo[k]}`).join(', ');
+    const bed = cargoCount(p.roverBed);
+    $('.pp-bed-row').classList.toggle('hidden', !bed);
+    $('.pp-bed').textContent = `${bed}/${p.roverBedCap}`;
+    $('.pp-bed').title = CARGO_KEYS.filter((k) => p.roverBed[k]).map((k) => `${CARGO_NAMES[k]} ${p.roverBed[k]}`).join(', ');
     $('.pp-missiles').textContent = String(p.missiles);
     $('.pp-system').textContent = system;
     $('.pp-rank').textContent = RANKS[rankOf(p.career.xp)].name;

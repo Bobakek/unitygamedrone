@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { DOCK_RANGE, DT, EXIT_RANGE, GATE_RANGE, HARVEST_RANGE, INTERP_DELAY, SAFE_ZONE_RADIUS } from '../shared/constants.ts';
-import { defaultUpgrades, flightStats } from '../shared/economy.ts';
+import { CARGO_NAMES, cargoCount, defaultUpgrades, flightStats } from '../shared/economy.ts';
+import { DEPOSIT_BASE, DEPOSIT_NAMES, depositPos, DRILL_RANGE, DRILL_SPEED, yieldText } from '../shared/planet/deposits.ts';
 import { getSystem, type PlanetDef, type SystemDef } from '../shared/galaxy/system-gen.ts';
 import { FWD, qlook, qrot, quat, v3, vcross, vdist, vlen, vnorm, vsub, type Quat, type V3 } from '../shared/math/vec.ts';
 import {
@@ -33,6 +34,7 @@ import { KIND_NAMES, type ActiveContract } from '../shared/contracts.ts';
 import { DEFAULT_GEAR, gearStats, parseLook, validOutfit, type GearStats } from '../shared/outfit.ts';
 import { PlanetView } from './planet/planet-view.ts';
 import { SurfaceProps } from './planet/props.ts';
+import { DepositField } from './planet/deposits-view.ts';
 import { WorkerPool } from './planet/worker-pool.ts';
 import { CameraRig } from './player/camera-rig.ts';
 import { Controller } from './player/controller.ts';
@@ -82,7 +84,7 @@ interface Remote {
 }
 
 /** `site`: a point on a planet (body frame) the marker follows as the planet turns. */
-interface NavItem { name: string; pos: V3; kind: 'planet' | 'station' | 'gate' | 'event' | 'goal' | 'ally'; radius: number; ship?: number; site?: { planet: number; p: V3 } }
+interface NavItem { name: string; pos: V3; kind: 'planet' | 'station' | 'gate' | 'event' | 'goal' | 'ally' | 'deposit'; radius: number; ship?: number; site?: { planet: number; p: V3 } }
 
 const RESOURCE_NAMES = { ore: 'руда', crystal: 'кристалл', relic: 'реликт' } as const;
 const DUST: Record<string, string> = { terran: '#9a8a6a', ocean: '#b0a080', alien: '#c090d0', desert: '#d9a060', ice: '#e8f4ff', lava: '#5a4a4a', barren: '#9a948e' };
@@ -127,6 +129,14 @@ export class Game {
   private gates: GateView[] = [];
   private fields: FieldView[] = [];
   private props = new SurfaceProps(this.pool);
+  /** Rover deposits on the planet below, and the scanner's picks for the nav list. */
+  private deposits = new DepositField();
+  private depositNav: NavItem[] = [];
+  private depositKey = '';
+  private pickDeposit = false;
+  /** The rover's drill at work (local pilot): deposit, end time (client clock) and duration. */
+  private drill: { id: number; until: number; total: number } | null = null;
+  private drillSfx = 0;
   private effects = new Effects();
   private underwater = new Underwater();
   private sealife = new SeaLife();
@@ -365,6 +375,9 @@ export class Game {
     this.sun?.group.removeFromParent();
     this.backdrop?.dispose();
     this.props.clear();
+    this.deposits.clear();
+    this.depositNav = [];
+    this.depositKey = '';
 
     const sys = getSystem(id);
     this.sys = sys;
@@ -412,6 +425,8 @@ export class Game {
       ...this.pois.map((p) => ({ name: p.kind === 'convoy' ? p.name : `${POI_LABEL[p.kind]}: ${p.name.replace(/^(Обломки|Аномалия) /, '')}`, pos: v3(p.pos[0], p.pos[1], p.pos[2]), kind: 'event' as const, radius: 0, ship: p.ship })),
     ];
     this.navItems.push(...this.goalNav());
+    // the rover's ground scanner: the nearest deposits
+    this.navItems.push(...this.depositNav);
     // group mates in this system
     for (const m of this.group.members) {
       if (m.id === this.welcome?.playerId || !m.pos || m.system !== this.sys?.id) continue;
@@ -582,8 +597,10 @@ export class Game {
       this.world.add(this.myRover.group);
       this.ctrl.roverYaw = 0;
       this.ctrl.footPitch = -0.22;
-      this.hud.toast('За рулём: W/S — газ и тормоз, A/D — руль, Space — ручник, Shift — ускорение, G — выйти');
+      this.hud.toast('За рулём: W/S — газ и тормоз, A/D — руль, Space — ручник, Shift — ускорение, G — выйти. Сканер отмечает залежи (⛏ в навигации, Tab)');
+      this.pickDeposit = true;
     }
+    if (mode !== MODE.ROVER) this.drill = null;
     if (mode !== MODE.ROVER && this.myRover) { this.myRover.dispose(); this.myRover = null; }
     if (mode === MODE.DOCKED) {
       this.input.releaseLock();
@@ -737,9 +754,13 @@ export class Game {
               }
             }
           }
-          if (e.by === this.welcome?.playerId) { this.sfx.pickup(); this.hud.toast('Ресурс собран', 'good'); }
+          if (e.by === this.welcome?.playerId) { this.sfx.pickup(); if (e.node < DEPOSIT_BASE) this.hud.toast('Ресурс собран', 'good'); }
           break;
         }
+        case 'drill':
+          this.drill = e.left > 0 ? { id: e.id, until: this.time + e.left, total: e.left } : null;
+          if (e.left > 0) this.sfx.mining();
+          break;
         case 'announce':
           this.hud.announce(e.text, e.sub ?? '', e.kind ?? 'info');
           this.hud.chat(null, e.sub ? `${e.text}: ${e.sub}` : e.text);
@@ -1022,6 +1043,12 @@ export class Game {
       else if (mode === MODE.DOCKED) this.conn.action({ a: 'disembark' });
       else if (mode === MODE.ROVER) this.conn.action({ a: 'leave' });
     }
+    if (i.hit('KeyF') && mode === MODE.ROVER) {
+      const d = this.drillable();
+      if (this.drill) this.hud.toast('Бур уже работает');
+      else if (!d) this.hud.toast('Рядом нет залежей: следуйте за сканером (⛏ в навигации, Tab)', 'warn');
+      else this.conn.action({ a: 'drill', id: d.id });
+    }
     if (i.hit('KeyR')) {
       // unload / load the rover by the ship, or put an overturned one back on its wheels
       const mine = mode === MODE.FOOT ? this.nearMyRover(ROVER.reach + 3) : null;
@@ -1031,7 +1058,7 @@ export class Game {
     if (i.hit('KeyF') && mode === MODE.DECK && this.pred.char) {
       const t = nearTerminal(this.pred.char.p);
       if (t) this.openTerminal(t.kind, t.name);
-    } else if (i.hit('KeyF')) {
+    } else if (mode !== MODE.ROVER && i.hit('KeyF')) {
       const carcass = mode === MODE.FOOT ? this.nearCarcass() : null;
       const log = mode === MODE.FOOT ? this.nearLog() : null;
       if (log) this.openLog(log);
@@ -1093,6 +1120,48 @@ export class Game {
     this.lockT = 0;
     this.locked = false;
     if (best) this.sfx.beep();
+  }
+
+  /**
+   * The rover's ground scanner: on a planet's surface, the three nearest undrilled deposits go
+   * into the nav list (re-sorted as the rover moves); entering the rover selects the nearest.
+   */
+  private scanDeposits(pl: PlanetDef | null, mode: number) {
+    const on = !!pl && (mode === MODE.ROVER || mode === MODE.FOOT) && this.pred.charPlanet === pl.index;
+    const pick = on ? this.deposits.inRange.slice(0, 3) : [];
+    const key = pick.map((d) => d.id).join(',');
+    if (key !== this.depositKey) {
+      this.depositKey = key;
+      const seen = new Map<string, number>();
+      this.depositNav = pick.map((d) => {
+        const base = `⛏ ${DEPOSIT_NAMES[d.kind]}`;
+        const n = (seen.get(base) ?? 0) + 1;
+        seen.set(base, n);
+        return { name: n > 1 ? `${base} ${n}` : base, pos: v3(), kind: 'deposit' as const, radius: 0, site: { planet: pl!.index, p: depositPos(pl!, d) } };
+      });
+      this.rebuildNav();
+    }
+    if (this.pickDeposit && mode === MODE.ROVER && this.depositNav.length) {
+      this.pickDeposit = false;
+      const i = this.navItems.indexOf(this.depositNav[0]);
+      if (i >= 0) this.navIndex = i;
+    }
+  }
+
+  /** An undrilled deposit next to the pilot on foot. */
+  private footByDeposit() {
+    const pl = this.pred.charPlanet >= 0 ? this.sys?.planets[this.pred.charPlanet] : null;
+    const d = this.deposits.inRange[0];
+    return pl && d && vdist(depositPos(pl, d), this.charPosB) <= DRILL_RANGE ? d : null;
+  }
+
+  /** The undrilled deposit the rover stands by, if any. */
+  private drillable() {
+    const pl = this.pred.charPlanet >= 0 ? this.sys?.planets[this.pred.charPlanet] : null;
+    const r = this.pred.rover;
+    if (!pl || !r) return null;
+    const d = this.deposits.inRange[0];
+    return d && vdist(depositPos(pl, d), r.p) <= DRILL_RANGE ? d : null;
   }
 
   private nearestNode() {
@@ -1274,7 +1343,10 @@ export class Game {
     // props first: they only need a couple of worker jobs and must not starve behind terrain chunks
     const propsPlanet = np && this.nearAlt < 2500 ? np : null;
     const camB = propsPlanet ? toBodyPoint(propsPlanet, this.rots[propsPlanet.index], this.origin, v3()) : this.origin;
-    this.props.update(propsPlanet ? this.planets[propsPlanet.index] : null, camB, this.harvestedSet(), this.harvestVersion, this.time, { props: true, small: this.r.q.smallProps });
+    const spent = this.harvestedSet();
+    this.props.update(propsPlanet ? this.planets[propsPlanet.index] : null, camB, spent, this.harvestVersion, this.time, { props: true, small: this.r.q.smallProps });
+    this.deposits.update(propsPlanet ? this.planets[propsPlanet.index] : null, camB, (pl, id) => spent.has(`${pl}:${id}`), this.time);
+    this.scanDeposits(propsPlanet, mode);
     // is the camera under the sea?
     this.camUnder = 0;
     this.camDepth = 0;
@@ -1402,7 +1474,8 @@ export class Game {
       const fwd = qrot(v3(), rv.q, FWD);
       const vf = fwd.x * rv.v.x + fwd.y * rv.v.y + fwd.z * rv.v.z;
       const dark = this.dayNow < 0.35 || this.wx.dark || this.indoorK > 0.5;
-      this.myRover.update(dt, { susp: rv.susp, steer: rv.steer, fwd: vf, driven: true, lights: dark });
+      this.myRover.update(dt, { susp: rv.susp, steer: rv.steer, fwd: vf, driven: true, lights: dark, drilling: !!this.drill });
+      if (this.drill && this.time > this.drillSfx) { this.drillSfx = this.time + 0.7; this.sfx.mining(); }
       this.roverDust(dt, this.myRover, roverPl, Math.abs(vf), rv.ground);
     }
     if (mode === MODE.SHIP) this.sfx.engineLevel(this.ctrl.throttle, this.input.down('ShiftLeft'), isCruising(ship));
@@ -1482,7 +1555,7 @@ export class Game {
         const f = qrot(v3(), r.bq, FWD);
         const vf = f.x * st.vx + f.y * st.vy + f.z * st.vz;
         const driven = !!(st.flags & EFLAG.BOOST);
-        r.view.update(dt, { susp, steer: steerAngle(st.shield), fwd: vf, driven, lights: driven && (this.dayNow < 0.35 || this.wx.dark) });
+        r.view.update(dt, { susp, steer: steerAngle(st.shield), fwd: vf, driven, lights: driven && (this.dayNow < 0.35 || this.wx.dark), drilling: !!(st.flags & EFLAG.CRUISE) });
         if (rpl && vdist(r.p, this.origin) < 120) this.roverDust(dt, r.view, rpl, Math.abs(vf), st.throttle * ROVER_SPEED_MAX > 0.5 ? 4 : 0);
       } else if (r.view instanceof LootView) {
         r.view.update(dt);
@@ -1928,7 +2001,7 @@ export class Game {
       blips.push({ x: ac.x, y: ac.y, z: ac.z, kind: 'ally' });
     }
     for (const p of this.pois) { const pc = rel(v3(p.pos[0], p.pos[1], p.pos[2])); blips.push({ x: pc.x, y: pc.y, z: pc.z, kind: 'poi' }); }
-    for (const n of this.navItems) if (n.kind === 'goal') { const gc = rel(n.pos); blips.push({ x: gc.x, y: gc.y, z: gc.z, kind: 'goal' }); }
+    for (const n of this.navItems) if (n.kind === 'goal' || n.kind === 'deposit') { const gc = rel(n.pos); blips.push({ x: gc.x, y: gc.y, z: gc.z, kind: n.kind }); }
     const sc = rel(sys.station.pos);
     blips.push({ x: sc.x, y: sc.y, z: sc.z, kind: 'station' });
     for (const g of sys.gates) { const gc = rel(g.pos); blips.push({ x: gc.x, y: gc.y, z: gc.z, kind: 'gate' }); }
@@ -1976,6 +2049,7 @@ export class Game {
       if (this.nearLog()) prompt = '<kbd>F</kbd> бортовой журнал';
       else if (carcass) prompt = carcass.drone ? '<kbd>F</kbd> разобрать дрона' : `<kbd>F</kbd> взять биообразцы: ${carcass.name}`;
       else if (n) prompt = `<kbd>F</kbd> собрать: ${RESOURCE_NAMES[n.type]}`;
+      else if (this.footByDeposit()) prompt = `${DEPOSIT_NAMES[this.footByDeposit()!.kind]}: без бура не добыть — приезжайте на ровере`;
       else {
         const mine = this.nearMyRover(ROVER.reach + 3);
         const parked = [...this.remotes.values()].some((r) => r.info?.kind === KIND.ROVER && r.info.owner === this.welcome?.playerId);
@@ -1988,8 +2062,13 @@ export class Game {
     } else if (mode === MODE.ROVER && this.pred.rover) {
       const rv = this.pred.rover;
       const kmh = Math.round(vlen(rv.v) * 3.6);
-      prompt = roverOverturned(rv) ? 'Ровер перевернулся — <kbd>R</kbd> поставить на колёса · <kbd>G</kbd> выйти'
-        : `${kmh} км/ч · <kbd>Space</kbd> ручник · <kbd>Shift</kbd> ускорение · <kbd>G</kbd> выйти`;
+      const dep = this.drillable();
+      const bed = this.pilot ? `кузов ${cargoCount(this.pilot.roverBed)}/${this.pilot.roverBedCap}` : '';
+      if (roverOverturned(rv)) prompt = 'Ровер перевернулся — <kbd>R</kbd> поставить на колёса · <kbd>G</kbd> выйти';
+      else if (this.drill) prompt = `Бурение: ${Math.round(Math.min(1, 1 - (this.drill.until - this.time) / this.drill.total) * 100)}% — стойте на месте · ${bed}`;
+      else if (dep && vlen(rv.v) > DRILL_SPEED) prompt = `${DEPOSIT_NAMES[dep.kind]} рядом — остановитесь, чтобы бурить`;
+      else if (dep) prompt = `<kbd>F</kbd> бурить: ${DEPOSIT_NAMES[dep.kind]} (${yieldText(dep.yield, CARGO_NAMES)}) · ${bed}`;
+      else prompt = `${kmh} км/ч · <kbd>Space</kbd> ручник · <kbd>Shift</kbd> ускорение · <kbd>G</kbd> выйти`;
     } else if (mode === MODE.DECK && this.pred.char) {
       const c = this.pred.char.p;
       const t = nearTerminal(c);

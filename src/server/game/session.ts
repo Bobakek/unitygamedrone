@@ -2,6 +2,7 @@ import type { WebSocket } from 'ws';
 import { encodeJson, MSG, MODE, type InputMsg, type Mode, type PilotInfo } from '../../shared/net/protocol.ts';
 import { combatStats } from '../../shared/economy.ts';
 import { gearStats, type GearStats } from '../../shared/outfit.ts';
+import { ROVER_BED } from '../../shared/planet/deposits.ts';
 import type { PilotRecord } from '../storage.ts';
 import type { CharEntity, RoverEntity, ShipEntity } from './entities.ts';
 import type { SystemInstance } from './system.ts';
@@ -32,6 +33,8 @@ export class Session {
   char: CharEntity | null = null;
   /** The rover this pilot unloaded (parked or being driven: mode ROVER). */
   rover: RoverEntity | null = null;
+  /** The rover's drill at work on a deposit: done at `until` (system time). */
+  drill: { planet: number; id: number; until: number } | null = null;
   chatTimes: number[] = [];
   lastSave = 0;
   closed = false;
@@ -62,6 +65,7 @@ export class Session {
       name: p.name, credits: Math.floor(p.credits), cargo: { ...p.cargo }, cargoCap: combatStats(p.upgrades).cargoCap,
       upgrades: { ...p.upgrades }, missiles: p.missiles, kills: p.kills, deaths: p.deaths,
       items: [...p.items], outfit: { ...p.outfit }, career: structuredClone(p.career),
+      roverBed: { ...p.roverBed }, roverBedCap: ROVER_BED,
     };
   }
 

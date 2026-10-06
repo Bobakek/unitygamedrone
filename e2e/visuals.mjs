@@ -404,6 +404,54 @@ try {
     if (!parked) errors.push('rover: the parked rover is not drawn');
     console.log('done rover');
   }
+  // rover expedition: the scanner leads to a deposit, the core drill gets it out into the bed
+  if (!only || only === 'deposit') {
+    if ((await page.evaluate(() => window.__game.sys.id)) !== 0) {
+      await chat('/system 0');
+      await page.waitForFunction(() => window.__game.sys.id === 0 && window.__game.pred.ready, null, { timeout: 30000, polling: 250 });
+    }
+    await chat('/god');
+    await chat(`/land ${process.env.DEPOSIT_PLANET ?? 0} day`);
+    await chat('/weather clear');
+    await sleep(5000);
+    await chat('/deposit');
+    await mode(5);
+    await page.waitForFunction(() => window.__game.myRover?.ready && window.__game.deposits.inRange.length > 0, null, { timeout: 60000, polling: 250 });
+    await sleep(2500);
+    const ticks = () => page.evaluate(() => window.__game.ctrl.seq);
+    const hold = async (n) => { const t0 = await ticks(); while ((await ticks()) - t0 < n) await sleep(100); };
+    const near = () => page.evaluate(() => {
+      const g = window.__game, pl = g.sys.planets[g.pred.charPlanet], d = g.deposits.inRange[0], r = g.pred.rover;
+      const p = { x: d.dir.x * (pl.radius + d.h), y: d.dir.y * (pl.radius + d.h), z: d.dir.z * (pl.radius + d.h) };
+      return { dist: Math.hypot(p.x - r.p.x, p.y - r.p.y, p.z - r.p.z), v: Math.hypot(r.v.x, r.v.y, r.v.z), kind: d.kind, nav: g.navItems[g.navIndex]?.name };
+    });
+    console.log('deposit start', JSON.stringify(await near()));
+    await sleep(3000);
+    await page.screenshot({ path: `${OUT}/rover-scan.png` });
+    // creep up to it, then stop with the handbrake
+    await page.keyboard.down('KeyW');
+    for (let k = 0; k < 60 && (await near()).dist > 6.5; k++) await hold(3);
+    await page.keyboard.up('KeyW');
+    await page.keyboard.down('Space');
+    for (let k = 0; k < 40 && (await near()).v > 0.4; k++) await hold(3);
+    await page.keyboard.up('Space');
+    console.log('deposit by', JSON.stringify(await near()));
+    await page.keyboard.press('KeyF');
+    await page.waitForFunction(() => !!window.__game.drill, null, { timeout: 20000, polling: 100 });
+    // watch the drill from the side
+    await page.evaluate(() => { const c = window.__game.ctrl; c.roverYaw = 0.75; c.roverLook = 1e9; c.roverDist = 8; c.footPitch = -0.2; });
+    await sleep(2200);
+    await page.addStyleTag({ content: '#prompt { visibility: hidden !important; }' }).then((h) => h.evaluate((e) => e.id = 'e2e-hide'));
+    await page.screenshot({ path: `${OUT}/rover-drill.png` });
+    await page.evaluate(() => document.getElementById('e2e-hide')?.remove());
+    await page.waitForFunction(() => !window.__game.drill && (window.__game.pilot?.roverBed ? Object.values(window.__game.pilot.roverBed).reduce((a, b) => a + b, 0) : 0) > 0, null, { timeout: 60000, polling: 250 });
+    const bed = await page.evaluate(() => window.__game.pilot.roverBed);
+    console.log('deposit bed', JSON.stringify(bed));
+    await page.evaluate(() => { window.__game.ctrl.roverLook = 0; });
+    await sleep(1500);
+    await page.screenshot({ path: `${OUT}/rover-drilled.png` });
+    console.log('done deposit');
+  }
 } catch (e) {
   errors.push(String(e.stack || e));
 } finally {

@@ -8,7 +8,8 @@ import { ROVER } from '../../shared/sim/rover.ts';
  * Moving parts are separate nodes: per corner the wishbones swing about their hinges, the
  * coil-over is re-aimed and compressed, the knuckle rides up and down, the front wheels steer
  * and every wheel spins with the ground speed. The dish turns, the beacon blinks while driven,
- * and the seated pilot shows only when someone is at the wheel.
+ * the seated pilot shows only when someone is at the wheel, and the core drill behind the tail
+ * lowers its spinning auger into the ground while the rover drills a deposit.
  */
 const CORNERS = ['FL', 'FR', 'RL', 'RR'] as const;
 /** Wishbone length: inner hinge to ball joint (see build_rover.py). */
@@ -50,6 +51,8 @@ export interface RoverAnim {
   driven: boolean;
   /** Headlights and lamp glow. */
   lights: boolean;
+  /** The core drill is down and turning. */
+  drilling?: boolean;
 }
 
 const DOWN = new THREE.Vector3(0, -1, 0), Z = new THREE.Vector3(0, 0, 1);
@@ -60,6 +63,11 @@ export class RoverView {
   private corners: Corner[] = [];
   private spin = [0, 0, 0, 0];
   private dish: THREE.Object3D | null = null;
+  private drill: THREE.Object3D | null = null;
+  private bit: THREE.Object3D | null = null;
+  private drillRest = 0;
+  /** 0 = drill up, 1 = auger in the ground. */
+  drillT = 0;
   private driver: THREE.Object3D | null = null;
   private beacon: THREE.MeshStandardMaterial | null = null;
   private lamp: THREE.MeshStandardMaterial | null = null;
@@ -89,6 +97,9 @@ export class RoverView {
       });
     }
     this.dish = find('Dish') ?? null;
+    this.drill = find('Drill') ?? null;
+    this.bit = find('DrillBit') ?? null;
+    this.drillRest = this.drill?.position.y ?? 0;
     this.driver = find('Driver') ?? null;
     // per-rover copies of the glowing materials so each can switch its own lamps
     root.traverse((o) => {
@@ -138,6 +149,10 @@ export class RoverView {
       c.wheel.rotation.x = this.spin[i];
     }
     if (this.dish) this.dish.rotation.y += dt * 0.5;
+    // the carriage slides down the mast (0.75 m) and the auger spins up as it bites
+    this.drillT = Math.max(0, Math.min(1, this.drillT + (a.drilling ? dt * 0.7 : -dt * 1.2)));
+    if (this.drill) this.drill.position.y = this.drillRest - 0.75 * this.drillT + (a.drilling ? Math.sin(this.t * 37) * 0.006 : 0);
+    if (this.bit) this.bit.rotation.y += dt * 16 * Math.min(1, this.drillT * 3);
     if (this.driver) this.driver.visible = a.driven;
     if (this.beacon) this.beacon.emissiveIntensity = a.driven ? (Math.sin(this.t * 6) > 0.2 ? 4 : 0.3) : 0.2;
     if (this.lamp) this.lamp.emissiveIntensity = a.lights ? 6 : 0.4;
