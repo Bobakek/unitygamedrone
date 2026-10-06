@@ -8,6 +8,7 @@ import type { Career, ContractDef } from '../contracts.ts';
 import type { WeatherKind } from '../weather.ts';
 import type { Trophy } from '../station/trophies.ts';
 import type { HullKey } from '../ships/hulls.ts';
+import type { Prize } from '../boarding.ts';
 import { Reader, Writer } from './buffer.ts';
 
 export const MSG = {
@@ -20,7 +21,8 @@ export const KIND = { SHIP: 1, CHAR: 2, MISSILE: 3, LOOT: 4, CREATURE: 5, ROVER:
 export const BLASTER_LEVEL = 10;
 /** Shot.level of a wreck's guard drone. */
 export const DRONE_LEVEL = 11;
-export const EFLAG = { LANDED: 1, CRUISE: 2, BOOST: 4, HIDDEN: 8, NPC: 16, SAFE: 32, DEAD: 64 } as const;
+/** DISABLED: an NPC ship knocked out (engines and guns dead), open to boarding. */
+export const EFLAG = { LANDED: 1, CRUISE: 2, BOOST: 4, HIDDEN: 8, NPC: 16, SAFE: 32, DEAD: 64, DISABLED: 128 } as const;
 /**
  * Flags of pilots on foot (KIND.CHAR). For these entities `throttle` carries the traversal
  * progress (vault in 0..0.5, climb in 0.5..1) and `shield` the aim pitch (see aimByte).
@@ -29,8 +31,11 @@ export const CFLAG = { SCRAMBLE: 1, CLIMB: 2, AIR: 4, SWIM: 8, UNDER: 16, AIM: 1
 export const aimByte = (pitch: number) => Math.max(0, Math.min(1, pitch / 2.6 + 0.5));
 export const aimPitch = (b: number) => (b - 0.5) * 2.6;
 export const IFLAG = { FIRE: 1, BOOST: 2, CRUISE: 4, JUMP: 8, SPRINT: 16, AIM: 32, DIVE: 64 } as const;
-/** DECK: walking about the inside of the station (docked); ROVER: driving the planetary rover. */
-export const MODE = { SHIP: 0, FOOT: 1, DOCKED: 2, DEAD: 3, DECK: 4, ROVER: 5 } as const;
+/**
+ * DECK: walking about the inside of the station (docked); ROVER: driving the planetary rover;
+ * BOARD: aboard a disabled NPC ship (see boarding.ts).
+ */
+export const MODE = { SHIP: 0, FOOT: 1, DOCKED: 2, DEAD: 3, DECK: 4, ROVER: 5, BOARD: 6 } as const;
 /**
  * Rovers (KIND.ROVER): `throttle` carries the speed (of ROVER_SPEED_MAX), `shield` the front wheel
  * angle (see steerByte) and EFLAG.BOOST that someone is at the wheel.
@@ -39,11 +44,15 @@ export const ROVER_SPEED_MAX = 30;
 export const steerByte = (a: number) => Math.max(0, Math.min(1, a / 1.2 + 0.5));
 export const steerAngle = (b: number) => (b - 0.5) * 1.2;
 /** Inputs that use the on-foot layout (rovers steer with the same keys). */
-const charLayout = (mode: number) => mode === MODE.FOOT || mode === MODE.DECK || mode === MODE.ROVER;
+const charLayout = (mode: number) => mode === MODE.FOOT || mode === MODE.DECK || mode === MODE.ROVER || mode === MODE.BOARD;
 /** EntityState.frame of pilots walking on a station deck (deck coordinates, see station/deck.ts). */
 export const DECK_FRAME = 255;
 /** SelfState.charPlanet of the local pilot on the deck. */
 export const DECK_PLANET = -2;
+/** EntityState.frame of pilots and crew aboard a boarded ship (its deck coordinates, see boarding.ts). */
+export const BOARD_FRAME = 254;
+/** SelfState.charPlanet of the local pilot aboard a boarded ship. */
+export const BOARD_PLANET = -3;
 export type Mode = (typeof MODE)[keyof typeof MODE];
 
 // ---------------------------------------------------------------- JSON messages
@@ -60,6 +69,8 @@ export interface PilotInfo {
   trophies: Trophy[];
   /** Ship class flown and ships owned. */
   ship: HullKey; ships: HullKey[];
+  /** Captured ships waiting to be sold at a shipyard. */
+  prizes: Prize[];
 }
 /** A member of the pilot's group; `pos` (world) only for members in the same system. */
 export interface GroupMember {
@@ -102,7 +113,12 @@ export type GameEvent =
   /** The local pilot's rover drill on deposit `id`: `left` seconds to go, 0 = done, -1 = stopped. */
   | { t: 'drill'; id: number; left: number }
   /** A mining laser of ship `by` hit an asteroid; `good` = a unit went into its hold. */
-  | { t: 'mine'; pos: [number, number, number]; by: number; good?: CargoKey };
+  | { t: 'mine'; pos: [number, number, number]; by: number; good?: CargoKey }
+  /**
+   * The local pilot went aboard ship `id` (0: back in their own ship); `crew` still standing,
+   * whether the hold was emptied and the ship claimed.
+   */
+  | { t: 'aboard'; id: number; crew: number; looted: boolean; claimed: boolean };
 
 export type Action =
   | { a: 'exit' } | { a: 'board' } | { a: 'dock' } | { a: 'undock' } | { a: 'jump' }
@@ -124,7 +140,9 @@ export type Action =
   /** The pilot on foot read the ship's log on a wreck's bridge (a trophy for the cabin). */
   | { a: 'readLog' }
   /** Shipyard (docked): buy a ship class, switch to an owned one. */
-  | { a: 'buyShip'; ship: HullKey } | { a: 'setShip'; ship: HullKey };
+  | { a: 'buyShip'; ship: HullKey } | { a: 'setShip'; ship: HullKey }
+  /** Boarding: dock with the disabled ship `id`; aboard, empty the hold, claim the ship at the helm; sell a prize (docked). */
+  | { a: 'boardShip'; id: number } | { a: 'loot' } | { a: 'claim' } | { a: 'sellPrize'; id: string };
 
 export function encodeJson(type: number, payload: unknown): Uint8Array {
   const body = new TextEncoder().encode(JSON.stringify(payload));

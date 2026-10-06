@@ -3,6 +3,7 @@ import type { Outfit } from '../shared/outfit.ts';
 import type { Career } from '../shared/contracts.ts';
 import type { Trophy } from '../shared/station/trophies.ts';
 import type { HullKey } from '../shared/ships/hulls.ts';
+import type { Prize } from '../shared/boarding.ts';
 
 /** Browser-safe pilot storage contract (SQLite on the server, localStorage in offline mode). */
 export interface PilotRecord {
@@ -18,6 +19,8 @@ export interface PilotRecord {
   trophies: Trophy[];
   /** The ship class flown and the ships owned (always including the fighter). */
   ship: HullKey; ships: HullKey[];
+  /** Captured ships waiting to be sold at a shipyard. */
+  prizes: Prize[];
 }
 
 export interface PilotStorage {

@@ -10,7 +10,7 @@ import {
   FWD, qlook, qrot, quat, v3, vcross, vdist, vdistSq, vdot, vlen, vnorm, vscale, vsub, type Quat, type V3,
 } from '../../shared/math/vec.ts';
 import {
-  aimByte, CFLAG, DECK_FRAME, DECK_PLANET, EFLAG, IFLAG, KIND, MODE, MSG, ROVER_SPEED_MAX, steerByte, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
+  aimByte, BOARD_FRAME, BOARD_PLANET, CFLAG, DECK_FRAME, DECK_PLANET, EFLAG, IFLAG, KIND, MODE, MSG, ROVER_SPEED_MAX, steerByte, type Action, type EntityInfo, type EntityState, type GameEvent, type Harvested, type Shot, type Snapshot,
 } from '../../shared/net/protocol.ts';
 import { nodesNear, resourceNode } from '../../shared/planet/resources.ts';
 import { planetSites, SITE_NODE_BASE, siteCache, siteDir, sitesNear, wreckAt, wreckZone } from '../../shared/planet/sites.ts';
@@ -39,6 +39,8 @@ import { GROUP_BONUS, SHARE_RANGE } from './groups.ts';
 import type { MarketQuote } from '../../shared/market.ts';
 import { BOARD_REACH, inCabin, PAD, RAMP, stepDeck } from '../../shared/station/deck.ts';
 import { awardTrophy } from './trophies.ts';
+import { Boarding } from './boarding.ts';
+import { SHIP_DECK } from '../../shared/boarding.ts';
 import { WeatherDesk } from './weather.ts';
 import type { Weather } from '../../shared/weather.ts';
 import type { Session } from './session.ts';
@@ -94,6 +96,7 @@ export class SystemInstance implements NpcWorld {
   readonly market: StationMarket;
   readonly mining: AsteroidMining;
   readonly weather: WeatherDesk;
+  readonly boarding: Boarding;
 
   constructor(private ctx: GameContext, id: number) {
     this.def = getSystem(id);
@@ -107,6 +110,7 @@ export class SystemInstance implements NpcWorld {
     this.market = new StationMarket(this);
     this.mining = new AsteroidMining(this);
     this.weather = new WeatherDesk(this);
+    this.boarding = new Boarding(this);
   }
 
   /** Inside a derelict's hull (shelter from the weather). */
@@ -150,6 +154,8 @@ export class SystemInstance implements NpcWorld {
 
   /** World position of a pilot on foot (on the deck: the station). */
   charWorld(c: CharEntity, out: V3 = v3()): V3 {
+    const hulk = c.aboard ? this.ships.get(c.aboard) : undefined;
+    if (hulk) return this.boarding.toWorld(hulk, c.state.p.x, c.state.p.y, c.state.p.z, out);
     if (c.planet < 0) return Object.assign(out, this.def.station.pos);
     const pl = this.def.planets[c.planet];
     return toWorldPoint(pl, planetRot(pl, this.time, rot), c.state.p, out);
@@ -203,6 +209,7 @@ export class SystemInstance implements NpcWorld {
     for (const m of this.missiles.values()) out.push({ id: m.id, kind: KIND.MISSILE, name: '', owner: m.owner });
     for (const l of this.world.loot.values()) out.push({ id: l.id, kind: KIND.LOOT, name: 'Контейнер' });
     for (const c of this.fauna.creatures.values()) out.push(this.fauna.info(c));
+    this.boarding.infos(out);
     return out;
   }
 
@@ -231,6 +238,7 @@ export class SystemInstance implements NpcWorld {
   removeSession(s: Session) {
     this.sessions.delete(s);
     this.mining.forget(s);
+    this.boarding.forget(s);
     this.removeRover(s);
     if (s.char) {
       this.chars.delete(s.char.id);
@@ -294,7 +302,7 @@ export class SystemInstance implements NpcWorld {
 
   damage(target: ShipEntity, dmg: number, attacker: number, pos?: V3) {
     if (target.dead || target.docked || target.god) return;
-    if (target.session && (target.session.mode === MODE.FOOT || target.session.mode === MODE.ROVER)) return;
+    if (target.session && (target.session.mode === MODE.FOOT || target.session.mode === MODE.ROVER || target.session.mode === MODE.BOARD)) return;
     if (this.inSafeZone(target.world.p)) return;
     // no friendly fire inside a group
     const by = attacker ? this.ships.get(attacker)?.session : undefined;
@@ -316,9 +324,11 @@ export class SystemInstance implements NpcWorld {
       }
     }
     if (target.hull <= 0) this.kill(target, attacker);
+    else if (target.npc) this.boarding.maybeDisable(target, by ?? undefined);
   }
 
   kill(target: ShipEntity, attacker: number) {
+    if (target.disabled) this.boarding.onDestroyed(target);
     target.dead = true;
     target.hull = 0;
     const p = target.world.p;
@@ -350,6 +360,18 @@ export class SystemInstance implements NpcWorld {
       this.reward(killer.session, p, bounty, wanted ? 'Разыскиваемый пилот уничтожен' : 'Цель уничтожена');
       if (target.npc && target.npc.role !== 'turret') this.contracts.onPirateKill(killer.session);
     }
+  }
+
+  /**
+   * A boarded ship was claimed by `s`: the same consequences as shooting it down for events,
+   * outposts and contracts (no explosion, no loot spill; the prize crew takes it away).
+   */
+  captured(target: ShipEntity, s: Session) {
+    if (!target.transient) this.npcRespawn.push(this.time + 40);
+    this.world.onKill(target, s.ship, true);
+    this.outposts.onKill(target, s.ship);
+    if (target.npc && target.npc.role !== 'turret') this.contracts.onPirateKill(s);
+    this.events.push({ t: 'kill', killer: s.pilot.name, victim: `${target.name} (захвачен)` });
   }
 
   /** The pilot and group mates near `at` (or near the pilot) who share kills. */
@@ -427,7 +449,7 @@ export class SystemInstance implements NpcWorld {
 
     this.env.time = t;
     for (const ship of this.ships.values()) {
-      if (!ship.npc || ship.dead || ship.npc.role === 'turret') continue;
+      if (!ship.npc || ship.dead || ship.npc.role === 'turret' || ship.disabled) continue;
       const { input, fire } = npcThink(ship, ship.npc, this, DT);
       stepShip(ship.state, input, ship.flight, this.env, DT, stepOut);
       this.syncWorld(ship);
@@ -442,6 +464,7 @@ export class SystemInstance implements NpcWorld {
     this.world.step(DT);
     this.outposts.step(DT);
     this.fauna.step(DT);
+    this.boarding.step(DT);
     if (this.ctx.tick % 15 === 0) { this.contracts.checkSites(); this.weather.step(0.5); }
     if (this.ctx.tick % 30 === 0) {
       // a fresh board (new epoch, a convoy came or went) goes to everyone docked
@@ -456,6 +479,7 @@ export class SystemInstance implements NpcWorld {
         if (ship.session && t >= ship.respawnAt) this.respawn(ship.session);
         continue;
       }
+      if (ship.disabled) continue;
       ship.energy = Math.min(100, ship.energy + ENERGY_REGEN * DT);
       if (t - ship.lastHit > SHIELD_DELAY) ship.shield = Math.min(ship.combat.maxShield, ship.shield + ship.combat.shieldRegen * DT);
     }
@@ -494,6 +518,11 @@ export class SystemInstance implements NpcWorld {
         stepDeck(s.char.state, m.char, DT);
         s.char.pitch = m.char.pitch;
         s.char.aim = false;
+      } else if (s.mode === MODE.BOARD && m.mode === MODE.BOARD && s.char) {
+        stepDeck(s.char.state, m.char, DT, SHIP_DECK);
+        s.char.pitch = m.char.pitch;
+        s.char.aim = !!(m.flags & IFLAG.AIM);
+        if (m.flags & IFLAG.FIRE) this.boarding.shoot(s, m.char.pitch);
       } else if (s.mode === MODE.FOOT && m.mode === MODE.FOOT && s.char) {
         // the client stamps inputs with server time: the same wind as its prediction
         const wt = Math.max(this.time - 2, Math.min(this.time + 1, m.t));
@@ -706,22 +735,26 @@ export class SystemInstance implements NpcWorld {
     }
     const q = quat();
     const docked = s.mode === MODE.DOCKED || s.mode === MODE.DECK;
+    const aboard = s.mode === MODE.BOARD ? s.char?.aboard ?? 0 : 0;
     for (const c of this.chars.values()) {
-      if (c.session === s || vdistSq(this.charWorld(c, cw), focus) > r2) continue;
+      if (c.session === s) continue;
+      // aboard a boarded ship only those on the same deck see each other
+      if ((c.aboard ?? 0) !== aboard) continue;
+      if (vdistSq(this.charWorld(c, cw), focus) > r2) continue;
       // a driver sits in the rover's model
       if (c.session.mode === MODE.ROVER) continue;
       // pilots on the station deck are seen only from inside the station
-      const deck = c.planet < 0;
-      if (deck !== docked) continue;
+      const deck = c.planet < 0 && !c.aboard;
+      if (!c.aboard && deck !== docked) continue;
       // a cabin is private: its owner sees no one else, and no one sees them
       if (deck && inCabin(c.state.p) !== (s.mode === MODE.DECK && !!s.char && inCabin(s.char.state.p))) continue;
-      if (deck) qlook(q, c.state.f, DECK_UP); else charQuat(c.state, q);
+      if (deck || c.aboard) qlook(q, c.state.f, DECK_UP); else charQuat(c.state, q);
       const cs = c.state;
       const flags = (cs.ground || cs.swim ? 0 : CFLAG.AIR) | (cs.climbMode ? CFLAG.CLIMB : 0) | (cs.scramble ? CFLAG.SCRAMBLE : 0)
         | (cs.swim ? CFLAG.SWIM : 0) | (cs.swim === 2 ? CFLAG.UNDER : 0) | (c.aim || this.time - c.shotAt < 1.5 ? CFLAG.AIM : 0);
       const prog = climbProgress(cs);
       entities.push({
-        id: c.id, kind: KIND.CHAR, flags, frame: deck ? DECK_FRAME : c.planet + 1, px: cs.p.x, py: cs.p.y, pz: cs.p.z,
+        id: c.id, kind: KIND.CHAR, flags, frame: c.aboard ? BOARD_FRAME : deck ? DECK_FRAME : c.planet + 1, px: cs.p.x, py: cs.p.y, pz: cs.p.z,
         qx: q.x, qy: q.y, qz: q.z, qw: q.w, vx: cs.v.x, vy: cs.v.y, vz: cs.v.z, hull: c.hp / c.maxHp, shield: aimByte(c.pitch),
         throttle: cs.climbMode === 2 ? 0.5 + prog * 0.5 : prog * 0.5,
       });
@@ -744,6 +777,7 @@ export class SystemInstance implements NpcWorld {
       entities.push({ id: m.id, kind: KIND.MISSILE, flags: 0, frame: 0, px: m.p.x, py: m.p.y, pz: m.p.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, vx: m.v.x, vy: m.v.y, vz: m.v.z, hull: 1, shield: 0, throttle: 1 });
     }
     this.fauna.entities(s, entities);
+    this.boarding.entities(s, entities);
     for (const l of this.world.loot.values()) {
       if (vdistSq(l.p, focus) > r2) continue;
       entities.push({ id: l.id, kind: KIND.LOOT, flags: 0, frame: 0, px: l.p.x, py: l.p.y, pz: l.p.z, qx: 0, qy: 0, qz: 0, qw: 1, vx: l.v.x, vy: l.v.y, vz: l.v.z, hull: 1, shield: 0, throttle: 0 });
@@ -755,7 +789,7 @@ export class SystemInstance implements NpcWorld {
         shipId: ship.id, mode: s.mode, teleport: s.teleport, ship: ship.state,
         hull: Math.max(0, ship.hull), maxHull: ship.combat.maxHull, shield: ship.shield, maxShield: ship.combat.maxShield,
         energy: ship.energy, missiles: s.pilot.missiles,
-        charId: s.char?.id ?? 0, char: s.char?.state ?? null, charPlanet: s.char ? (s.char.planet < 0 ? DECK_PLANET : s.char.planet) : -1, suit: s.char ? (s.char.hp / s.char.maxHp) * 100 : 100,
+        charId: s.char?.id ?? 0, char: s.char?.state ?? null, charPlanet: s.char ? (s.char.aboard ? BOARD_PLANET : s.char.planet < 0 ? DECK_PLANET : s.char.planet) : -1, suit: s.char ? (s.char.hp / s.char.maxHp) * 100 : 100,
         roverId: s.mode === MODE.ROVER && s.rover ? s.rover.id : 0, rover: s.mode === MODE.ROVER && s.rover ? s.rover.state : null,
       },
     };
@@ -814,6 +848,7 @@ export class SystemInstance implements NpcWorld {
         return null;
       }
       case 'board': {
+        if (s.mode === MODE.BOARD) return this.boarding.leave(s);
         if (s.mode === MODE.DECK && s.char) {
           if (Math.hypot(s.char.state.p.x - PAD.x, s.char.state.p.z - PAD.z) > BOARD_REACH) return 'Подойдите к кораблю';
           this.recallPilot(s);
@@ -1049,6 +1084,15 @@ export class SystemInstance implements NpcWorld {
         if (awardTrophy(s, `log:${this.def.id}:${pl.index}:${w.site.id}`)) s.sendPilot();
         return null;
       }
+      case 'boardShip':
+        return this.boarding.board(s, Number(act.id));
+      case 'loot':
+        return s.mode === MODE.BOARD ? this.boarding.loot(s) : null;
+      case 'claim':
+        return s.mode === MODE.BOARD ? this.boarding.claim(s) : null;
+      case 'sellPrize':
+        if (!atStation(s)) return 'Нужно пристыковаться';
+        return this.boarding.sellPrize(s, String(act.id));
       case 'missile':
         if (s.mode !== MODE.SHIP) return null;
         return this.fireMissile(ship, act.target);
@@ -1072,6 +1116,7 @@ export class SystemInstance implements NpcWorld {
 
   /** Puts a pilot on foot back into their ship. */
   recallPilot(s: Session) {
+    const aboard = s.char?.aboard;
     if (s.char) {
       this.chars.delete(s.char.id);
       this.gone.push(s.char.id);
@@ -1079,6 +1124,7 @@ export class SystemInstance implements NpcWorld {
     }
     s.mode = MODE.SHIP;
     s.resync();
+    if (aboard) this.boarding.forget(s);
   }
 
   applyStats(s: Session) {
@@ -1158,6 +1204,7 @@ export class SystemInstance implements NpcWorld {
   /** Dev teleports; planet targets accept `when` = day (default, station side) | dusk | night. */
   devTeleport(s: Session, target: string, when?: string): string {
     const ship = s.ship;
+    if (s.char?.aboard) this.recallPilot(s);
     if (s.char) {
       this.chars.delete(s.char.id);
       this.gone.push(s.char.id);

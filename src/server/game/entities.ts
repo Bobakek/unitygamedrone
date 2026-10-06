@@ -38,14 +38,18 @@ export interface ShipEntity {
   bounty?: number;
   /** Server time a player ship last shot at an NPC (pirates stay hostile to it for a while). */
   provokedAt?: number;
+  /** An NPC knocked out by fire: dead in space, open to boarding (see boarding.ts). */
+  disabled?: boolean;
 }
 
 export interface CharEntity {
   id: number;
   name: string;
-  /** Body-frame state of planet `planet`. */
+  /** Body-frame state of planet `planet` (deck coordinates on a station deck or aboard a ship). */
   state: CharState;
   planet: number;
+  /** Aboard this disabled ship (its deck coordinates, see boarding.ts). */
+  aboard?: number;
   session: Session;
   /** Suit integrity (of `maxHp`, set by the outfit), time of the last injury and blaster cooldown. */
   hp: number;
