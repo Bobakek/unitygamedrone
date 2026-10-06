@@ -2,6 +2,8 @@ import { MAX_NAME, PROTOCOL_VERSION, SYSTEM_COUNT, TICK_RATE } from '../../share
 import { qlook, qrot, quat, v3, vdist, vnorm, vscale, vsub } from '../../shared/math/vec.ts';
 import { planetSites, siteDir } from '../../shared/planet/sites.ts';
 import { RAMP, TERMINALS } from '../../shared/station/deck.ts';
+import { KILL_MARKS } from '../../shared/station/trophies.ts';
+import { awardTrophy } from './trophies.ts';
 import { footHeight } from '../../shared/planet/terrain.ts';
 import {
   decodeInput, decodeJson, encodeJson, encodeShots, encodeSnapshot, MODE, MSG, type Action, type Welcome,
@@ -263,7 +265,7 @@ export class Game implements GameContext {
       case 'group': s.msg(this.groups.list(s)); return;
       case 'g': case 'p': { const t = args.join(' ').trim(); if (t) this.groups.say(s, t); return; }
       case 'help':
-        s.msg('Команды: /who, /help, группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|window|ramp>, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /cargo <вид> <n>' : ''));
+        s.msg('Команды: /who, /help, группа: /invite <имя>, /accept, /decline, /leave, /kick <имя>, /group, /g <текст>' + (this.dev ? ' | dev: /tp <n|lowN|ruinN|baseN|wreckN|station|dock|field|gate|open> [dusk|night], /land <n> [day|dusk|night], /event <convoy|wreck|anomaly>, /fauna <0-12>, /weather <вид|clear> [сила], /strike [1], /rover, /deposit, /inside <hold|bridge|quarters|rad>, /deck <trade|upgrades|contracts|wardrobe|trophies|cabin|shelf|window|ramp>, /trophies, /credits <n>, /god, /pirate, /system <n>, /wear <id>, /rep <fed|guild|pirate> <n>, /xp <n>, /contract <вид>, /finish, /cargo <вид> <n>' : ''));
         return;
       case 'who':
         s.msg(`Онлайн (${this.sessions.size}): ${[...this.sessions.values()].map((o) => o.pilot.name).join(', ')}`);
@@ -298,6 +300,22 @@ export class Game implements GameContext {
         sys.contracts.rep(s, f, (Number(args[1]) || 0) - s.pilot.career.rep[f]);
         s.sendPilot();
         s.msg(`Репутация (${f}): ${s.pilot.career.rep[f]}`);
+        break;
+      }
+      case 'trophies': {
+        // dev: a full cabin — relics and logs from this system's sites, every patch, medal, specimen
+        const def = sys.def;
+        for (const pl of def.planets) for (const site of planetSites(pl)) {
+          awardTrophy(s, `relic:${def.id}:${pl.index}:${site.id}`);
+          if (site.kind === 'wreck') awardTrophy(s, `log:${def.id}:${pl.index}:${site.id}`);
+        }
+        for (const n of KILL_MARKS) awardTrophy(s, `patch:kills:${n}`);
+        for (let r = 1; r < RANKS.length; r++) awardTrophy(s, `patch:rank:${r}`);
+        for (const f of FACTIONS) for (const l of [3, 4]) awardTrophy(s, `medal:${f}:${l}`);
+        for (const sp of SPECIES) awardTrophy(s, `specimen:${sp.id}`);
+        for (let k = 0; k < 4; k++) awardTrophy(s, `shard:${(def.id + k) % SYSTEM_COUNT}`);
+        s.sendPilot();
+        s.msg(`Трофеев: ${s.pilot.trophies.length}`);
         break;
       }
       case 'xp': s.pilot.career.xp = Math.max(0, Number(args[0]) || 0); s.sendPilot(); s.msg(`Звание: ${RANKS[rankOf(s.pilot.career.xp)].name}`); break;
@@ -341,11 +359,14 @@ export class Game implements GameContext {
         if (!ch || ch.planet >= 0) { s.msg('Сначала выйдите на станцию', 'warn'); break; }
         // a terminal, the promenade's window on the planet, or the ramp
         const t = TERMINALS.find((x) => x.kind === args[0]);
-        const to = t ? { x: t.x + (t.x < 0 ? 1.8 : -1.8), z: t.z } : args[0] === 'window' ? { x: 4, z: 4 } : RAMP;
+        // named spots: x, z and which way to face
+        const spots: Record<string, [number, number, number, number]> = { window: [4, 4, 0, 1], cabin: [-15, -42, 0, -1], shelf: [-18.8, -51, -1, 0] };
+        const spot = spots[args[0]];
+        const to = t ? { x: t.x + (t.x < 0 ? 1.8 : -1.8), z: t.z } : spot ? { x: spot[0], z: spot[1] } : RAMP;
         ch.state.p = v3(to.x, 0, to.z);
         ch.state.v = v3();
         if (t) ch.state.f = vnorm(v3(), v3(t.x - to.x, 0, 0));
-        else if (args[0] === 'window') ch.state.f = v3(0, 0, 1);
+        else if (spot) ch.state.f = v3(spot[2], 0, spot[3]);
         s.resync();
         break;
       }

@@ -30,6 +30,7 @@ import { Underwater } from './world/underwater.ts';
 import { SeaLife } from './planet/sealife.ts';
 import { Wardrobe } from './ui/wardrobe.ts';
 import { ContractsUi } from './ui/contracts.ts';
+import { TrophiesUi } from './ui/trophies.ts';
 import { KIND_NAMES, type ActiveContract } from '../shared/contracts.ts';
 import { DEFAULT_GEAR, gearStats, parseLook, validOutfit, type GearStats } from '../shared/outfit.ts';
 import { PlanetView } from './planet/planet-view.ts';
@@ -48,7 +49,7 @@ import { AnomalyView, LootView, WreckView, type PoiView } from './world/poi-view
 import { SiteView } from './planet/sites-view.ts';
 import { WeatherView } from './world/weather.ts';
 import { StationInterior } from './world/station-interior.ts';
-import { BOARD_REACH, DECK_WALLS, nearTerminal, PAD, type TerminalKind } from '../shared/station/deck.ts';
+import { BOARD_REACH, DECK_WALLS, inCabin, nearTerminal, PAD, type TerminalKind } from '../shared/station/deck.ts';
 import { forecast, HAZARD_GEAR, HAZARD_NAMES, LAVA_HEAT, STORM_OF, WEATHER, weatherAt, type Weather, type WeatherKind, type WeatherOverride } from '../shared/weather.ts';
 import { CreatureView } from './entities/creature.ts';
 import { DroneView } from './entities/drone.ts';
@@ -105,6 +106,7 @@ export class Game {
   private hud = new Hud();
   private wardrobe = new Wardrobe();
   private contracts = new ContractsUi();
+  private trophiesUi = new TrophiesUi();
   private galaxyMap = new GalaxyMap();
   /** Destination system picked on the galaxy map (its next gate is a navigation point). */
   private routeTo: number | null = null;
@@ -254,6 +256,11 @@ export class Game {
     this.hemi = new THREE.HemisphereLight('#6a7a9a', '#2a2630', 1.6);
     this.r.scene.add(this.sunLight, this.sunLight.target, this.hemi, this.fill, this.fill.target, ...this.wreckLights);
     document.querySelector('#shiplog .log-close')!.addEventListener('click', () => this.closeLog());
+    this.trophiesUi.onReadLog = (t) => {
+      const pl = getSystem(t.system).planets[t.planet];
+      const site = pl ? planetSites(pl)[t.site] : undefined;
+      if (site) this.openLog(site, pl.name);
+    };
     this.r.scene.fog = new THREE.Fog('#000000', 1e8, 2e8);
 
     this.hud.onChat = (t) => this.conn.chat(t);
@@ -401,6 +408,7 @@ export class Game {
     this.world.add(this.station.group);
     this.interior?.dispose();
     this.interior = new StationInterior(sys, facing);
+    if (this.pilot) this.interior.cabin.set(this.pilot.trophies);
     this.world.add(this.interior.group);
     this.gates = sys.gates.map((g) => new GateView(g, new THREE.Vector3(sys.station.pos.x - g.pos.x, sys.station.pos.y - g.pos.y, sys.station.pos.z - g.pos.z)));
     this.gates.forEach((g) => this.world.add(g.group));
@@ -557,6 +565,8 @@ export class Game {
     this.myAstro?.dress(validOutfit(p.outfit, p.items), p.name);
     if (this.wardrobe.open) this.wardrobe.setPilot(p);
     this.contracts.setPilot(p);
+    this.interior?.cabin.set(p.trophies);
+    if (this.trophiesUi.open) this.trophiesUi.show(p);
     this.hud.setPilot(p, this.sys?.name ?? '');
     this.syncMap();
     // a freshly taken contract becomes the navigation target
@@ -608,8 +618,8 @@ export class Game {
     }
     if (mode === MODE.DEAD || prev === MODE.DOCKED) { this.ctrl.throttle = 0; this.ctrl.cruiseOn = false; }
     const inStation = (m: number) => m === MODE.DOCKED || m === MODE.DECK;
-    if (inStation(prev) && !inStation(mode)) { this.wardrobe.close(); this.contracts.close(); }
-    if (mode === MODE.DECK) { this.wardrobe.close(); this.contracts.close(); }
+    if (inStation(prev) && !inStation(mode)) { this.wardrobe.close(); this.contracts.close(); this.trophiesUi.close(); }
+    if (mode === MODE.DECK) { this.wardrobe.close(); this.contracts.close(); this.trophiesUi.close(); }
     if (mode === MODE.FOOT || mode === MODE.DECK) {
       this.ctrl.footPitch = -0.12;
       if (!this.myAstro) {
@@ -890,6 +900,7 @@ export class Game {
     this.sfx.beep(true);
     if (kind === 'contracts') this.contracts.show(this.pilot);
     else if (kind === 'wardrobe') this.wardrobe.show(this.pilot);
+    else if (kind === 'trophies') this.trophiesUi.show(this.pilot);
     else {
       this.hud.showStation(true, `${this.sys!.station.name} · ${name}`, true);
       if (this.self) this.hud.renderStation(this.pilot, { hull: this.self.hull, max: this.self.maxHull });
@@ -926,9 +937,9 @@ export class Game {
     return Math.hypot(w.x - w.site.goal.x, w.z - w.site.goal.z) < 2.6 ? w.site : null;
   }
 
-  private openLog(s: SiteDef) {
-    const pl = this.sys!.planets[s.planet];
-    const log = wreckLog(s, pl.name);
+  /** The ship's log of a wreck (on its bridge, or again from the cabin's collection). */
+  private openLog(s: SiteDef, planetName = this.sys!.planets[s.planet].name) {
+    const log = wreckLog(s, planetName);
     document.querySelector('#shiplog .log-title')!.textContent = log.title;
     const body = document.querySelector('#shiplog .log-body')!;
     body.replaceChildren(...log.entries.map((t) => { const p = document.createElement('p'); p.textContent = t; return p; }));
@@ -1019,7 +1030,7 @@ export class Game {
     if (i.hit('KeyH')) this.hud.toggleHelp();
     if (i.hit('KeyO')) this.toggleSettings();
     if (i.hit('KeyM')) { this.galaxyMap.toggle(); if (this.galaxyMap.open) i.releaseLock(); }
-    if (i.hit('Escape')) { this.hud.toggleHelp(false); this.toggleSettings(false); this.wardrobe.close(); this.contracts.close(); this.galaxyMap.close(); this.closeLog(); if (mode === MODE.DECK) this.hud.showStation(false); }
+    if (i.hit('Escape')) { this.hud.toggleHelp(false); this.toggleSettings(false); this.wardrobe.close(); this.contracts.close(); this.galaxyMap.close(); this.closeLog(); this.trophiesUi.close(); if (mode === MODE.DECK) this.hud.showStation(false); }
     if (i.hit('Enter')) { this.hud.focusChat(); i.releaseLock(); }
     if (i.hit('KeyZ')) i.releaseLock();
     if (i.hit('KeyV') && mode === MODE.FOOT) {
@@ -1061,7 +1072,7 @@ export class Game {
     } else if (mode !== MODE.ROVER && i.hit('KeyF')) {
       const carcass = mode === MODE.FOOT ? this.nearCarcass() : null;
       const log = mode === MODE.FOOT ? this.nearLog() : null;
-      if (log) this.openLog(log);
+      if (log) { this.openLog(log); this.conn.action({ a: 'readLog' }); }
       else if (carcass) { this.conn.action({ a: 'sample', id: carcass.id }); this.sfx.mining(); }
       else if (mode === MODE.FOOT) {
         const n = this.nearestNode();
@@ -1691,12 +1702,15 @@ export class Game {
         l.position.set(w.x - this.origin.x, w.y - this.origin.y, w.z - this.origin.z);
       };
       // both hang in the room the camera is in: over the pad in the hangar, along the promenade's length
-      const cz = this.interior.toDeck(st, this.origin).z;
-      if (cz < -60) { put(lamp0, -10, 12, -92); put(lamp1, 12, 10, -90); }
+      const cam = this.interior.toDeck(st, this.origin), cz = cam.z;
+      // the cabin has its own two lamps, warmer and closer
+      const cabin = inCabin(cam);
+      if (cabin) { put(lamp0, -15, 3.7, -51.5); put(lamp1, -15, 3.7, -44.5); }
+      else if (cz < -60) { put(lamp0, -10, 12, -92); put(lamp1, 12, 10, -90); }
       else { put(lamp0, 0, 4, -24); put(lamp1, 0, 4, 12); }
-      lamp0.color.set('#fff2dc'); lamp1.color.set('#f4f6ff');
-      lamp0.distance = lamp1.distance = 80;
-      lamp0.intensity = lamp1.intensity = cz < -60 ? 110 : 70;
+      lamp0.color.set(cabin ? '#ffe8c8' : '#fff2dc'); lamp1.color.set(cabin ? '#fff0dc' : '#f4f6ff');
+      lamp0.distance = lamp1.distance = cabin ? 22 : 80;
+      lamp0.intensity = lamp1.intensity = cabin ? 30 : cz < -60 ? 110 : 70;
       return;
     }
     lamp0.color.set('#6aff5a'); lamp1.color.set('#ff3a2a');
@@ -2072,7 +2086,9 @@ export class Game {
     } else if (mode === MODE.DECK && this.pred.char) {
       const c = this.pred.char.p;
       const t = nearTerminal(c);
+      const trophy = !t && inCabin(c) ? this.interior?.cabin.nearest(c.x, c.z) : null;
       if (t) prompt = `<kbd>F</kbd> ${t.name}`;
+      else if (trophy) prompt = trophy.name;
       else if (Math.hypot(c.x - PAD.x, c.z - PAD.z) < BOARD_REACH) prompt = '<kbd>G</kbd> сесть в корабль';
     }
     this.hud.prompt(prompt);

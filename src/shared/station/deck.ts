@@ -8,7 +8,7 @@
 import type { CharInput, CharState } from '../sim/character.ts';
 
 export const DECK_Y = -12;
-export type TerminalKind = 'trade' | 'upgrades' | 'contracts' | 'wardrobe';
+export type TerminalKind = 'trade' | 'upgrades' | 'contracts' | 'wardrobe' | 'trophies';
 export interface Terminal { kind: TerminalKind; x: number; z: number; name: string }
 export interface Room { name: string; x0: number; z0: number; x1: number; z1: number; ceil: number }
 
@@ -16,7 +16,16 @@ export const ROOMS: Room[] = [
   { name: 'Ангар', x0: -30, z0: -108, x1: 30, z1: -80, ceil: 18 },
   { name: 'Шлюз', x0: -4, z0: -80, x1: 4, z1: -40, ceil: 4.5 },
   { name: 'Променад', x0: -26, z0: -40, x1: 26, z1: 30, ceil: 9 },
+  { name: 'Каюта', x0: -22, z0: -56, x1: -8, z1: -40, ceil: 4.2 },
 ];
+/**
+ * The pilot's own cabin, off the promenade's back wall beside the airlock: the
+ * same room on every station, with the trophies of whoever stands in it (and
+ * only them: pilots in a cabin do not see each other, see system.ts). Door,
+ * bed and desk positions match tools/blender/build_cabin.py.
+ */
+export const CABIN = { x0: -22, z0: -56, x1: -8, z1: -40, door: { x: -15, z: -40, half: 1.5 }, bed: { x: -9.6, z: -52.6 }, desk: { x: -9.2, z: -45.5 }, table: { x: -15, z: -50 } };
+export const inCabin = (p: { x: number; z: number }) => p.x > CABIN.x0 && p.x < CABIN.x1 && p.z > CABIN.z0 && p.z < CABIN.z1;
 /** Where the pilot's ship stands in the hangar (nose towards the bay door) and where the ramp lets them out. */
 export const PAD = { x: 0, z: -96 };
 export const RAMP = { x: 8.5, z: -88 };
@@ -25,6 +34,7 @@ export const TERMINALS: Terminal[] = [
   { kind: 'upgrades', x: -19, z: -2, name: 'Улучшения' },
   { kind: 'contracts', x: 19, z: -24, name: 'Контракты' },
   { kind: 'wardrobe', x: 19, z: -2, name: 'Гардероб' },
+  { kind: 'trophies', x: -20.6, z: -42.2, name: 'Коллекция' },
 ];
 export const TERMINAL_REACH = 2.6;
 export const BOARD_REACH = 13;
@@ -35,8 +45,8 @@ export const DECK_WALLS: [number, number, number, number][] = [
   [-30, -108, 30, -108], [-30, -108, -30, -80], [30, -108, 30, -80], [-30, -80, -4, -80], [4, -80, 30, -80],
   // airlock corridor
   [-4, -80, -4, -40], [4, -80, 4, -40],
-  // promenade
-  [-26, -40, -4, -40], [4, -40, 26, -40], [-26, -40, -26, 30], [26, -40, 26, 30], [-26, 30, 26, 30],
+  // promenade (the cabin door at x = −15)
+  [-26, -40, CABIN.door.x - CABIN.door.half, -40], [CABIN.door.x + CABIN.door.half, -40, -4, -40], [4, -40, 26, -40], [-26, -40, -26, 30], [26, -40, 26, 30], [-26, 30, 26, 30],
 ];
 /** Round obstacles: the ship on its pad, terminals, the holo-map, planters and benches. */
 export const DECK_POSTS: { x: number; z: number; r: number }[] = [
@@ -45,6 +55,9 @@ export const DECK_POSTS: { x: number; z: number; r: number }[] = [
   { x: 0, z: -12, r: 3 },
   ...[-16, 0, 16].map((x) => ({ x, z: 24, r: 1.1 })),
   ...[-22, 22].flatMap((x) => [-30, 12].map((z) => ({ x, z, r: 1 }))),
+  // cabin: the bed (two posts along it), the desk, the display table with medals
+  { x: CABIN.bed.x, z: CABIN.bed.z - 1, r: 1 }, { x: CABIN.bed.x, z: CABIN.bed.z + 1, r: 1 },
+  { x: CABIN.desk.x, z: CABIN.desk.z, r: 0.9 }, { x: CABIN.table.x, z: CABIN.table.z, r: 0.85 },
 ];
 
 const WALK = 4.4, RUN = 7.5, GRAVITY = 9.8, JUMP = 4.2, R = 0.35;

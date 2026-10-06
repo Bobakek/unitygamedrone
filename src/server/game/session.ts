@@ -7,6 +7,7 @@ import type { PilotRecord } from '../storage.ts';
 import type { CharEntity, RoverEntity, ShipEntity } from './entities.ts';
 import type { SystemInstance } from './system.ts';
 import type { Group } from './groups.ts';
+import { awardMilestones } from './trophies.ts';
 
 export interface Transport {
   send(data: Uint8Array): void;
@@ -64,7 +65,7 @@ export class Session {
     return {
       name: p.name, credits: Math.floor(p.credits), cargo: { ...p.cargo }, cargoCap: combatStats(p.upgrades).cargoCap,
       upgrades: { ...p.upgrades }, missiles: p.missiles, kills: p.kills, deaths: p.deaths,
-      items: [...p.items], outfit: { ...p.outfit }, career: structuredClone(p.career),
+      items: [...p.items], outfit: { ...p.outfit }, career: structuredClone(p.career), trophies: p.trophies.map((t) => ({ ...t })),
       roverBed: { ...p.roverBed }, roverBedCap: ROVER_BED,
     };
   }
@@ -74,7 +75,9 @@ export class Session {
     return gearStats(this.pilot.outfit);
   }
 
+  /** Sends the pilot info; new kill, rank and reputation trophies are handed out first. */
   sendPilot() {
+    awardMilestones(this);
     this.sendJson(MSG.PILOT, this.pilotInfo());
   }
 

@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { SystemDef } from '../../shared/galaxy/system-gen.ts';
 import type { V3 } from '../../shared/math/vec.ts';
-import { DECK_Y, PAD, ROOMS, TERMINALS, type TerminalKind } from '../../shared/station/deck.ts';
+import { CABIN, DECK_Y, PAD, ROOMS, TERMINALS, type TerminalKind } from '../../shared/station/deck.ts';
+import { CabinView } from './cabin.ts';
 import { add, newParts, type Parts } from '../entities/ship-builder.ts';
 import { glowTexture } from './textures.ts';
 
@@ -11,7 +12,7 @@ const metalMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShadin
 const glowMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false });
 const glassMat = new THREE.MeshStandardMaterial({ color: '#9ad8ff', roughness: 0.05, metalness: 0.9, transparent: true, opacity: 0.1, depthWrite: false });
 
-const SCREEN: Record<TerminalKind, string> = { trade: '#6affb0', upgrades: '#6ac8ff', contracts: '#ffb43a', wardrobe: '#e07aff' };
+const SCREEN: Record<TerminalKind, string> = { trade: '#6affb0', upgrades: '#6ac8ff', contracts: '#ffb43a', wardrobe: '#e07aff', trophies: '#ffd27a' };
 const FIELD_VS = `varying vec2 vUv;
 #include <common>
 #include <logdepthbuf_pars_vertex>
@@ -51,13 +52,15 @@ function textSprite(text: string, color: string, h = 0.6): THREE.Sprite {
  * station/deck.ts) and placed inside the station's hull: the hangar with the
  * pilot's ship on its pad and the bay's force field, the airlock with sliding
  * doors and the promenade with big windows on real space, four terminals, a
- * hologram of the star system, planters and benches.
+ * hologram of the star system, planters and benches, and the pilot's cabin
+ * with their trophies (see cabin.ts).
  */
 export class StationInterior {
   readonly group = new THREE.Group();
   /** Station orientation (local −Z faces the docking bay's side). */
   readonly q = new THREE.Quaternion();
-  private doors: { mesh: THREE.Mesh; open: number; z: number; side: number }[] = [];
+  private doors: { mesh: THREE.Mesh; open: number; x: number; z: number; side: number; w: number }[] = [];
+  readonly cabin = new CabinView();
   private holo = new THREE.Group();
   private field: THREE.ShaderMaterial;
 
@@ -92,16 +95,25 @@ export class StationInterior {
         const d = new THREE.Mesh(new THREE.BoxGeometry(4, 4.2, 0.3), doorMat);
         d.position.set(side * 2, 2.1, z);
         this.group.add(d);
-        this.doors.push({ mesh: d, open: 0, z, side });
+        this.doors.push({ mesh: d, open: 0, x: 0, z, side, w: 2 });
       }
     }
+    // the cabin door: two narrower leaves in the promenade's back wall
+    const { door } = CABIN;
+    for (const side of [-1, 1]) {
+      const d = new THREE.Mesh(new THREE.BoxGeometry(door.half, 3, 0.2), doorMat);
+      d.position.set(door.x + side * door.half / 2, 1.5, door.z - 0.3);
+      this.group.add(d);
+      this.doors.push({ mesh: d, open: 0, x: door.x, z: door.z - 0.3, side, w: door.half / 2 });
+    }
+    this.group.add(this.cabin.group);
     // terminal names and signs
     for (const t of TERMINALS) {
       const s = textSprite(t.name, SCREEN[t.kind], 0.5);
       s.position.set(t.x, 2.8, t.z);
       this.group.add(s);
     }
-    for (const [text, x, y, z] of [['ПРОМЕНАД', 0, 5.6, -39.5], ['АНГАР', 0, 6, -80.5], [sys.station.name, 0, 8.2, 29.3]] as [string, number, number, number][]) {
+    for (const [text, x, y, z] of [['ПРОМЕНАД', 0, 5.6, -39.5], ['АНГАР', 0, 6, -80.5], [sys.station.name, 0, 8.2, 29.3], ['КАЮТА', CABIN.door.x, 3.7, -39.6]] as [string, number, number, number][]) {
       const s = textSprite(text, '#8ff8ff', 1.1);
       s.position.set(x, y, z);
       this.group.add(s);
@@ -216,7 +228,13 @@ export class StationInterior {
     add(p, new THREE.BoxGeometry(53, 1, 0.6), dark, 'metal', [0, 8.6, 30.3]);
     for (let x = -26; x <= 26; x += 6.5) add(p, new THREE.BoxGeometry(0.4, 9, 0.6), dark, 'metal', [x, 4.5, 30.3]);
     // back wall with the airlock door, ceiling with light panels
-    add(p, new THREE.BoxGeometry(22, 9, 0.6), wall, false, [-15, 4.5, -40.3]);
+    // left of the airlock: the cabin door (3 m tall) in the wall, an amber frame round it
+    const { door } = CABIN, dl = door.x - door.half, dr = door.x + door.half;
+    add(p, new THREE.BoxGeometry(dl + 26, 9, 0.6), wall, false, [(dl - 26) / 2, 4.5, -40.3]);
+    add(p, new THREE.BoxGeometry(-4 - dr, 9, 0.6), wall, false, [(dr - 4) / 2, 4.5, -40.3]);
+    add(p, new THREE.BoxGeometry(door.half * 2, 6, 0.6), wall, false, [door.x, 6, -40.3]);
+    for (const s of [-1, 1]) add(p, new THREE.BoxGeometry(0.25, 3.2, 0.7), '#ffb040', false, [door.x + s * (door.half + 0.12), 1.6, -40.3]);
+    add(p, new THREE.BoxGeometry(door.half * 2 + 0.5, 0.25, 0.7), '#ffb040', false, [door.x, 3.1, -40.3]);
     add(p, new THREE.BoxGeometry(22, 9, 0.6), wall, false, [15, 4.5, -40.3]);
     add(p, new THREE.BoxGeometry(8, 4.8, 0.6), wall, false, [0, 6.6, -40.3]);
     add(p, new THREE.BoxGeometry(53, 0.4, 71), '#b8bcc4', false, [0, 9.2, -5]);
@@ -270,9 +288,9 @@ export class StationInterior {
   /** Doors slide open for the pilot (`me`, deck coordinates), the hologram turns, the field shimmers. */
   update(dt: number, time: number, me: { x: number; z: number } | null) {
     for (const d of this.doors) {
-      const near = me ? Math.abs(me.z - d.z) < 6 && Math.abs(me.x) < 6 : false;
+      const near = me ? Math.abs(me.z - d.z) < 4 + d.w && Math.abs(me.x - d.x) < 4 + d.w : false;
       d.open += ((near ? 1 : 0) - d.open) * Math.min(1, dt * 5);
-      d.mesh.position.x = d.side * (2 + d.open * 3.6);
+      d.mesh.position.x = d.x + d.side * d.w * (1 + d.open * 1.8);
     }
     this.holo.rotation.y += dt * 0.08;
     for (const o of this.holo.children) if (o.userData.speed) o.rotation.y += dt * o.userData.speed;
@@ -280,6 +298,7 @@ export class StationInterior {
   }
 
   dispose() {
+    this.cabin.dispose();
     this.group.removeFromParent();
     this.group.traverse((o) => {
       if (o instanceof THREE.Mesh) o.geometry.dispose();

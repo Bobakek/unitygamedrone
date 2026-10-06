@@ -6,6 +6,7 @@ import type { Cargo, CargoKey, Upgrades } from '../economy.ts';
 import type { Outfit } from '../outfit.ts';
 import type { Career, ContractDef } from '../contracts.ts';
 import type { WeatherKind } from '../weather.ts';
+import type { Trophy } from '../station/trophies.ts';
 import { Reader, Writer } from './buffer.ts';
 
 export const MSG = {
@@ -54,6 +55,8 @@ export interface PilotInfo {
   career: Career;
   /** What rides in the rover's bed (loaded into the ship's hold with the rover) and how much fits. */
   roverBed: Cargo; roverBedCap: number;
+  /** Trophies shown in the pilot's cabin. */
+  trophies: Trophy[];
 }
 /** A member of the pilot's group; `pos` (world) only for members in the same system. */
 export interface GroupMember {
@@ -112,7 +115,9 @@ export type Action =
   /** Rover: unload it from / load it into the landed ship, take the wheel, step out, put it back on its wheels. */
   | { a: 'rover' } | { a: 'drive' } | { a: 'leave' } | { a: 'flip' }
   /** Rover: drill out the deposit `id` (the haul goes into the rover's bed). */
-  | { a: 'drill'; id: number };
+  | { a: 'drill'; id: number }
+  /** The pilot on foot read the ship's log on a wreck's bridge (a trophy for the cabin). */
+  | { a: 'readLog' };
 
 export function encodeJson(type: number, payload: unknown): Uint8Array {
   const body = new TextEncoder().encode(JSON.stringify(payload));

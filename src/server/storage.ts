@@ -1,6 +1,7 @@
 import type { Cargo, Upgrades } from '../shared/economy.ts';
 import type { Outfit } from '../shared/outfit.ts';
 import type { Career } from '../shared/contracts.ts';
+import type { Trophy } from '../shared/station/trophies.ts';
 
 /** Browser-safe pilot storage contract (SQLite on the server, localStorage in offline mode). */
 export interface PilotRecord {
@@ -12,6 +13,8 @@ export interface PilotRecord {
   career: Career;
   /** Haul in the rover's bed (drilled deposits), waiting to be loaded into the hold. */
   roverBed: Cargo;
+  /** Trophies shown in the pilot's cabin. */
+  trophies: Trophy[];
 }
 
 export interface PilotStorage {
