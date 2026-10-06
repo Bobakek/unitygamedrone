@@ -36,6 +36,8 @@ export class Hud {
   private chatLog = $('#chat-log');
   private lastPilot: PilotInfo | null = null;
   private market: MarketMsg | null = null;
+  /** Price of a fuel cell at this system's station. */
+  fuelCost = 0;
   private marketAt = 0;
   private groupEl = $('#group-panel');
   onChat: (text: string) => void = () => {};
@@ -70,6 +72,7 @@ export class Hud {
       else if (act === 'contracts') this.onContracts();
       else if (act === 'upgrade') this.onAction({ a: 'upgrade', key: b.dataset.key! });
       else if (act === 'ship') this.onAction({ a: b.dataset.op === 'buy' ? 'buyShip' : 'setShip', ship: b.dataset.key as HullKey });
+      else if (act === 'fuel') this.onAction({ a: 'buyFuel', n: b.dataset.n === 'full' ? undefined : Number(b.dataset.n) });
       else if (act === 'trade') {
         const key = b.dataset.key as CargoKey, n = b.dataset.n === 'all' ? undefined : Number(b.dataset.n);
         this.onAction(b.dataset.op === 'buy' ? { a: 'buy', key, n: n ?? 999 } : { a: 'sell', key, n });
@@ -101,6 +104,7 @@ export class Hud {
     $('.pp-bed').textContent = `${bed}/${p.roverBedCap}`;
     $('.pp-bed').title = CARGO_KEYS.filter((k) => p.roverBed[k]).map((k) => `${CARGO_NAMES[k]} ${p.roverBed[k]}`).join(', ');
     $('.pp-missiles').textContent = String(p.missiles);
+    $('.pp-fuel').textContent = `${p.fuel}/${p.fuelTank}`;
     $('.pp-system').textContent = system;
     $('.pp-rank').textContent = RANKS[rankOf(p.career.xp)].name;
     $('.pp-tasks').innerHTML = p.career.active.map((c) => `<div class="pp-task${c.have >= c.need ? ' full' : ''}" style="--fc:${FACTION_COLORS[c.faction]}"><b>◆ ${esc(c.title)}</b><span>${esc(objectiveText(c))}</span></div>`).join('');
@@ -339,7 +343,8 @@ export class Hud {
     const value = q ? CARGO_KEYS.reduce((n, k) => n + c[k] * q[k].sell, 0) : 0;
     $('.st-cargo').innerHTML = `Груз: ${cargoCount(c)}/${combatStats(p.upgrades, p.ship).cargoCap}${q ? ` · по местным ценам ≈ <b>${value} кр</b>` : ''}<br>Баланс: <b>${p.credits} кр</b>` +
       (hull ? `<br>Корпус: ${Math.round(hull.hull)}/${hull.max} (ремонт ${Math.ceil((hull.max - hull.hull) * REPAIR_COST_PER_HP)} кр)` : '') +
-      `<br>Ракеты: ${p.missiles} (${MISSILE_COST} кр/шт)`;
+      `<br>Ракеты: ${p.missiles} (${MISSILE_COST} кр/шт)` +
+      `<br>Топливо: ${p.fuel}/${p.fuelTank} (${this.fuelCost} кр/яч) <button data-act="fuel" data-n="1" ${p.fuel >= p.fuelTank || p.credits < this.fuelCost ? 'disabled' : ''}>+1</button><button data-act="fuel" data-n="full" ${p.fuel >= p.fuelTank || p.credits < this.fuelCost ? 'disabled' : ''}>Заправить</button>`;
     $('.st-upgrades').innerHTML = UPGRADE_KEYS.map((k) => {
       const lvl = p.upgrades[k];
       const max = lvl >= MAX_LEVEL;
