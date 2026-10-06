@@ -4,7 +4,7 @@ import { qslerp, v3, vcopy, vlerp, type Quat, type V3 } from '../../shared/math/
 import { MODE, type InputMsg, type Snapshot } from '../../shared/net/protocol.ts';
 import { copyChar, newChar, stepChar, type CharEnv, type CharGear, type CharState } from '../../shared/sim/character.ts';
 import { DEFAULT_GEAR } from '../../shared/outfit.ts';
-import { stepDeck } from '../../shared/station/deck.ts';
+import { stepDeck, type DeckLayout } from '../../shared/station/deck.ts';
 import { SHIP_DECK } from '../../shared/boarding.ts';
 import type { SimEnv } from '../../shared/sim/env.ts';
 import { cloneShip, copyShip, newShip, stepShip, type ShipState, type ShipStats } from '../../shared/sim/ship.ts';
@@ -28,6 +28,8 @@ export class Predictor {
   rover: RoverState | null = null;
   prevRover: RoverState | null = null;
   roverId = 0;
+  /** The deck walked in MODE.BOARD (a boarded ship's or a base bunker's). */
+  boardDeck: DeckLayout = SHIP_DECK;
   private pending: InputMsg[] = [];
   private teleport = -1;
   private smooth = v3();
@@ -89,7 +91,7 @@ export class Predictor {
       stepShip(this.ship, m.ship, this.stats(), env, DT);
     }
     else if (this.mode === MODE.DECK && m.mode === MODE.DECK && this.char) stepDeck(this.char, m.char, DT);
-    else if (this.mode === MODE.BOARD && m.mode === MODE.BOARD && this.char) stepDeck(this.char, m.char, DT, SHIP_DECK);
+    else if (this.mode === MODE.BOARD && m.mode === MODE.BOARD && this.char) stepDeck(this.char, m.char, DT, this.boardDeck);
     else if (this.mode === MODE.ROVER && m.mode === MODE.ROVER && this.rover && this.charPlanet >= 0) stepRover(this.rover, m.char, this.planets[this.charPlanet], DT);
     else if (this.mode === MODE.FOOT && m.mode === MODE.FOOT && this.char && this.charPlanet >= 0) stepChar(this.char, m.char, this.planets[this.charPlanet], DT, this.gear(), this.weather(this.charPlanet, m.t));
   }

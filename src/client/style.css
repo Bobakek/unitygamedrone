@@ -54,6 +54,8 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #03040b; col
 .pp-name { font-weight: 700; font-size: 15px; margin-bottom: 6px; color: var(--cyan); }
 .pp-row { display: flex; justify-content: space-between; gap: 16px; color: var(--dim); }
 .pp-row b { color: var(--ink); font-weight: 600; }
+.pp-base { margin-top: 6px; max-width: 290px; padding: 4px 8px; border-left: 3px solid #e8485a; background: rgba(40, 10, 14, 0.45); font-size: 12px; line-height: 1.35; }
+.pp-base.mine { border-left-color: #3ad0ff; background: rgba(10, 30, 44, 0.5); }
 .pp-tasks { margin-top: 6px; display: grid; gap: 4px; max-width: 290px; }
 .pp-tasks:empty { display: none; }
 .pp-task { border-left: 3px solid var(--fc); padding: 2px 0 2px 7px; font-size: 12px; line-height: 1.25; }
