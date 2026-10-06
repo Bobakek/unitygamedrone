@@ -355,3 +355,47 @@ button.ghost:hover { color: var(--ink); border-color: var(--cyan); }
 .tr-item button { flex: none; padding: 4px 10px; font-size: 12px; }
 .tr-empty { color: var(--dim); font-size: 13px; line-height: 1.5; }
 .tr-close { margin-top: 14px; width: 100%; }
+
+/* ---------------------------------------------------------------- arena 3×3 */
+#arena-hud { position: absolute; inset: 0; pointer-events: none; }
+.ar-bar { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); display: flex; align-items: stretch; gap: 10px; }
+.ar-team { display: flex; align-items: center; gap: 10px; padding: 4px 14px; border-radius: 8px; background: var(--panel); border: 1px solid color-mix(in srgb, var(--c) 55%, transparent); min-width: 150px; justify-content: space-between; }
+.ar-team span { font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--c); }
+.ar-team b { font-size: 30px; line-height: 1; color: #fff; text-shadow: 0 0 14px var(--c); min-width: 26px; text-align: center; }
+.ar-team.me { box-shadow: 0 0 0 1px var(--c), 0 0 18px color-mix(in srgb, var(--c) 40%, transparent); }
+.ar-pips { display: flex; gap: 4px; }
+.ar-pips i { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--c); }
+.ar-pips i.on { background: var(--c); box-shadow: 0 0 8px var(--c); }
+.ar-mid { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2px 12px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); min-width: 110px; }
+.ar-mid small { font-size: 11px; color: var(--dim); }
+.ar-mid b { font-size: 20px; letter-spacing: 0.08em; font-variant-numeric: tabular-nums; }
+.ar-roster { position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%); padding: 12px 18px; border-radius: 10px; background: rgba(8, 14, 30, 0.82); border: 1px solid var(--line); min-width: min(560px, 92vw); text-align: center; }
+.ar-roster h3 { margin: 0 0 8px; font-size: 18px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--cyan); }
+.ar-roster p { margin: 8px 0 0; font-size: 12px; color: var(--dim); }
+.ar-cols { display: flex; gap: 18px; justify-content: center; }
+.ar-cols table { border-collapse: collapse; font-size: 13px; min-width: 230px; }
+.ar-cols th { color: var(--c); text-align: left; font-weight: 600; padding: 2px 6px; border-bottom: 1px solid color-mix(in srgb, var(--c) 50%, transparent); }
+.ar-cols th + th, .ar-cols td + td { text-align: center; width: 48px; }
+.ar-cols td { padding: 2px 6px; text-align: left; }
+.ar-cols tr.bot td:first-child { color: var(--dim); }
+.ar-queue { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); padding: 8px 16px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); font-size: 14px; text-align: center; }
+.ar-queue b { color: var(--cyan); }
+.ar-queue small { display: block; font-size: 11px; color: var(--dim); }
+#hitmark { position: absolute; left: 50%; top: 50%; width: 34px; height: 34px; margin: -17px 0 0 -17px; pointer-events: none; opacity: 0; }
+#hitmark::before, #hitmark::after { content: ''; position: absolute; left: 50%; top: 50%; width: 40px; height: 2px; margin: -1px 0 0 -20px; background: linear-gradient(90deg, #fff 0 30%, transparent 30% 70%, #fff 70%); }
+#hitmark::before { transform: rotate(45deg); }
+#hitmark::after { transform: rotate(-45deg); }
+#hitmark.on { animation: hitmark 0.22s ease-out; }
+#hitmark.kill { animation: killmark 0.6s ease-out; }
+#hitmark.kill::before, #hitmark.kill::after { background: linear-gradient(90deg, #ff4a5a 0 34%, transparent 34% 66%, #ff4a5a 66%); }
+@keyframes hitmark { 0% { opacity: 1; transform: scale(0.8); } 100% { opacity: 0; transform: scale(1.15); } }
+@keyframes killmark { 0% { opacity: 1; transform: scale(1.5) rotate(0); } 60% { opacity: 1; transform: scale(1) rotate(0); } 100% { opacity: 0; transform: scale(1.1); } }
+#dmg-dirs { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
+#dmg-dirs i { position: absolute; left: -60px; top: -150px; width: 120px; height: 150px; transform-origin: 50% 100%; animation: dmgdir 0.9s ease-out forwards; }
+#dmg-dirs i::before { content: ''; position: absolute; left: 10px; right: 10px; top: 0; height: 60px; border-radius: 50% 50% 0 0 / 100% 100% 0 0; border-top: 6px solid rgba(255, 50, 60, 0.95); filter: drop-shadow(0 0 6px rgba(255, 40, 50, 0.9)); }
+@keyframes dmgdir { 0% { opacity: 1; } 100% { opacity: 0; } }
+#dmg-nums { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+#dmg-nums b { position: absolute; transform: translateX(-50%); font-size: 15px; font-weight: 700; color: #ffd27a; text-shadow: 0 0 6px rgba(255, 140, 40, 0.9), 0 1px 2px #000; animation: dmgnum 0.8s ease-out forwards; }
+#dmg-nums b.sh { color: #9fe4ff; text-shadow: 0 0 6px rgba(80, 180, 255, 0.9), 0 1px 2px #000; }
+@keyframes dmgnum { 0% { opacity: 1; transform: translate(-50%, 0) scale(1.25); } 100% { opacity: 0; transform: translate(-50%, -38px) scale(0.9); } }
+.st-arena { background: linear-gradient(90deg, #2a5ba8, #a83a3a); border-color: transparent; color: #fff; }

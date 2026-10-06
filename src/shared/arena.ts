@@ -131,6 +131,6 @@ export function spawnSlot(l: ArenaLayout, team: 0 | 1, i: number): V3 {
   const s = l.spawns[team];
   const to = vnorm(v3(), vsub(v3(), l.center, s));
   const side = vnorm(v3(), v3(-to.z, 0, to.x));
-  const k = (i - (ARENA.team - 1) / 2) * 70 + (i > ARENA.team - 1 ? 35 : 0);
+  const k = (i - (ARENA.team - 1) / 2) * 48;
   return v3(s.x + side.x * k, s.y + (i % 2) * 18, s.z + side.z * k);
 }

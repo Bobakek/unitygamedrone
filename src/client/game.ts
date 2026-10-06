@@ -61,6 +61,9 @@ import { wreckLog } from '../shared/planet/wreck-log.ts';
 import { POI_LABEL, SALVAGE_MAX_SPEED, SALVAGE_RANGE, type Poi } from '../shared/events.ts';
 import { getGalaxy, route, SECURITY_NAMES } from '../shared/galaxy/galaxy.ts';
 import { GalaxyMap } from './ui/galaxy-map.ts';
+import { ArenaHud } from './ui/arena-hud.ts';
+import { ArenaView } from './world/arena-view.ts';
+import { arenaLayout, ARENA, TEAM_COLORS, type ArenaMsg } from '../shared/arena.ts';
 
 interface Remote {
   info: EntityInfo | null;
@@ -108,6 +111,10 @@ export class Game {
   private contracts = new ContractsUi();
   private trophiesUi = new TrophiesUi();
   private galaxyMap = new GalaxyMap();
+  private arenaHud = new ArenaHud(document.getElementById('hud')!);
+  private arenaView: ArenaView | null = null;
+  /** Own ship's damage smoke timer. */
+  private myDmgT = 0;
   /** Destination system picked on the galaxy map (its next gate is a navigation point). */
   private routeTo: number | null = null;
   private radar = new Radar(document.getElementById('radar') as HTMLCanvasElement);
@@ -288,6 +295,7 @@ export class Game {
       board: (b) => this.contracts.setBoard(b),
       market: (m) => this.hud.setMarket(m),
       group: (g) => this.onGroup(g),
+      arena: (m) => this.onArena(m),
       error: (m) => this.onFatal(m),
       closed: () => this.onFatal('Соединение с сервером потеряно'),
     };
@@ -365,10 +373,13 @@ export class Game {
     this.setPilot(w.pilot);
     document.getElementById('loading')!.classList.add('hidden');
     this.hud.show();
+    if (!w.arena) this.dropArena();
     if (first) {
       this.hud.toast(w.motd);
       this.hud.chat(null, w.motd);
-    } else this.hud.toast(`Прыжок завершён: ${this.sys!.name} · ${SECURITY_NAMES[this.sys!.security]}${arrived ? ' · вы на месте' : ''}`, 'good');
+    } else if (w.arena) this.hud.toast('Арена 3×3: ваша команда стартует у ворот своего цвета. Tab — счёт, /arena — покинуть', 'good');
+    else if (this.lastMode === MODE.SHIP && this.arenaHud.active) this.hud.toast('Вы вернулись на станцию');
+    else this.hud.toast(`Прыжок завершён: ${this.sys!.name} · ${SECURITY_NAMES[this.sys!.security]}${arrived ? ' · вы на месте' : ''}`, 'good');
     this.syncMap();
   }
 
@@ -388,7 +399,8 @@ export class Game {
 
     const sys = getSystem(id);
     this.sys = sys;
-    this.env = { star: sys.star, planets: sys.planets, fields: sys.fields, station: sys.station, time: 0 };
+    this.env = { star: sys.star, planets: sys.planets, fields: [...sys.fields], station: sys.station, time: 0 };
+    this.dropArena();
     this.rots = sys.planets.map(() => quat());
     this.backdrop = new SpaceBackdrop(this.r.gl, sys.seed, this.r.low ? 512 : 1024);
     this.r.scene.background = this.backdrop.texture;
@@ -508,6 +520,43 @@ export class Game {
     this.renderGroup();
   }
 
+  private onArena(m: ArenaMsg) {
+    const prev = this.arenaHud.state;
+    this.arenaHud.set(m);
+    this.hud.arenaQueued(m.phase === 'queue');
+    const live = m.phase !== 'none' && m.phase !== 'queue';
+    if (!live || m.system === undefined || m.match === undefined) { this.dropArena(); return; }
+    const key = `${m.system}:${m.match}`;
+    if (this.arenaView?.key !== key && this.sys?.id === m.system) {
+      this.dropArena();
+      const layout = arenaLayout(this.sys, m.match);
+      this.arenaView = new ArenaView(layout, key);
+      this.world.add(this.arenaView.group);
+      // the client collides with the cover rocks just like the server
+      this.env?.fields.push(layout.field);
+    }
+    if (prev.phase !== m.phase) {
+      if (m.phase === 'fight') { this.sfx.beep(true); this.rig.shake(0.2); }
+      if (m.phase === 'warmup') this.sfx.beep();
+      if (m.phase === 'over') this.sfx.pickup();
+    }
+    this.renderGroup();
+  }
+
+  /** Leaves the arena's space: its structures and its rocks go. */
+  private dropArena() {
+    const v = this.arenaView;
+    if (!v) return;
+    if (this.env) this.env.fields = this.env.fields.filter((f) => f !== v.layout.field);
+    v.dispose();
+    this.arenaView = null;
+  }
+
+  /** Arena team of a ship (undefined outside a match). */
+  private teamOf(ship: number) {
+    return this.arenaHud.active ? this.arenaHud.teamOf(ship) : undefined;
+  }
+
   /** The group panel: each member's whereabouts and hull. */
   private renderGroup() {
     const me = this.welcome?.playerId;
@@ -606,7 +655,7 @@ export class Game {
   private onModeChange(prev: number, mode: number) {
     this.lastMode = mode;
     this.hud.showStation(mode === MODE.DOCKED, this.sys?.station.name);
-    this.hud.setDead(mode === MODE.DEAD);
+    this.hud.setDead(mode === MODE.DEAD, this.arenaHud.active ? `Возврат в бой через ${ARENA.respawn} с…` : undefined);
     this.hud.setFlightVisible(mode === MODE.SHIP);
     if (mode === MODE.ROVER && !this.myRover) {
       this.myRover = new RoverView(true);
@@ -728,6 +777,8 @@ export class Game {
         if (shooter.aiming) { const m = shooter.muzzleWorld(tv3); p.x = m.x + this.origin.x; p.y = m.y + this.origin.y; p.z = m.z + this.origin.z; }
       }
       this.effects.bolt(p, v3(s.vx, s.vy, s.vz), this.shotColor(s.shooter, s.level), s.shooter, INTERP_DELAY, s.level === BLASTER_LEVEL ? 0.45 : undefined);
+      const sv = this.remotes.get(s.shooter)?.view;
+      if (sv instanceof ShipView) setTimeout(() => sv.recoil(0.7), INTERP_DELAY * 1000);
       const d = vdist(p, this.origin);
       if (d < 3000) setTimeout(() => this.sfx.laser(Math.max(0.1, 1 - d / 3000) * 0.7), INTERP_DELAY * 1000);
     }
@@ -740,24 +791,56 @@ export class Game {
         case 'hit': {
           const pos = v3(e.pos[0], e.pos[1], e.pos[2]);
           this.effects.consumeBolt(e.by, pos);
-          this.effects.spark(pos, e.shield ? new THREE.Color(0.4, 0.9, 1.4) : new THREE.Color(1.4, 0.7, 0.25));
-          if (e.target === myShip) { this.myShip?.hit(e.shield); this.sfx.hit(e.shield); }
-          else {
+          const from = e.by === myShip ? this.shipW.p : this.remotes.get(e.by)?.p;
+          const dir = from ? vnorm(v3(), vsub(v3(), pos, from)) : undefined;
+          if (e.shield) this.effects.shieldHit(pos, new THREE.Color(0.4, 0.9, 1.4));
+          else this.effects.hullHit(pos, dir);
+          if (e.target === myShip) {
+            this.myShip?.hit(e.shield, this.myShip.group.worldToLocal(this.rel(pos)));
+            this.sfx.hit(e.shield);
+            const k = Math.min(1, e.dmg / 14);
+            this.rig.shake((e.shield ? 0.18 : 0.42) * (0.5 + k));
+            if (!e.shield) this.hud.hurt(0.1 + k * 0.25);
+            if (from) {
+              // where the shot came from, as an angle round the crosshair
+              const c = this.rel(from).applyQuaternion(this.rig.quat.clone().invert());
+              // top-down like a radar: ahead is up, behind is down
+              this.arenaHud.damageFrom(Math.atan2(c.x, -c.z), k);
+            }
+          } else {
             const v = this.remotes.get(e.target)?.view;
-            if (v instanceof ShipView) v.hit(e.shield);
+            if (v instanceof ShipView) v.hit(e.shield, v.group.worldToLocal(this.rel(pos)));
             if (v instanceof CreatureView || v instanceof DroneView) v.hit();
-            if (e.by === myShip) this.sfx.hit(e.shield);
+            if (e.by === myShip) {
+              this.sfx.hit(e.shield);
+              this.sfx.tick();
+              this.arenaHud.hit();
+              const sp = this.project(pos);
+              if (!sp.behind) this.arenaHud.number(sp.x, sp.y, e.dmg, e.shield);
+            }
           }
           break;
         }
         case 'boom': {
           const pos = v3(e.pos[0], e.pos[1], e.pos[2]);
-          this.effects.explosion(pos, e.big);
+          if (e.big) this.effects.shipExplosion(pos, true); else this.effects.explosion(pos, false);
           const d = vdist(pos, this.origin);
           if (d < 6000) this.sfx.explosion(e.big, Math.max(0.15, 1 - d / 6000));
+          // the blast wave rocks the camera when it is close
+          if (d < 900) this.rig.shake((e.big ? 0.8 : 0.3) * (1 - d / 900));
+          if (e.id === myShip) this.rig.shake(1);
           break;
         }
-        case 'kill': this.hud.feed(`${e.killer} ✕ ${e.victim}`); break;
+        case 'kill':
+          this.hud.feed(`${e.killer} ✕ ${e.victim}`);
+          if (this.pilot && e.killer === this.pilot.name && e.victim !== e.killer) { this.arenaHud.hit(true); this.sfx.pickup(); }
+          break;
+        case 'warp': {
+          const pos = v3(e.pos[0], e.pos[1], e.pos[2]);
+          this.effects.warp(pos, new THREE.Color(TEAM_COLORS[e.team] ?? '#8ff8ff'));
+          if (vdist(pos, this.origin) < 1500) this.sfx.warp();
+          break;
+        }
         case 'chat': this.hud.chat(e.from, e.text); this.bubbles.set(e.from, { text: e.text, until: this.time + 6 }); break;
         case 'msg': this.hud.toast(e.text, e.kind); this.hud.chat(null, e.text); break;
         case 'mine': {
@@ -879,7 +962,7 @@ export class Game {
     if (mode !== MODE.SHIP) return;
     const s = this.pred.ship;
     const w = worldPose(s, this.sys!.planets, m.t, this.shipW);
-    if (m.flags & 1 && this.fireCd <= 0 && this.energy >= LASER.cost && !s.landed && !isCruising(s) && vdist(w.p, this.sys!.station.pos) > SAFE_ZONE_RADIUS) {
+    if (m.flags & 1 && this.fireCd <= 0 && this.energy >= LASER.cost && !s.landed && !isCruising(s) && vdist(w.p, this.sys!.station.pos) > SAFE_ZONE_RADIUS && this.arenaHud.armed) {
       this.fireCd = LASER.cooldown;
       this.energy -= LASER.cost;
       const guns = GUN_OFFSETS[this.myShip?.bp.cls ?? 'fighter'];
@@ -888,6 +971,8 @@ export class Game {
       const p = v3(w.p.x + off.x, w.p.y + off.y, w.p.z + off.z);
       this.effects.bolt(p, v3(w.v.x + f.x * LASER.speed, w.v.y + f.y * LASER.speed, w.v.z + f.z * LASER.speed), this.shotColor(this.self!.shipId, this.pilot?.upgrades.weapons ?? 1), this.self!.shipId);
       this.sfx.laser(0.8);
+      this.myShip?.recoil();
+      this.rig.shake(0.035);
     }
   }
 
@@ -1061,7 +1146,8 @@ export class Game {
       this.visorOverride = this.visorOverride === null ? (this.myAstro && this.myAstro.visorUp > 0.5 ? 0 : 1) : null;
       this.hud.toast(this.visorOverride === null ? 'Светофильтр: авто' : this.visorOverride ? 'Светофильтр поднят' : 'Светофильтр опущен');
     }
-    if (i.hit('Tab')) this.navIndex = (this.navIndex + 1) % Math.max(1, this.navItems.length);
+    if (i.hit('Tab') && !this.arenaHud.active) this.navIndex = (this.navIndex + 1) % Math.max(1, this.navItems.length);
+    this.arenaHud.rosterHeld = i.down('Tab');
     if (i.hit('KeyT')) this.pickTarget();
     if (i.hit('KeyP')) this.inviteNearby();
     const yes = i.hit('KeyY'), no = i.hit('KeyN');
@@ -1143,6 +1229,8 @@ export class Game {
     let best = 0, bestScore = Infinity;
     for (const [id, r] of this.remotes) {
       if (!r.visible || r.info?.kind !== KIND.SHIP) continue;
+      const myTeam = this.arenaHud.state.team;
+      if (myTeam !== undefined && this.teamOf(id) === myTeam) continue;
       const to = new THREE.Vector3(r.p.x - this.origin.x, r.p.y - this.origin.y, r.p.z - this.origin.z);
       const d = to.length();
       if (d > 8000) continue;
@@ -1455,6 +1543,17 @@ export class Game {
     ms.cruise = isCruising(ship);
     ms.landed = !!ship.landed || mode === MODE.FOOT || mode === MODE.ROVER || inside;
     ms.update(dt, this.time);
+    const hullK = self.maxHull ? self.hull / self.maxHull : 1;
+    if (mode === MODE.SHIP && !ship.landed && hullK < 0.5 && (this.myDmgT -= dt) <= 0) {
+      this.myDmgT = 0.05 + hullK * 0.2;
+      this.effects.damage(this.shipPos, this.shipW.v, 1 - hullK);
+    }
+    if (this.arenaView) {
+      const c = this.arenaView.layout.center;
+      this.place(this.arenaView.group, c);
+      this.arenaView.update(this.time, new THREE.Vector3(this.shipPos.x - c.x, this.shipPos.y - c.y, this.shipPos.z - c.z));
+    }
+    this.arenaHud.frame(this.timeline.serverNow);
     if (this.myAstro && onDeck) {
       // walking on the deck: the same animation inputs, with the deck's up
       const up = it.dirToWorld(v3(0, 1, 0));
@@ -1562,6 +1661,10 @@ export class Game {
         r.view.cruise = !!(st.flags & EFLAG.CRUISE);
         r.view.landed = !!(st.flags & EFLAG.LANDED);
         r.view.update(dt, this.time);
+        if (st.hull < 0.5 && !(st.flags & EFLAG.LANDED) && (r.smokeT -= dt) <= 0 && vdist(r.p, this.origin) < 3000) {
+          r.smokeT = 0.05 + st.hull * 0.2;
+          this.effects.damage(r.p, r.v, 1 - st.hull);
+        }
       } else if (r.view instanceof AstronautView) {
         const up = st.frame === DECK_FRAME ? v3(0, 1, 0) : vnorm(v3(), r.bp);
         const fwd = qrot(v3(), r.bq, FWD);
@@ -1956,6 +2059,7 @@ export class Game {
       const f = qrot(v3(), this.shipQ, FWD);
       const aimP = this.project(v3(this.shipPos.x + f.x * 1500, this.shipPos.y + f.y * 1500, this.shipPos.z + f.z * 1500));
       this.hud.crosshair(aimP.x, aimP.y);
+      this.arenaHud.aim(aimP.x, aimP.y);
       const R = 0.28 * Math.min(W, H);
       this.hud.cursorAt(W / 2 + this.input.vx * R, H / 2 + this.input.vy * R);
       let modeText = '';
@@ -2025,14 +2129,17 @@ export class Game {
         }
         continue;
       }
-      const ally = !!r.info.owner && this.allies.has(r.info.owner);
-      if (ally) seenAllies.add(r.info.owner!);
-      blips.push({ x: c.x, y: c.y, z: c.z, kind: r.info.npc ? 'npc' : ally ? 'ally' : 'player', sel: id === this.targetId });
+      // on the arena: team mates green, the other team red
+      const team = r.info.kind === KIND.SHIP ? this.teamOf(id) : undefined;
+      const foe = team !== undefined && team !== this.arenaHud.state.team;
+      const ally = team !== undefined ? !foe : !!r.info.owner && this.allies.has(r.info.owner);
+      if (ally && team === undefined) seenAllies.add(r.info.owner!);
+      blips.push({ x: c.x, y: c.y, z: c.z, kind: r.info.npc || foe ? 'npc' : ally ? 'ally' : 'player', sel: id === this.targetId });
       if (d < 4000 && (mode !== MODE.DOCKED || r.info.kind === KIND.CHAR)) {
         const sp = this.project(v3(r.p.x, r.p.y, r.p.z));
         const said = r.info.kind === KIND.CHAR ? this.bubbles.get(r.info.name) : undefined;
         const bubble = said && said.until > this.time && d < 60 ? said.text : undefined;
-        if (!sp.behind) labels.push({ id, x: sp.x, y: sp.y - (r.info.kind === KIND.CHAR ? 46 : 18), text: r.info.wanted ? `${r.info.name} · РАЗЫСКИВАЕТСЯ` : r.info.name, sub: this.fmtDist(d), npc: !ally && (!!r.info.npc || !!r.info.wanted), hull: r.state?.hull ?? 1, bubble, ally });
+        if (!sp.behind) labels.push({ id, x: sp.x, y: sp.y - (r.info.kind === KIND.CHAR ? 46 : 18), text: r.info.wanted ? `${r.info.name} · РАЗЫСКИВАЕТСЯ` : r.info.name, sub: this.fmtDist(d), npc: foe || (!ally && (!!r.info.npc || !!r.info.wanted)), hull: r.state?.hull ?? 1, bubble, ally });
       }
     }
     // group mates out of view: where the server last saw them

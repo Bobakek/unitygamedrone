@@ -177,6 +177,29 @@ export class Sfx {
     o.start(t); o.stop(t + 0.1);
   }
   pickup() { this.beep(true); setTimeout(() => this.beep(false), 90); }
+  /** Hit confirmation: a short bright tick when our shot lands. */
+  tick() {
+    const c = this.ctx; if (!c || !this.master) return;
+    const t = c.currentTime, o = c.createOscillator(), g = c.createGain();
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(2600, t);
+    o.frequency.exponentialRampToValueAtTime(1800, t + 0.04);
+    this.env(g, t, 0.002, 0.045, 0.05);
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + 0.07);
+  }
+  /** A ship warping in: a rising whoosh with a chime. */
+  warp() {
+    this.burst(0.6, 300, 0.12, 'bandpass', 3200);
+    const c = this.ctx; if (!c || !this.master) return;
+    const t = c.currentTime, o = c.createOscillator(), g = c.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(220, t);
+    o.frequency.exponentialRampToValueAtTime(1100, t + 0.45);
+    this.env(g, t, 0.05, 0.06, 0.5);
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + 0.6);
+  }
 
   engineLevel(throttle: number, boost: boolean, cruise: boolean) {
     if (!this.engine || !this.ctx) return;

@@ -5,6 +5,7 @@ import {
 } from '../../shared/net/protocol.ts';
 import type { Poi } from '../../shared/events.ts';
 import type { MarketMsg } from '../../shared/market.ts';
+import type { ArenaMsg } from '../../shared/arena.ts';
 
 export interface NetHandlers {
   welcome(w: Welcome): void;
@@ -18,6 +19,7 @@ export interface NetHandlers {
   board(b: BoardMsg): void;
   market(m: MarketMsg): void;
   group(g: GroupMsg): void;
+  arena(m: ArenaMsg): void;
   error(message: string): void;
   closed(): void;
 }
@@ -44,6 +46,7 @@ export function dispatchMessage(d: Uint8Array, h: NetHandlers): { c: number } | 
     case MSG.BOARD: h.board(decodeJson<BoardMsg>(d)); break;
     case MSG.MARKET: h.market(decodeJson<MarketMsg>(d)); break;
     case MSG.GROUP: h.group(decodeJson<GroupMsg>(d)); break;
+    case MSG.ARENA: h.arena(decodeJson<ArenaMsg>(d)); break;
     case MSG.WELCOME: h.welcome(decodeJson<Welcome>(d)); break;
     case MSG.ERROR: h.error(decodeJson<{ message: string }>(d).message); break;
     case MSG.PONG: return decodeJson<{ c: number }>(d);

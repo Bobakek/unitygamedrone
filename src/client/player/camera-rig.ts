@@ -11,6 +11,16 @@ export class CameraRig {
   private ready = false;
   private orbitA = 0;
   private dist = 16;
+  /** Camera shake (hits, recoil, nearby blasts), decaying; `shakeT` drives its wobble. */
+  private shakeK = 0;
+  private shakeT = 0;
+  private shakeQ = new THREE.Quaternion();
+  private shakeE = new THREE.Euler();
+
+  /** Adds a jolt (0..1 is a solid hit; it saturates). */
+  shake(k: number) {
+    this.shakeK = Math.min(1.2, this.shakeK + k);
+  }
 
   /** Chase camera behind the ship; `size` (collision radius) pulls it back for big hulls. */
   ship(dt: number, p: V3, q: Quat, speed: number, cruising: boolean, landed: boolean, size = 5) {
@@ -23,6 +33,16 @@ export class CameraRig {
     const off = new THREE.Vector3(0, (landed ? 6 : 4.2) * k, this.dist).applyQuaternion(this.lag);
     this.pos.x = p.x + off.x; this.pos.y = p.y + off.y; this.pos.z = p.z + off.z;
     this.quat.copy(this.lag).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), landed ? -0.2 : -0.07));
+    if (this.shakeK > 0.002) {
+      const s = this.shakeK * this.shakeK, t = (this.shakeT += dt);
+      this.shakeE.set(
+        (Math.sin(t * 47) + Math.sin(t * 83 + 1.3) * 0.6) * 0.012 * s,
+        (Math.sin(t * 53 + 2.1) + Math.sin(t * 91) * 0.5) * 0.012 * s,
+        Math.sin(t * 37 + 0.7) * 0.016 * s,
+      );
+      this.quat.multiply(this.shakeQ.setFromEuler(this.shakeE));
+      this.shakeK *= Math.exp(-dt * 6);
+    }
   }
 
   /**

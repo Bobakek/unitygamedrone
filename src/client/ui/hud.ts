@@ -367,7 +367,16 @@ export class Hud {
     }).join('');
   }
 
-  setDead(dead: boolean) {
+  /** `text`: what happens next (default: back at the station). */
+  setDead(dead: boolean, text = 'Восстановление на станции…') {
     this.deadEl.classList.toggle('hidden', !dead);
+    if (dead) $('p', this.deadEl).textContent = text;
+  }
+
+  /** The station's arena button: sign up, or leave the queue. */
+  arenaQueued(q: boolean) {
+    const b = $<HTMLButtonElement>('.st-arena');
+    b.dataset.act = q ? 'arenaLeave' : 'arena';
+    b.textContent = q ? 'Выйти из очереди на арену' : 'Арена 3×3';
   }
 }

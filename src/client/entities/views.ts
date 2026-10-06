@@ -10,17 +10,22 @@ const metalMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShadin
 const glassMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.06, metalness: 0.3, emissive: '#10202a' });
 const glowMat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false });
 
-const FRESNEL_VS = `varying vec3 vN; varying vec3 vV;
+const FRESNEL_VS = `varying vec3 vN; varying vec3 vV; varying vec3 vO;
 #include <common>
 #include <logdepthbuf_pars_vertex>
-void main(){ vec4 mv = modelViewMatrix*vec4(position,1.0); vN = normalize(normalMatrix*normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix*mv;
+void main(){ vec4 mv = modelViewMatrix*vec4(position,1.0); vN = normalize(normalMatrix*normal); vO = normalize(position); vV = normalize(-mv.xyz); gl_Position = projectionMatrix*mv;
 #include <logdepthbuf_vertex>
 }`;
-const SHIELD_FS = `uniform vec3 c; uniform float k; varying vec3 vN; varying vec3 vV;
+// fresnel shell plus a bright ripple round the point the bolt struck (`hit`, model space)
+const SHIELD_FS = `uniform vec3 c; uniform float k; uniform vec3 hit; uniform float hk; uniform float t; varying vec3 vN; varying vec3 vV; varying vec3 vO;
 #include <logdepthbuf_pars_fragment>
 void main(){
 #include <logdepthbuf_fragment>
-float d = abs(dot(vN, vV)); gl_FragColor = vec4(c * pow(1.0 - d, 2.5) * k, 1.0); }`;
+float d = abs(dot(vN, vV));
+float a = 1.0 - dot(vO, hit);
+float ring = exp(-pow((a - (1.0 - hk) * 0.5) * 9.0, 2.0)) * hk;
+float spot = exp(-a * 14.0) * hk * 1.6;
+gl_FragColor = vec4(c * (pow(1.0 - d, 2.5) * k + ring + spot), 1.0); }`;
 
 export class ShipView {
   readonly group = new THREE.Group();
@@ -28,7 +33,9 @@ export class ShipView {
   private flameMats: THREE.MeshBasicMaterial[] = [];
   private sprites: THREE.Sprite[] = [];
   private shield: THREE.Mesh;
-  private shieldU: { c: { value: THREE.Color }; k: { value: number } };
+  private shieldU: { c: { value: THREE.Color }; k: { value: number }; hit: { value: THREE.Vector3 }; hk: { value: number }; t: { value: number } };
+  /** Recoil of the last shots (0..1): the hull kicks back and the nose lifts a little. */
+  private kick = 0;
   private shieldFlash = 0;
   private ownMats: THREE.Material[] = [];
   private gone = false;
@@ -41,7 +48,7 @@ export class ShipView {
   landed = false;
 
   constructor(public bp: Blueprint) {
-    this.shieldU = { c: { value: new THREE.Color('#59c7ff') }, k: { value: 0 } };
+    this.shieldU = { c: { value: new THREE.Color('#59c7ff') }, k: { value: 0 }, hit: { value: new THREE.Vector3(0, 0, -1) }, hk: { value: 0 }, t: { value: 0 } };
     if (isGlbShip(bp.cls)) {
       // modelled in Blender: loads in the background, flames and shield come with it
       this.radius = (isHull(bp.cls) ? HULLS[bp.cls].radius : 8) * 1.25;
@@ -97,8 +104,16 @@ export class ShipView {
     }
   }
 
-  hit(shield: boolean) {
-    if (shield) this.shieldFlash = 1;
+  /** `at`: the hit point in this ship's model space (the shield ripples from there). */
+  hit(shield: boolean, at?: THREE.Vector3) {
+    if (!shield) return;
+    this.shieldFlash = 1;
+    if (at && at.lengthSq() > 1e-6) this.shieldU.hit.value.copy(at).normalize();
+  }
+
+  /** A shot leaves the guns. */
+  recoil(k = 1) {
+    this.kick = Math.min(1, this.kick + 0.55 * k);
   }
 
   update(dt: number, time: number) {
@@ -114,9 +129,16 @@ export class ShipView {
     }
     if (this.shieldFlash > 0) {
       this.shieldFlash = Math.max(0, this.shieldFlash - dt * 3);
-      this.shieldU.k.value = this.shieldFlash * 1.2;
+      this.shieldU.k.value = this.shieldFlash * 0.7;
+      this.shieldU.hk.value = this.shieldFlash;
       this.shield.visible = true;
     } else this.shield.visible = false;
+    if (this.kick > 0.002) {
+      // the group was just placed for this frame: push it back along its own axis
+      this.group.translateZ(this.kick * Math.min(0.9, this.radius * 0.07));
+      this.group.rotateX(this.kick * 0.018);
+      this.kick *= Math.exp(-dt * 13);
+    }
   }
 
   dispose() {

@@ -7,6 +7,10 @@ interface Particle { x: number; y: number; z: number; vx: number; vy: number; vz
 interface Flash { sprite: THREE.Sprite; x: number; y: number; z: number; life: number; max: number; size: number; grow: number }
 interface Shard { x: number; y: number; z: number; vx: number; vy: number; vz: number; ax: number; ay: number; az: number; rx: number; ry: number; rz: number; s: number; life: number; smoke: number }
 const MAX_SHARDS = 400;
+/** Point lights lent to explosions (they light up nearby hulls for a moment). */
+const LIGHTS = 4;
+interface Blast { x: number; y: number; z: number; t: number; k: number }
+interface Glow { light: THREE.PointLight; x: number; y: number; z: number; life: number; max: number; power: number }
 
 const MAX_BOLTS = 800;
 const MAX_PARTICLES = 5000;
@@ -41,8 +45,17 @@ export class Effects {
   private q = new THREE.Quaternion();
   private dir = new THREE.Vector3();
   private Z = new THREE.Vector3(0, 0, 1);
+  private blasts: Blast[] = [];
+  private glows: Glow[] = [];
+  private lightPool: THREE.PointLight[] = [];
 
   constructor() {
+    for (let i = 0; i < LIGHTS; i++) {
+      const l = new THREE.PointLight('#ffb070', 0, 600, 2);
+      l.visible = false;
+      this.lightPool.push(l);
+      this.group.add(l);
+    }
     this.boltMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.16, 0.16, 7), new THREE.MeshBasicMaterial({ toneMapped: false }), MAX_BOLTS);
     this.boltMesh.count = 0;
     this.boltMesh.frustumCulled = false;
@@ -117,6 +130,100 @@ export class Effects {
     }
   }
 
+  /** A short-lived light at `p` (explosions, warp-ins); the oldest is reused when all are busy. */
+  light(p: V3, color: THREE.Color, power: number, life: number) {
+    let l = this.lightPool.find((x) => !x.visible);
+    if (!l) {
+      const g = this.glows.shift()!;
+      l = g.light;
+    }
+    l.visible = true;
+    l.color.copy(color);
+    this.glows.push({ light: l, x: p.x, y: p.y, z: p.z, life, max: life, power });
+  }
+
+  /** A laser hitting bare hull: hot streaks, glowing chips and a puff of smoke. */
+  hullHit(p: V3, dir?: V3) {
+    this.flash(p, new THREE.Color(1.6, 0.9, 0.4), 7, 0.14);
+    const bx = dir ? -dir.x : 0, by = dir ? -dir.y : 0, bz = dir ? -dir.z : 0;
+    for (let i = 0; i < 16; i++) {
+      const s = 30 + Math.random() * 90;
+      this.particle({
+        x: p.x, y: p.y, z: p.z,
+        vx: (Math.random() - 0.5) * s + bx * s * 0.8, vy: (Math.random() - 0.5) * s + by * s * 0.8, vz: (Math.random() - 0.5) * s + bz * s * 0.8,
+        life: 0.25 + Math.random() * 0.35, max: 0.6, size: 0.35 + Math.random() * 0.4, r: 3, g: 1.6 + Math.random(), b: 0.5, drag: 3,
+      });
+    }
+    for (let i = 0; i < 3; i++) {
+      if (this.shards.length >= MAX_SHARDS) this.shards.shift();
+      const s = 15 + Math.random() * 25;
+      this.shards.push({
+        x: p.x, y: p.y, z: p.z, vx: (Math.random() - 0.5) * s + bx * 10, vy: (Math.random() - 0.5) * s + by * 10, vz: (Math.random() - 0.5) * s + bz * 10,
+        ax: Math.random() * 6, ay: Math.random() * 6, az: Math.random() * 6, rx: (Math.random() - 0.5) * 20, ry: (Math.random() - 0.5) * 20, rz: (Math.random() - 0.5) * 20,
+        s: 0.15 + Math.random() * 0.2, life: 0.8 + Math.random() * 0.6, smoke: 0,
+      });
+    }
+    this.particle({ x: p.x, y: p.y, z: p.z, vx: bx * 4, vy: by * 4, vz: bz * 4, life: 0.9, max: 0.9, size: 2.4, r: 0.35, g: 0.32, b: 0.3, drag: 1 });
+  }
+
+  /** A hull ripple of light where the shield caught a bolt. */
+  shieldHit(p: V3, color: THREE.Color) {
+    this.flash(p, color, 6, 0.16);
+    for (let i = 0; i < 8; i++) {
+      const s = 20 + Math.random() * 40;
+      this.particle({ x: p.x, y: p.y, z: p.z, vx: (Math.random() - 0.5) * s, vy: (Math.random() - 0.5) * s, vz: (Math.random() - 0.5) * s, life: 0.3, max: 0.3, size: 0.5, r: color.r * 2, g: color.g * 2, b: color.b * 2, drag: 3 });
+    }
+  }
+
+  /** A damaged ship trails smoke, and fire below a quarter hull (`k` = damage 0..1). */
+  damage(p: V3, v: V3, k: number) {
+    const fire = k > 0.75;
+    this.particle({
+      x: p.x + (Math.random() - 0.5) * 2, y: p.y + (Math.random() - 0.5) * 2, z: p.z + (Math.random() - 0.5) * 2,
+      vx: v.x * 0.6 + (Math.random() - 0.5) * 4, vy: v.y * 0.6 + (Math.random() - 0.5) * 4, vz: v.z * 0.6 + (Math.random() - 0.5) * 4,
+      life: 1.4, max: 1.4, size: 2 + k * 2, r: 0.28, g: 0.26, b: 0.25, drag: 1.4,
+    });
+    if (fire) {
+      this.particle({
+        x: p.x, y: p.y, z: p.z, vx: v.x * 0.8 + (Math.random() - 0.5) * 6, vy: v.y * 0.8 + (Math.random() - 0.5) * 6, vz: v.z * 0.8 + (Math.random() - 0.5) * 6,
+        life: 0.45, max: 0.45, size: 1.6, r: 2.4, g: 0.9 + Math.random() * 0.5, b: 0.25, drag: 2,
+      });
+    }
+  }
+
+  /** A ship warping in at an arena start point: a team-coloured flash, a ring and a burst of light streaks. */
+  warp(p: V3, color: THREE.Color) {
+    this.flash(p, color, 70, 0.6);
+    this.flash(p, new THREE.Color(1.6, 1.6, 1.8), 24, 0.25);
+    this.flash(p, color, 60, 0.8, ringTexture(), 2.2);
+    this.light(p, color, 30000, 0.6);
+    for (let i = 0; i < 60; i++) {
+      const u = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2, r = Math.sqrt(1 - u * u), s = 60 + Math.random() * 120;
+      this.particle({ x: p.x, y: p.y, z: p.z, vx: Math.cos(a) * r * s, vy: u * s, vz: Math.sin(a) * r * s, life: 0.5, max: 0.5, size: 1.1, r: color.r * 2.5, g: color.g * 2.5, b: color.b * 2.5, drag: 4 });
+    }
+  }
+
+  /** A ship blows up: a fireball, a shock ring, a flash of light, burning debris and a couple of secondary blasts. */
+  shipExplosion(p: V3, big: boolean) {
+    this.explosion(p, big);
+    const k = big ? 1 : 0.5;
+    this.light(p, new THREE.Color('#ffb070'), 60000 * k, 0.9);
+    this.flash(p, new THREE.Color(2.4, 2.2, 1.9), 26 * k, 0.12);
+    for (let i = 0; i < (big ? 3 : 1); i++) {
+      this.blasts.push({ x: p.x + (Math.random() - 0.5) * 14, y: p.y + (Math.random() - 0.5) * 14, z: p.z + (Math.random() - 0.5) * 14, t: 0.15 + Math.random() * 0.5, k: 0.35 + Math.random() * 0.3 });
+    }
+    // big burning chunks of hull
+    for (let i = 0; i < (big ? 10 : 3); i++) {
+      const u = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2, r = Math.sqrt(1 - u * u), sp = 20 + Math.random() * 40;
+      if (this.shards.length >= MAX_SHARDS) this.shards.shift();
+      this.shards.push({
+        x: p.x, y: p.y, z: p.z, vx: Math.cos(a) * r * sp, vy: u * sp, vz: Math.sin(a) * r * sp,
+        ax: Math.random() * 6, ay: Math.random() * 6, az: Math.random() * 6, rx: (Math.random() - 0.5) * 6, ry: (Math.random() - 0.5) * 6, rz: (Math.random() - 0.5) * 6,
+        s: (1.6 + Math.random() * 1.8) * k, life: 3 + Math.random() * 2, smoke: 0,
+      });
+    }
+  }
+
   explosion(p: V3, big: boolean) {
     const k = big ? 1 : 0.4;
     this.flash(p, new THREE.Color(1.6, 1.1, 0.6), 60 * k, 0.5);
@@ -165,6 +272,26 @@ export class Effects {
   }
 
   update(dt: number, origin: V3) {
+    for (let i = this.blasts.length - 1; i >= 0; i--) {
+      const b = this.blasts[i];
+      b.t -= dt;
+      if (b.t > 0) continue;
+      this.blasts.splice(i, 1);
+      this.flash(b, new THREE.Color(1.6, 1, 0.5), 30 * b.k, 0.45);
+      this.flash(b, new THREE.Color(1.2, 0.5, 0.2), 18 * b.k, 0.9);
+      for (let j = 0; j < 40; j++) {
+        const u = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2, r = Math.sqrt(1 - u * u), s = (15 + Math.random() * 50) * b.k;
+        this.particle({ x: b.x, y: b.y, z: b.z, vx: Math.cos(a) * r * s, vy: u * s, vz: Math.sin(a) * r * s, life: 0.6 + Math.random() * 0.6, max: 1.2, size: (2 + Math.random() * 3) * b.k, r: 1.8, g: 0.8 + Math.random() * 0.6, b: 0.25, drag: 1.4 });
+      }
+    }
+    for (let i = this.glows.length - 1; i >= 0; i--) {
+      const g = this.glows[i];
+      g.life -= dt;
+      if (g.life <= 0) { g.light.visible = false; g.light.intensity = 0; this.glows.splice(i, 1); continue; }
+      const t = g.life / g.max;
+      g.light.intensity = g.power * t * t;
+      g.light.position.set(g.x - origin.x, g.y - origin.y, g.z - origin.z);
+    }
     // bolts
     let n = 0;
     for (let i = this.bolts.length - 1; i >= 0; i--) {
